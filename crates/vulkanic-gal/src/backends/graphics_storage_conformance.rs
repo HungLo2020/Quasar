@@ -520,8 +520,10 @@ void main() {{
             );
             let words: Vec<u32> = read
                 .bytes
-                .chunks_exact(4)
-                .map(|v| u32::from_le_bytes(v.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|v| u32::from_le_bytes(*v))
                 .collect();
             let count = words[0] as usize;
             assert!(
@@ -542,7 +544,7 @@ void main() {{
                 [-1.0, 3.0, 0.0, 1.0],
             ];
             let mut seen = [false; 3];
-            for sample in words[3..3 + count * 8].chunks_exact(8) {
+            for sample in words[3..3 + count * 8].as_chunks::<8>().0 {
                 let index = sample[0] as usize;
                 assert!(index < 3);
                 seen[index] = true;

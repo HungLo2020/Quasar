@@ -63,8 +63,9 @@ fn reference_supports_asymmetric_atlases_and_text() {
     );
     assert!(
         pixels[(8 * 16 + 8) * 4..]
-            .chunks_exact(4)
-            .any(|pixel| pixel == [255; 4])
+            .as_chunks::<4>()
+            .0
+            .contains(&[255; 4])
     );
 }
 #[cfg(feature = "gpu")]
@@ -568,8 +569,8 @@ fn sprite_transforms_match_all_eight_asymmetric_orientations() {
             },
         );
         let image = reference::rasterize(&canvas, &textures).unwrap();
-        for (pixel, source) in image.chunks_exact(4).zip(*pose) {
-            assert_eq!(pixel, colors[source], "pose {bits}");
+        for (pixel, source) in image.as_chunks::<4>().0.iter().zip(*pose) {
+            assert_eq!(*pixel, colors[source], "pose {bits}");
         }
     }
 }

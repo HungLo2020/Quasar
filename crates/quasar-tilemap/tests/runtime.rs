@@ -303,7 +303,7 @@ fn previews_decode_png_and_check_declared_atlas_dimensions() {
     let root = tempfile::tempdir().unwrap();
     let map = parse_fixture(fixture());
     let mut pixels = vec![0; 4 * 2 * 4];
-    for p in pixels.chunks_exact_mut(4) {
+    for p in pixels.as_chunks_mut::<4>().0.iter_mut() {
         p.copy_from_slice(&[200, 100, 50, 255]);
     }
     quasar_tilemap::render::write_png(root.path().join("atlas.png"), 4, 2, &pixels).unwrap();

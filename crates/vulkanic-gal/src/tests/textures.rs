@@ -345,7 +345,14 @@ fn vulkan_texture_row_reversal_copies_exact_asymmetric_color_and_depth_rows() {
             .find(|read| read.buffer == readback)
             .unwrap()
             .bytes;
-        let expected: Vec<u8> = pixels.chunks_exact(8).rev().flatten().copied().collect();
+        let expected: Vec<u8> = pixels
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .rev()
+            .flat_map(|chunk| chunk.iter())
+            .copied()
+            .collect();
         assert_eq!(
             &expected, actual,
             "row reversal must preserve exact texels for {format:?}"

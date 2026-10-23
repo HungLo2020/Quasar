@@ -108,7 +108,7 @@ impl Options {
 
 fn paint(pixels: &mut [u8], frame: u64) {
     let shift = (frame % 256) as u8;
-    for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+    for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = (index % WIDTH as usize) as u8;
         let y = (index / WIDTH as usize) as u8;
         pixel.copy_from_slice(&[x.wrapping_add(shift), y, (x ^ y).wrapping_add(shift), 255]);
