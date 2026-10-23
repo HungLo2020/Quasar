@@ -408,7 +408,10 @@ fn deterministic_render_hash_is_stable() {
         let mut mixer = Mixer::new(config(4)).unwrap();
         let bus = mixer.create_bus("fx", 0.7, 2).unwrap();
         let clip = mono(
-            (0..480).map(|index| ((index as f32) * 0.03).sin() * 0.4),
+            (0..480).map(|index| {
+                let phase = (index % 80) as f32 / 80.0;
+                (1.0 - 4.0 * (phase - 0.5).abs()) * 0.4
+            }),
             48_000,
         );
         mixer
@@ -423,8 +426,12 @@ fn deterministic_render_hash_is_stable() {
             )
             .unwrap();
         let pcm = mixer.render(480).unwrap();
+        // Hash quantized PCM16 so platform libm/optimization differences below
+        // one output step do not invalidate the reference. The source itself
+        // avoids transcendental functions.
         let hash = pcm.iter().fold(0xcbf29ce484222325u64, |hash, sample| {
-            (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x100000001b3)
+            let quantized = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+            (hash ^ u64::from(quantized as u16)).wrapping_mul(0x100000001b3)
         });
         (pcm, hash)
     }
@@ -433,7 +440,7 @@ fn deterministic_render_hash_is_stable() {
     assert_eq!(a, b);
     assert_eq!(hash_a, hash_b);
     assert_eq!(
-        hash_a, 0x2d0a754272f4372d,
+        hash_a, 0x8ea82bdf447ba60d,
         "golden mix hash changed; inspect DSP changes before updating"
     );
 }
