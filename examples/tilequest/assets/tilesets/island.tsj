@@ -1,0 +1,55 @@
+{
+  "type": "tileset",
+  "version": "1.10",
+  "name": "island",
+  "image": "../atlas.png",
+  "imagewidth": 128,
+  "imageheight": 64,
+  "tilewidth": 16,
+  "tileheight": 16,
+  "columns": 8,
+  "tilecount": 32,
+  "tiles": [
+    {
+      "id": 4,
+      "properties": [
+        {
+          "name": "solid",
+          "type": "bool",
+          "value": true
+        }
+      ],
+      "animation": [
+        {
+          "tileid": 4,
+          "duration": 350
+        },
+        {
+          "tileid": 5,
+          "duration": 350
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "animation": [
+        {
+          "tileid": 24,
+          "duration": 110
+        },
+        {
+          "tileid": 25,
+          "duration": 110
+        },
+        {
+          "tileid": 26,
+          "duration": 110
+        },
+        {
+          "tileid": 27,
+          "duration": 110
+        }
+      ]
+    }
+  ]
+}

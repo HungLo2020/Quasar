@@ -1,0 +1,20 @@
+{
+  "cpu_frame_p50_ms": 0.158879,
+  "device_idle_waits": 0,
+  "emitted_tiles": 694,
+  "frames": 364,
+  "gpu_frame_p50_ms": 0.036384,
+  "measured_frames": 300,
+  "render_stats": {
+    "batches": 5,
+    "geometry_bytes": 61600,
+    "quads": 770,
+    "texture_bytes": 0
+  },
+  "resource_creates": 1,
+  "resource_destroys": 0,
+  "scope": "native map traversal, draw-list construction, GPU rendering and presentation; first 64 frames excluded; one simulation tick per attempted frame",
+  "stored_cells": 49152,
+  "timeline_waits": 1,
+  "visited_cells": 2604
+}

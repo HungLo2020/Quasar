@@ -1,6 +1,7 @@
 //! Ordered GPU 2D drawing through VulkanicGAL's public API.
 //! Draw lists, textures, and reference snapshots also work without the `gpu`
 //! feature. Native games use instanced quads rather than CPU framebuffers.
+mod atlas;
 mod canvas;
 mod font;
 #[cfg(feature = "gpu")]
@@ -8,7 +9,8 @@ mod gpu;
 mod math;
 pub mod reference;
 mod texture;
-pub use canvas::{Canvas, Quad, Sprite};
+pub use atlas::{AnimationClip, AnimationFrame, SpriteAtlas};
+pub use canvas::{Canvas, Quad, Sprite, SpriteTransform};
 #[cfg(feature = "gpu")]
 pub use gpu::{LoadOp, Prepared2D, PresentOutcome, RenderState2D, RenderStats, Renderer2D};
 pub use math::{Camera2D, Color, Rect, Transform2D};

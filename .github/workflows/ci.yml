@@ -11,8 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --locked -p quasar-input -p pong --no-default-features
+      - run: cargo test --locked -p quasar-input -p pong -p quasar-tilemap -p tilequest --no-default-features
       - run: python tools/verify_pong.py
+      - run: python tools/verify_tilemap.py
   desktop:
     runs-on: ubuntu-latest
     steps:
@@ -33,6 +34,9 @@ jobs:
       - name: Install software Vulkan and native test dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev mesa-vulkan-drivers xvfb
       - name: Run GPU lifetime and pixel tests
-        run: xvfb-run -a cargo test --locked -p quasar-composition -p quasar-render-2d --lib -- --include-ignored --test-threads=1
+        run: xvfb-run -a cargo test --locked -p quasar-composition -p quasar-render-2d -p tilequest --lib -- --include-ignored --test-threads=1
       - name: Exercise native resize and failed-frame recovery
         run: xvfb-run -a cargo run --locked -p quasar-composition -- --frames 40 --exercise-window
+
+      - name: Exercise native tilemap window recovery
+        run: xvfb-run -a cargo run --locked -p tilequest -- --autoplay --smoke-frames 40 --exercise-window

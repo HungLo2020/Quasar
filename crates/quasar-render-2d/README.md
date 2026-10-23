@@ -37,7 +37,7 @@ cached; ordinary frames upload geometry and uniforms. Buffer growth rebuilds
 only affected buffer bindings, preserving image uploads. `stats()` reports
 quad/batch counts and upload bytes. The bitmap font
 covers uppercase ASCII, digits, and simple punctuation; custom fonts can use
-sprite atlases. No scene graph, asset decoder, or font shaping is included.
+sprite atlases. No scene graph or font shaping is included.
 
 The default `gpu` feature currently requires explicit-binding GLSL conventions
 and uses Vulkan. Three bounded transient slots track prepared command references
@@ -97,3 +97,21 @@ retire through GAL's existing dependency/submission lifetime system. Always
 release state explicitly before dropping it; dropping a state without release
 leaves its cached handles owned by GAL until GAL teardown. All calls and handles
 must belong to the construction GAL, and renderer access must be exclusive.
+
+## PNG atlases and animation
+
+The optional `png` feature adds `Image::load_png`/`decode_png` with bounded decode
+buffers, palette/transparency expansion, grayscale and 16-bit conversion to RGBA8.
+It does not require the `gpu` feature. APNG is rejected. Insert the decoded image
+into the caller-owned `Textures`, then use `SpriteAtlas::grid` for checked uniform
+regions with optional margin/spacing. `AnimationClip` selects frame indices from
+caller-provided elapsed milliseconds; neither helper owns a clock or GPU device.
+
+`Canvas::sprite_flipped` supports horizontal/vertical flips;
+`sprite_transformed` additionally supports transpose before flips. These change
+quad coordinates and preserve batching, filtering, tint and camera transforms.
+`Canvas::camera` lets adapters restore the previous camera after drawing. Existing
+`Sprite` construction and `Canvas::sprite` behavior remain compatible.
+
+See [quasar-tilemap](../quasar-tilemap/README.md) for map assets and the
+[Tilequest example](../../examples/tilequest/README.md) for native/headless usage.

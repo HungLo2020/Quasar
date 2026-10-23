@@ -30,6 +30,14 @@ impl Sprite {
         }
     }
 }
+/// Normalized sprite transforms: transpose first, then horizontal/vertical
+/// flips. This also represents all eight orthogonal Tiled tile orientations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SpriteTransform {
+    pub transpose: bool,
+    pub flip_x: bool,
+    pub flip_y: bool,
+}
 /// Explicit ordered drawing. State is captured at each draw; no global scene graph.
 #[derive(Debug, Clone)]
 pub struct Canvas {
@@ -68,6 +76,9 @@ impl Canvas {
     pub fn set_camera(&mut self, camera: Camera2D) {
         self.camera = camera;
     }
+    pub fn camera(&self) -> Camera2D {
+        self.camera
+    }
     pub fn set_transform(&mut self, transform: Transform2D) {
         self.transform = transform;
     }
@@ -86,13 +97,38 @@ impl Canvas {
         });
     }
     pub fn sprite(&mut self, sprite: Sprite) {
+        self.sprite_transformed(sprite, SpriteTransform::default());
+    }
+    pub fn sprite_flipped(&mut self, sprite: Sprite, flip_x: bool, flip_y: bool) {
+        self.sprite_transformed(
+            sprite,
+            SpriteTransform {
+                flip_x,
+                flip_y,
+                transpose: false,
+            },
+        );
+    }
+    pub fn sprite_transformed(&mut self, sprite: Sprite, pose: SpriteTransform) {
         let t = self
             .transform
             .then(self.camera.transform(self.width, self.height));
         let d = sprite.destination;
-        let p = t.point([d.x, d.y]);
-        let x = t.point([d.x + d.width, d.y]);
-        let y = t.point([d.x, d.y + d.height]);
+        let corner = |mut u: f32, mut v: f32| {
+            if pose.transpose {
+                std::mem::swap(&mut u, &mut v);
+            }
+            if pose.flip_x {
+                u = 1.0 - u;
+            }
+            if pose.flip_y {
+                v = 1.0 - v;
+            }
+            t.point([d.x + u * d.width, d.y + v * d.height])
+        };
+        let p = corner(0.0, 0.0);
+        let x = corner(1.0, 0.0);
+        let y = corner(0.0, 1.0);
         let screen = Rect::new(0.0, 0.0, self.width as f32, self.height as f32);
         let clip = self
             .clip

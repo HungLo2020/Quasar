@@ -97,3 +97,58 @@ impl Textures {
         }
     }
 }
+
+#[cfg(feature = "png")]
+impl Image {
+    /// Bounded CPU decode of PNG RGB/RGBA/grayscale/indexed images to RGBA8.
+    /// No graphics device is required. Both decoder and output have 64 MiB caps.
+    pub fn decode_png(reader: impl std::io::Read) -> Result<Self> {
+        let mut decoder = png::Decoder::new(reader);
+        decoder.set_limits(png::Limits {
+            bytes: 64 * 1024 * 1024,
+        });
+        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        let mut reader = decoder
+            .read_info()
+            .map_err(|e| invalid(format!("PNG header: {e}")))?;
+        let info = reader.info();
+        let bytes = u64::from(info.width) * u64::from(info.height) * 4;
+        if info.width == 0
+            || info.height == 0
+            || info.width > 16384
+            || info.height > 16384
+            || bytes > 64 * 1024 * 1024
+        {
+            return Err(invalid("PNG exceeds image bounds or 64 MiB decoded limit"));
+        }
+        if info.animation_control.is_some() {
+            return Err(invalid(
+                "APNG is not supported; use an explicit sprite atlas animation",
+            ));
+        }
+        let mut buffer = vec![0; reader.output_buffer_size()];
+        let frame = reader
+            .next_frame(&mut buffer)
+            .map_err(|e| invalid(format!("PNG pixels: {e}")))?;
+        let source = &buffer[..frame.buffer_size()];
+        let rgba = match frame.color_type {
+            png::ColorType::Rgba => source.to_vec(),
+            png::ColorType::Rgb => source
+                .chunks_exact(3)
+                .flat_map(|p| [p[0], p[1], p[2], 255])
+                .collect(),
+            png::ColorType::Grayscale => source.iter().flat_map(|v| [*v, *v, *v, 255]).collect(),
+            png::ColorType::GrayscaleAlpha => source
+                .chunks_exact(2)
+                .flat_map(|p| [p[0], p[0], p[0], p[1]])
+                .collect(),
+            png::ColorType::Indexed => return Err(invalid("PNG palette was not expanded")),
+        };
+        Self::new(frame.width, frame.height, rgba)
+    }
+    pub fn load_png(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let file = std::fs::File::open(path.as_ref())
+            .map_err(|e| invalid(format!("{}: {e}", path.as_ref().display())))?;
+        Self::decode_png(std::io::BufReader::new(file))
+    }
+}

@@ -25,9 +25,11 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `quasar-storage` | Basalt v1 paths and atomic JSON persistence | None |
 | `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
 | `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, camera/transforms, clipping and GPU readback | VulkanicGAL, quasar-core |
+| `quasar-tilemap` | Versioned/Tiled maps, indexed tile/object queries, PNG atlases, animation, culled draw lists and CLI | Optional quasar-render-2d |
 | `quasar-render-3d` | Indexed meshes, camera/model transforms, textured materials, lighting, depth and prepared passes | VulkanicGAL |
 | `quasar-frame` | Optional recording transactions, target caching, acquire/present/cancel and completion polling | VulkanicGAL |
 | `quasar-present` | VulkanicGAL framebuffer upload, GPU scaling/filtering, letterboxing, surface lifecycle | VulkanicGAL, quasar-core |
+| `examples/tilequest` | Scrolling top-down quest, layered maps, collision, replays and headless/native verification | Selected crates |
 | `examples/pong` | Game rules, 2D draw lists, desktop application, headless CLI and replay | Selected crates |
 
 The desktop example submits a 640×400 logical canvas to `quasar-render-2d`,
@@ -162,3 +164,20 @@ and other platforms' runtime bundling still need release validation.
 
 See [architecture and extension guidance](docs/architecture.md) and
 [VulkanicGAL provenance](crates/vulkanic-gal/UPSTREAM.md).
+
+## Tilemaps and scrolling 2D game
+
+```sh
+cargo run -p tilequest
+cargo run -p quasar-tilemap -- validate examples/tilequest/assets/island.tmj --assets
+python tools/verify_tilemap.py
+```
+
+[Tilequest](examples/tilequest/README.md) exercises animated PNG atlases, flipped
+sprites, ordered foreground/parallax layers, camera culling, collision properties
+and object markers. [quasar-tilemap](crates/quasar-tilemap/README.md) provides the
+versioned runtime format, supported Tiled JSON interchange, spatial queries,
+conversion/edit/preview CLI and benchmarks. Its default drawing adapter creates
+Canvas commands; native rendering remains a consumer of VulkanicGAL through
+quasar-render-2d. Parsing and simulation also run without GPU/window dependencies.
+The map editor remains future work.

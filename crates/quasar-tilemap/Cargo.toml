@@ -1,0 +1,18 @@
+[package]
+name = "quasar-tilemap"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+default = ["render-2d"]
+render-2d = ["dep:quasar-render-2d", "dep:png"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+quasar-render-2d = { workspace = true, optional = true, features = ["png"] }
+png = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

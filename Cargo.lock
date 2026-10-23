@@ -1196,6 +1196,7 @@ dependencies = [
 name = "quasar-render-2d"
 version = "0.2.0"
 dependencies = [
+ "png",
  "quasar-core",
  "raw-window-handle",
  "vulkanic-gal",
@@ -1212,6 +1213,17 @@ dependencies = [
 name = "quasar-storage"
 version = "0.2.0"
 dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "quasar-tilemap"
+version = "0.2.0"
+dependencies = [
+ "png",
+ "quasar-render-2d",
  "serde",
  "serde_json",
  "tempfile",
@@ -1635,6 +1647,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "tilequest"
+version = "0.2.0"
+dependencies = [
+ "png",
+ "quasar-core",
+ "quasar-frame",
+ "quasar-input",
+ "quasar-render-2d",
+ "quasar-storage",
+ "quasar-tilemap",
+ "quasar-window",
+ "serde",
+ "serde_json",
+ "vulkanic-gal",
 ]
 
 [[package]]

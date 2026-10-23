@@ -1,0 +1,22 @@
+[package]
+name = "tilequest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+default = ["desktop"]
+desktop = ["dep:quasar-window", "quasar-render-2d/gpu", "dep:vulkanic-gal", "dep:quasar-frame"]
+
+[dependencies]
+quasar-tilemap.workspace = true
+quasar-render-2d = { workspace = true, features = ["png"] }
+quasar-core.workspace = true
+quasar-input.workspace = true
+quasar-storage.workspace = true
+quasar-window = { workspace = true, optional = true }
+vulkanic-gal = { workspace = true, optional = true }
+quasar-frame = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+png.workspace = true

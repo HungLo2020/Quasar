@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "examples/pong", "examples/composition"]
+members = ["crates/*", "examples/pong", "examples/composition", "examples/tilequest"]
 default-members = ["examples/pong"]
 resolver = "2"
 
@@ -9,6 +9,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+quasar-tilemap = { path = "crates/quasar-tilemap" }
 quasar-frame = { path = "crates/quasar-frame" }
 quasar-render-3d = { path = "crates/quasar-render-3d" }
 quasar-render-2d = { path = "crates/quasar-render-2d", default-features = false }

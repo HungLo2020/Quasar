@@ -1,0 +1,32 @@
+{
+  "profile": "release",
+  "scope": "one fully occupied tile layer; fixed 480x320 view; CPU only",
+  "cases": [
+    {
+      "draw_list_us": {
+        "p50": 25.833,
+        "p95": 41.972
+      },
+      "iterations": 1000,
+      "load_and_index_ms": 1.134618,
+      "max_emitted_tiles": 620,
+      "max_visited_cells": 620,
+      "ok": true,
+      "scope": "CPU indexed culling and draw-list construction; no GPU, decoding excluded",
+      "stored_cells": 10000
+    },
+    {
+      "draw_list_us": {
+        "p50": 27.986,
+        "p95": 28.158
+      },
+      "iterations": 1000,
+      "load_and_index_ms": 65.803949,
+      "max_emitted_tiles": 620,
+      "max_visited_cells": 620,
+      "ok": true,
+      "scope": "CPU indexed culling and draw-list construction; no GPU, decoding excluded",
+      "stored_cells": 1000000
+    }
+  ]
+}
