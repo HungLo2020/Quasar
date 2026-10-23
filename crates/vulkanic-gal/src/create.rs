@@ -1,0 +1,98 @@
+//! Creating a GAL: the one public place a backend is chosen.
+//!
+//! The composition root (the bridge) picks a backend once, from what Java
+//! requested, and gets back a `VulkanicGal`. Backend types stay private to
+//! `vulkanic`, and after creation every caller sees capabilities only
+//! (`BackendCapabilities`), never which backend is running.
+
+use super::backends::{
+    self, create_backend, create_borrowed_opengl_backend, create_native_windowed_vulkan_backend,
+};
+use super::error::GalResult;
+use super::frame::FrameSurfaceDesc;
+use super::gal::VulkanicGal;
+
+/// The graphics API a new GAL runs on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendChoice {
+    /// The Vulkan backend.
+    Vulkan,
+    /// The OpenGL backend.
+    OpenGl,
+}
+
+/// A native window a Vulkan GAL presents to, as handed over by the host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeWindow {
+    /// Host windowing platform id (X11 or Wayland) from the window request.
+    pub platform: u32,
+    /// Non-zero id that stays stable for the lifetime of the host window.
+    pub stable_window_id: u64,
+    /// The host's native display handle (for example an X11 `Display*`).
+    pub native_display: u64,
+    /// The host's native window handle.
+    pub native_window: u64,
+}
+
+impl VulkanicGal {
+    /// A GAL that owns its device and has no window of its own.
+    pub fn create(backend: BackendChoice, label: &str) -> GalResult<Self> {
+        Ok(Self::new_with_backend(create_backend(backend, label)?))
+    }
+
+    /// An OpenGL GAL that renders through the host's current GL context.
+    pub fn create_borrowed_opengl(label: &str, stable_window_id: u64) -> GalResult<Self> {
+        Ok(Self::new_with_backend(create_borrowed_opengl_backend(
+            label,
+            stable_window_id,
+        )?))
+    }
+
+    /// A Vulkan GAL that presents to the host's native window.
+    ///
+    /// # Safety
+    /// The native handles must be valid for their declared platform, and the
+    /// window/display must remain alive until the returned GAL is destroyed.
+    /// Prefer `create_windowed_vulkan`, which retains the window owner.
+    pub unsafe fn create_native_windowed_vulkan(
+        label: &str,
+        window: NativeWindow,
+        surface: FrameSurfaceDesc,
+    ) -> GalResult<Self> {
+        Ok(Self::new_with_backend(
+            create_native_windowed_vulkan_backend(
+                label,
+                window.platform,
+                window.stable_window_id,
+                window.native_display,
+                window.native_window,
+                surface,
+            )?,
+        ))
+    }
+}
+
+/// Turns GPU frame timestamps on or off for every backend that records them.
+pub fn set_gpu_timestamps_requested(requested: bool) {
+    backends::set_gpu_timestamps_requested(requested);
+}
+
+impl VulkanicGal {
+    /// Creates a Vulkan device and surface, retaining ownership of the window.
+    ///
+    /// Supports the native platforms supported by `ash-window`, including X11,
+    /// Wayland, Win32 and Metal (macOS requires a Vulkan portability driver).
+    /// Call on the window's owning thread. The window stays alive until the GAL
+    /// has destroyed its surface and device.
+    pub fn create_windowed_vulkan<
+        W: raw_window_handle::HasDisplayHandle + raw_window_handle::HasWindowHandle + 'static,
+    >(
+        label: &str,
+        window: std::sync::Arc<W>,
+        surface: FrameSurfaceDesc,
+    ) -> GalResult<Self> {
+        Ok(Self::new_with_backend(
+            backends::create_owned_windowed_vulkan_backend(label, window, surface)?,
+        ))
+    }
+}

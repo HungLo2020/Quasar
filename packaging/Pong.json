@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "standard_version": 1,
+  "id": "QuasarPong",
+  "name": "Quasar Pong",
+  "source": {
+    "kind": "github_release",
+    "repository": "HungLo2020/Quasar",
+    "asset_prefix": "Pong-",
+    "asset_suffix": ".zip",
+    "asset_contains": ["linux-x64"]
+  },
+  "launch": { "executable": "app/bin/pong" }
+}

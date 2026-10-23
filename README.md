@@ -1,0 +1,137 @@
+# Quasar
+
+Composable Rust game infrastructure, with Pong as its first consumer. Games own
+ordinary Cargo projects, their simulation, and their application loop. Each
+Quasar crate can be used independently.
+
+```sh
+cargo run -p pong
+cargo run -p pong -- --two-player
+```
+
+Pong starts against the computer. **W/S** move the left paddle; **Up/Down** move
+the right paddle in two-player mode. **Space** serves, **P/Escape** pauses,
+**R** restarts, and **Q** quits. First to seven wins. **F11/Alt+Enter** toggles
+fullscreen; **F2** changes filtering; **F3** changes fit/integer scaling.
+Losing focus releases held input and pauses an active human-controlled match.
+
+## What is implemented
+
+| Crate | Responsibility | Depends on other Quasar crates |
+|---|---|---|
+| `quasar-input` | Portable keyboard/mouse state, named actions, axes, chords, serializable bindings | None |
+| `quasar-window` | Native windows, desktop identity, fullscreen, DPI, cursor capture, native input adapter | quasar-input |
+| `quasar-core` | Bounded fixed-step timing with game-selected frequency | None |
+| `quasar-storage` | Basalt v1 paths and atomic JSON persistence | None |
+| `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
+| `quasar-present` | VulkanicGAL framebuffer upload, GPU scaling/filtering, letterboxing, surface lifecycle | VulkanicGAL |
+| `examples/pong` | Game rules, software drawing, desktop application, headless CLI and replay | Selected crates |
+
+The desktop example presents a 640×400 RGBA image through VulkanicGAL. It uses
+native X11/Wayland on Linux; window/surface integration also has Win32 and macOS
+paths through winit/ash-window. Only Linux has been verified so far. Native
+Vulkan requires a Vulkan 1.3 driver with dynamic rendering, synchronization2,
+and timeline semaphores. macOS additionally needs a compatible Vulkan
+portability driver; distribution of that runtime is future work. x86-64 is the
+verified architecture; arm64 and riscv64 remain unverified targets.
+
+There is no editor yet. The working interpretation of [requirements](REQUIREMENTS.md)
+is that a future optional editor uses Qt/KDE frameworks; standalone game windows
+use Rust/winit. Audio, controller/analog backends, general scene rendering,
+and an editor are future additions.
+
+## Configurable controls
+
+Pong defines action names; `quasar-input` handles devices, bindings, and action
+transitions. Export a preset, edit the keys/mouse buttons/chords/axes, and load it:
+
+```sh
+cargo run -p pong --no-default-features -- --write-default-bindings /tmp/pong-controls.json
+cargo run -p pong --no-default-features -- --check-bindings /tmp/pong-controls.json
+cargo run -p pong -- --bindings /tmp/pong-controls.json
+```
+
+Normal desktop runs load `data/config/shared/controls.json`, honoring
+`BASALT_SHARED_CONFIG_DIR`. Missing controls initialize with defaults; invalid
+or unsupported saved files are preserved while defaults are used. Explicit
+presets fail on errors and apply only to that run. `--no-save` skips stored
+controls; explicit presets are still honored. HUD hints show the first binding
+for each action. Replay files store game actions, so rebinding physical controls
+does not change recorded playback.
+
+See [quasar-input's API and semantics](crates/quasar-input/README.md).
+
+## Build and verify
+
+Use a current stable Rust toolchain (developed with Rust 1.94). The initial
+build needs CMake, Ninja or Make, and a C++ compiler to build shaderc from source.
+On Debian/Ubuntu, useful development packages are `build-essential cmake ninja-build
+pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev
+libxcursor-dev libvulkan-dev`. A Vulkan loader/driver and a desktop session are
+needed to play; no standalone GLSL compiler is needed at runtime.
+
+```sh
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked
+python3 tools/verify_pong.py
+```
+
+Four imported OpenGL/GPU checks are explicitly ignored in ordinary tests because
+they require a graphics environment. Run the full suite with driver access:
+
+```sh
+cargo test --workspace --locked -- --include-ignored
+cargo run -p pong -- --autoplay --no-save --smoke-frames 30 --exercise-window
+```
+
+The native exercise changes size, enters/exits fullscreen, changes sampling,
+and verifies that a zero-sized presentation surface defers rendering and then
+recovers. It fails if the requested frames cannot be presented within 30 seconds.
+Some other imported bootstrap checks tolerate absent GPU drivers; ordinary test
+success alone does not establish native graphics correctness.
+
+## Headless execution and replay
+
+No window or GPU is initialized by `--headless`. For a build that also excludes
+windowing/Vulkan dependencies, disable the example's default features:
+
+```sh
+cargo run -p pong --no-default-features -- --headless --autoplay --ticks 12000 \
+  --record /tmp/pong-inputs.json --state /tmp/pong-state.json --screenshot /tmp/pong.png
+cargo run -p pong --no-default-features -- --headless \
+  --replay /tmp/pong-inputs.json --state /tmp/pong-replayed.json
+cmp /tmp/pong-state.json /tmp/pong-replayed.json
+```
+
+`--record` also records real keyboard play. Replays contain per-tick game inputs,
+mode, version, and simulation rate. Native and headless playback use the same
+simulation. Determinism is checked within this implementation; replay compatibility
+across future gameplay changes or all floating-point architectures is not promised.
+Screenshots are native game framebuffer images, rather than desktop captures.
+`cargo run -p pong -- --help` lists all options.
+
+## Packaging and storage
+
+```sh
+python3 tools/package_pong.py
+# Or package an already-built desktop executable during development:
+python3 tools/package_pong.py --binary target/debug/pong
+```
+
+The ZIP contains only `app/bin/pong`, box art, and runtime notes. Normal play
+writes `data/config/display.json`, `data/config/shared/controls.json`, and
+`data/save/records.json`, relative to the
+installation, and honors Basalt directory overrides. Checkout runs use this
+repository's `data/` directory. Missing data initializes automatically; corrupt
+or unsupported files are preserved. `--no-save` skips these settings and records;
+headless execution never loads or writes them. Explicit CLI output paths are
+always honored.
+
+[packaging/Pong.json](packaging/Pong.json) is a proposed Linux x64 Basalt catalog
+entry. The package command does not publish a release or install the catalog
+entry. Packages use the build host's libc baseline; a portable Linux baseline
+and other platforms' runtime bundling still need release validation.
+
+See [architecture and extension guidance](docs/architecture.md) and
+[VulkanicGAL provenance](crates/vulkanic-gal/UPSTREAM.md).

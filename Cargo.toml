@@ -1,0 +1,29 @@
+[workspace]
+members = ["crates/*", "examples/pong"]
+default-members = ["examples/pong"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+quasar-input = { path = "crates/quasar-input" }
+quasar-window = { path = "crates/quasar-window" }
+quasar-present = { path = "crates/quasar-present" }
+quasar-core = { path = "crates/quasar-core" }
+quasar-storage = { path = "crates/quasar-storage" }
+vulkanic-gal = { path = "crates/vulkanic-gal" }
+winit = "0.30.13"
+raw-window-handle = "0.6.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+png = "0.17"
+tempfile = "3.27"
+
+[profile.dev.package.shaderc-sys]
+opt-level = 3
+
+[profile.release]
+lto = "thin"

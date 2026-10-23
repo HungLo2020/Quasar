@@ -1,0 +1,19 @@
+[package]
+name = "pong"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+default = ["desktop"]
+desktop = ["dep:quasar-window", "dep:quasar-present"]
+
+[dependencies]
+quasar-input.workspace = true
+quasar-core.workspace = true
+quasar-storage.workspace = true
+quasar-window = { workspace = true, optional = true }
+quasar-present = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+png.workspace = true

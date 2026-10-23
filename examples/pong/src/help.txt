@@ -1,0 +1,34 @@
+Quasar Pong
+
+Run with no arguments to play against the computer.
+Default controls (customize with --bindings):
+W/S: left paddle. Up/Down: right paddle in --two-player mode.
+Space: serve. P/Escape: pause/resume. R: restart. Q: quit.
+F11 or Alt+Enter: fullscreen. F2: nearest/linear filter. F3: fit/integer scale.
+Losing focus pauses an active match; resume explicitly after returning.
+
+  --bindings FILE.json   Use a controls preset for this run (does not replace saved bindings)
+  --write-default-bindings FILE.json  Export default controls and exit
+  --check-bindings FILE.json  Validate a controls preset without opening a window
+  --two-player           Local two-player match
+  --fullscreen           Start in borderless fullscreen
+  --width N --height N    Initial logical window size
+  --linear               Smooth framebuffer sampling
+  --integer-scale        Whole-pixel scaling (fit when smaller than the framebuffer)
+  --headless             Run without window, graphics, or device initialization
+  --ticks N              Stop after N simulation ticks (headless default: 3600)
+  --autoplay             Deterministic exercise driver
+  --record FILE.json     Record simulation inputs, including live keyboard play
+  --replay FILE.json     Play recorded inputs; stop when inputs end
+  --screenshot FILE.png  Write the final native-resolution game framebuffer
+  --state FILE.json      Write final simulation state
+  --no-save              Skip saved controls, display settings, and local records
+  --smoke-frames N       Stop after N presented native frames
+  --exercise-window      Exercise resize/fullscreen/filter/suspension during smoke run
+  -h, --help             Show this help
+
+Controls normally load from data/config/shared/controls.json (Basalt overrides honored).
+Headless runs never read or write persistent game settings/records.
+An explicit --bindings preset is still validated, including in headless mode.
+Screens show the first configured binding per action; files contain all alternatives.
+Explicit --record, --state and --screenshot paths are always honored.

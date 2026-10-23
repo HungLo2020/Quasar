@@ -1,0 +1,1165 @@
+use std::ffi::CStr;
+use std::sync::Arc;
+
+use ash::vk;
+
+use super::device::VulkanContext;
+use super::resources::{aspect_for_format, texture_format};
+use super::trace;
+use crate::backends::vulkan::resources::FrameTargetObject;
+use crate::backends::BackendToken;
+use crate::error::{GalError, GalResult};
+use crate::frame::{
+    AcquiredFrame, FrameAcquireDesc, FrameAcquireStatus, FrameId, FramePresentStatus,
+    FrameRenderTargetId, FrameResizeDesc, FrameResizeResult, FrameSurfaceDesc, PresentFrameDesc,
+    PresentMode, PresentedFrame,
+};
+use crate::resources::{Extent3d, TextureFormat};
+use crate::sync::SubmissionId;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct SwapchainRuntimeMetrics {
+    pub(super) acquire_nanos: u64,
+    pub(super) present_nanos: u64,
+    pub(super) present_wait_nanos: u64,
+    pub(super) present_mode: u64,
+    pub(super) requested_present_mode: u64,
+    pub(super) supported_present_modes: u64,
+    pub(super) present_mode_fallback_reason: u64,
+    pub(super) acquired_image_index: u64,
+    pub(super) swapchain_generation: u64,
+    pub(super) swapchain_image_count: u64,
+    pub(super) surface_min_image_count: u64,
+    pub(super) surface_max_image_count: u64,
+    pub(super) configured_frames_in_flight: u64,
+    pub(super) images_in_flight: u64,
+    pub(super) available_frame_slots: u64,
+}
+
+pub(crate) trait SurfaceOwner {
+    fn required_instance_extensions(&self) -> Vec<&'static CStr>;
+    fn create_surface(
+        &self,
+        entry: &ash::Entry,
+        instance: &ash::Instance,
+    ) -> GalResult<vk::SurfaceKHR>;
+    fn stable_window_id(&self) -> u64;
+}
+
+pub(super) struct VulkanSwapchain {
+    context: Arc<VulkanContext>,
+    loader: ash::khr::swapchain::Device,
+    desc: FrameSurfaceDesc,
+    swapchain: vk::SwapchainKHR,
+    format: vk::Format,
+    color_format: TextureFormat,
+    extent: vk::Extent2D,
+    images: Vec<vk::Image>,
+    image_layouts: Vec<vk::ImageLayout>,
+    image_views: Vec<vk::ImageView>,
+    acquired: Vec<AcquiredImage>,
+    next_frame: u64,
+    stable_window_id: u64,
+    recreate_count: u64,
+    present_mode: vk::PresentModeKHR,
+    metrics: SwapchainRuntimeMetrics,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AcquiredImage {
+    frame: FrameId,
+    image_index: u32,
+    render_target: FrameRenderTargetId,
+    suboptimal: bool,
+    acquire_semaphore: Option<vk::Semaphore>,
+}
+
+impl VulkanSwapchain {
+    pub(super) fn new(
+        context: Arc<VulkanContext>,
+        desc: FrameSurfaceDesc,
+        stable_window_id: u64,
+    ) -> GalResult<Self> {
+        let loader =
+            context.swapchain_loader.as_ref().cloned().ok_or_else(|| {
+                GalError::backend("Vulkan context was not created for presentation")
+            })?;
+        let mut owner = Self {
+            context,
+            loader,
+            desc,
+            swapchain: vk::SwapchainKHR::null(),
+            format: vk::Format::UNDEFINED,
+            color_format: TextureFormat::Rgba8Unorm,
+            extent: vk::Extent2D {
+                width: 0,
+                height: 0,
+            },
+            images: Vec::new(),
+            image_layouts: Vec::new(),
+            image_views: Vec::new(),
+            acquired: Vec::new(),
+            next_frame: 0,
+            stable_window_id,
+            recreate_count: 0,
+            present_mode: vk::PresentModeKHR::FIFO,
+            metrics: SwapchainRuntimeMetrics::default(),
+        };
+        owner.recreate(vk::SwapchainKHR::null())?;
+        Ok(owner)
+    }
+
+    pub(super) fn configure(&mut self, desc: &FrameSurfaceDesc) -> GalResult<()> {
+        self.desc = desc.clone();
+        self.recreate(self.swapchain)
+    }
+
+    pub(super) fn acquire(
+        &mut self,
+        desc: &FrameAcquireDesc,
+        acquire_semaphore: vk::Semaphore,
+    ) -> GalResult<AcquiredFrame> {
+        let _zone = trace::Zone::new("vulkan.swapchain.acquire");
+        let acquire_started = std::time::Instant::now();
+        self.next_frame += 1;
+        let frame = FrameId(self.next_frame);
+        if desc.expected_extent.width == 0 || desc.expected_extent.height == 0 {
+            self.metrics.acquire_nanos = self
+                .metrics
+                .acquire_nanos
+                .saturating_add(crate::metrics::elapsed_nanos_u64(acquire_started));
+            return Ok(AcquiredFrame {
+                frame,
+                correlation_id: desc.correlation_id,
+                status: FrameAcquireStatus::Minimized,
+                render_target: FrameRenderTargetId(0),
+                extent: desc.expected_extent,
+                color_format: self.desc.color_format,
+            });
+        }
+        // A frame is recorded for the window size Java saw when it built the
+        // frame. On X11 a resize (for example the startup switch to
+        // fullscreen) need not make acquisition fail with OUT_OF_DATE, and a
+        // recreation sized from the surface can land on an intermediate size
+        // while the window manager is still resizing. Never hand out an image
+        // of another size: skip the frame as resized and recreate once the
+        // surface has actually changed.
+        let expected = vk::Extent2D {
+            width: desc.expected_extent.width,
+            height: desc.expected_extent.height,
+        };
+        if expected != self.extent {
+            self.desc.extent = desc.expected_extent;
+            let action =
+                acquire_extent_action(expected, self.extent, self.current_surface_extent()?);
+            if action == AcquireExtentAction::Recreate && self.acquired.is_empty() {
+                self.recreate(self.swapchain)?;
+                self.metrics.swapchain_generation = self.recreate_count;
+            }
+            self.metrics.acquire_nanos = self
+                .metrics
+                .acquire_nanos
+                .saturating_add(crate::metrics::elapsed_nanos_u64(acquire_started));
+            return Ok(AcquiredFrame {
+                frame,
+                correlation_id: desc.correlation_id,
+                status: FrameAcquireStatus::Resized,
+                render_target: FrameRenderTargetId(0),
+                extent: Extent3d {
+                    width: self.extent.width,
+                    height: self.extent.height,
+                    depth: 1,
+                },
+                color_format: self.color_format,
+            });
+        }
+        let configured_slots = usize::try_from(self.desc.max_frames_in_flight)
+            .map_err(|_| GalError::backend("configured Vulkan frame-slot count exceeds usize"))?;
+        if !frame_slot_available(self.acquired.len(), configured_slots) {
+            return Err(GalError::submission(
+                crate::StatusCode::InFlight,
+                format!(
+                    "Vulkan acquire exceeded configured frame-slot budget ({configured_slots})"
+                ),
+            ));
+        }
+        let acquire_result = unsafe {
+            self.loader.acquire_next_image(
+                self.swapchain,
+                1_000_000_000,
+                acquire_semaphore,
+                vk::Fence::null(),
+            )
+        };
+        let (image_index, suboptimal) = match acquire_result {
+            Ok(result) => result,
+            Err(error) => {
+                if error == vk::Result::ERROR_OUT_OF_DATE_KHR {
+                    self.desc.extent = desc.expected_extent;
+                    self.recreate(self.swapchain)?;
+                    self.metrics.acquire_nanos = self
+                        .metrics
+                        .acquire_nanos
+                        .saturating_add(crate::metrics::elapsed_nanos_u64(acquire_started));
+                    self.metrics.swapchain_generation = self.recreate_count;
+                    return Ok(AcquiredFrame {
+                        frame,
+                        correlation_id: desc.correlation_id,
+                        status: FrameAcquireStatus::Resized,
+                        render_target: FrameRenderTargetId(0),
+                        extent: Extent3d {
+                            width: self.extent.width,
+                            height: self.extent.height,
+                            depth: 1,
+                        },
+                        color_format: self.color_format,
+                    });
+                }
+                return Err(GalError::backend(format!(
+                    "Vulkan swapchain acquire failed: {error:?}"
+                )));
+            }
+        };
+        let render_target = self.render_target_for_image(image_index);
+        self.acquired.push(AcquiredImage {
+            frame,
+            image_index,
+            render_target,
+            suboptimal,
+            acquire_semaphore: Some(acquire_semaphore),
+        });
+        self.metrics.acquire_nanos = self
+            .metrics
+            .acquire_nanos
+            .saturating_add(crate::metrics::elapsed_nanos_u64(acquire_started));
+        self.metrics.acquired_image_index = u64::from(image_index);
+        self.metrics.swapchain_generation = self.recreate_count;
+        self.metrics.images_in_flight = self.acquired.len() as u64;
+        self.metrics.available_frame_slots =
+            self.images.len().saturating_sub(self.acquired.len()) as u64;
+        trace::message(&format!(
+            "gal.frame.acquire backend=vulkan correlation={} frame={} image={} target={} generation={} window={}",
+            desc.correlation_id.0,
+            frame.0,
+            image_index,
+            render_target.0,
+            self.recreate_count,
+            self.stable_window_id
+        ));
+        Ok(AcquiredFrame {
+            frame,
+            correlation_id: desc.correlation_id,
+            status: if suboptimal {
+                FrameAcquireStatus::Suboptimal
+            } else {
+                FrameAcquireStatus::Ready
+            },
+            render_target,
+            extent: Extent3d {
+                width: self.extent.width,
+                height: self.extent.height,
+                depth: 1,
+            },
+            color_format: self.color_format,
+        })
+    }
+
+    pub(super) fn resize(&mut self, desc: &FrameResizeDesc) -> GalResult<FrameResizeResult> {
+        self.desc.extent = desc.extent;
+        if desc.extent.width == 0 || desc.extent.height == 0 {
+            return Ok(FrameResizeResult {
+                status: FrameAcquireStatus::Minimized,
+                extent: desc.extent,
+            });
+        }
+        self.recreate(self.swapchain)?;
+        Ok(FrameResizeResult {
+            status: FrameAcquireStatus::Resized,
+            extent: self.desc.extent,
+        })
+    }
+
+    pub(super) fn acquired_image_index(&self, frame: FrameId) -> GalResult<u32> {
+        self.acquired
+            .iter()
+            .find(|acquired| acquired.frame == frame)
+            .map(|acquired| acquired.image_index)
+            .ok_or_else(|| {
+                GalError::submission(
+                    crate::StatusCode::InvalidArgument,
+                    "Vulkan frame was not acquired before present",
+                )
+            })
+    }
+
+    pub(super) fn take_acquire_semaphore_for_image(
+        &mut self,
+        image_index: u32,
+    ) -> Option<vk::Semaphore> {
+        self.acquired
+            .iter_mut()
+            .find(|acquired| acquired.image_index == image_index)
+            .and_then(|acquired| acquired.acquire_semaphore.take())
+    }
+
+    pub(super) fn acquire_semaphore_for_image(&self, image_index: u32) -> Option<vk::Semaphore> {
+        self.acquired
+            .iter()
+            .find(|acquired| acquired.image_index == image_index)
+            .and_then(|acquired| acquired.acquire_semaphore)
+    }
+
+    pub(super) fn acquire_semaphore_for_frame(&self, frame: FrameId) -> Option<vk::Semaphore> {
+        self.acquired
+            .iter()
+            .find(|acquired| acquired.frame == frame)
+            .and_then(|acquired| acquired.acquire_semaphore)
+    }
+
+    pub(super) fn present(
+        &mut self,
+        desc: &PresentFrameDesc,
+        wait_semaphore: Option<vk::Semaphore>,
+    ) -> GalResult<PresentedFrame> {
+        let _zone = trace::Zone::new("vulkan.swapchain.present");
+        let present_started = std::time::Instant::now();
+        let Some(position) = self
+            .acquired
+            .iter()
+            .position(|acquired| acquired.frame == desc.frame)
+        else {
+            return Err(GalError::submission(
+                crate::StatusCode::InvalidArgument,
+                "Vulkan frame was not acquired before present",
+            ));
+        };
+        // Keep the acquisition tracked until synchronization and queue presentation
+        // have succeeded.  If either operation fails, callers can still retry or
+        // explicitly tear down the surface without silently losing the in-flight image.
+        let acquired = self.acquired[position];
+        let swapchains = [self.swapchain];
+        let image_indices = [acquired.image_index];
+        let wait_semaphores = wait_semaphore.into_iter().collect::<Vec<_>>();
+        let mut present_info = vk::PresentInfoKHR::default()
+            .swapchains(&swapchains)
+            .image_indices(&image_indices);
+        if !wait_semaphores.is_empty() {
+            present_info = present_info.wait_semaphores(&wait_semaphores);
+        } else {
+            // Older/non-frame submissions and test-only clear frames have no
+            // render-finished semaphore. Preserve their explicit timeline
+            // contract instead of presenting an image before its writes land.
+            let wait_started = std::time::Instant::now();
+            wait_timeline(&self.context, desc.wait_for)?;
+            self.metrics.present_wait_nanos = self
+                .metrics
+                .present_wait_nanos
+                .saturating_add(crate::metrics::elapsed_nanos_u64(wait_started));
+        }
+        let status = match unsafe { self.loader.queue_present(self.context.queue, &present_info) } {
+            Ok(suboptimal) => {
+                if suboptimal || acquired.suboptimal {
+                    FramePresentStatus::Suboptimal
+                } else {
+                    FramePresentStatus::Presented
+                }
+            }
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => FramePresentStatus::OutOfDate,
+            Err(error) => {
+                return Err(GalError::backend(format!(
+                    "Vulkan swapchain present failed: {error:?}"
+                )));
+            }
+        };
+        self.acquired.remove(position);
+        if let Some(layout) = self.image_layouts.get_mut(acquired.image_index as usize) {
+            *layout = vk::ImageLayout::PRESENT_SRC_KHR;
+        }
+        self.metrics.present_nanos = self
+            .metrics
+            .present_nanos
+            .saturating_add(crate::metrics::elapsed_nanos_u64(present_started));
+        self.metrics.images_in_flight = self.acquired.len() as u64;
+        self.metrics.available_frame_slots =
+            self.images.len().saturating_sub(self.acquired.len()) as u64;
+        trace::message(&format!(
+            "gal.frame.present backend=vulkan correlation={} frame={} image={} submission={} status={:?} window={}",
+            desc.correlation_id.0,
+            desc.frame.0,
+            acquired.image_index,
+            desc.wait_for.0,
+            status,
+            self.stable_window_id
+        ));
+        Ok(PresentedFrame {
+            frame: desc.frame,
+            correlation_id: desc.correlation_id,
+            render_target: acquired.render_target,
+            status,
+            completed_submission: desc.wait_for,
+        })
+    }
+
+    /// Abandon an acquired image after a failed frame transaction. Vulkan does
+    /// not provide a per-image release operation, so recreate the swapchain
+    /// only when this is the sole acquired image and wait for device quiescence
+    /// before retiring the old swapchain.
+    pub(super) fn cancel(&mut self, frame: FrameId) -> GalResult<()> {
+        let Some(position) = self
+            .acquired
+            .iter()
+            .position(|acquired| acquired.frame == frame)
+        else {
+            return Err(GalError::submission(
+                crate::StatusCode::InvalidArgument,
+                "Vulkan frame was not acquired before cancel",
+            ));
+        };
+        if self.acquired.len() != 1 || position != 0 {
+            return Err(GalError::submission(
+                crate::StatusCode::InFlight,
+                "cannot cancel one Vulkan frame while other swapchain images are acquired",
+            ));
+        }
+        unsafe {
+            self.context.device.device_wait_idle().map_err(|error| {
+                GalError::backend(format!("Vulkan cancel wait failed: {error:?}"))
+            })?;
+        }
+        self.recreate(self.swapchain)
+    }
+
+    pub(super) fn shutdown(&mut self) {
+        self.destroy_swapchain_objects();
+    }
+
+    pub(super) fn stable_window_id(&self) -> u64 {
+        self.stable_window_id
+    }
+
+    pub(super) fn metrics(&self) -> SwapchainRuntimeMetrics {
+        self.metrics
+    }
+
+    pub(super) fn frame_target_object(
+        &self,
+        desc: &crate::resources::FrameTargetDesc,
+        token: BackendToken,
+    ) -> GalResult<FrameTargetObject> {
+        self.frame_target_object_for_render_target(
+            desc.render_target,
+            desc.extent,
+            desc.color_format,
+            token,
+        )
+    }
+
+    pub(super) fn frame_target_object_for_render_target(
+        &self,
+        render_target: FrameRenderTargetId,
+        extent: Extent3d,
+        color_format: TextureFormat,
+        token: BackendToken,
+    ) -> GalResult<FrameTargetObject> {
+        let acquired = self
+            .acquired
+            .iter()
+            .find(|acquired| acquired.render_target == render_target)
+            .ok_or_else(|| {
+                GalError::backend(
+                    "frame target was used without the matching acquired swapchain image",
+                )
+            })?;
+        let index = acquired.image_index as usize;
+        let image = *self
+            .images
+            .get(index)
+            .ok_or_else(|| GalError::backend("acquired swapchain image index is out of range"))?;
+        let image_view = *self.image_views.get(index).ok_or_else(|| {
+            GalError::backend("acquired swapchain image view index is out of range")
+        })?;
+        let image_layout = *self.image_layouts.get(index).ok_or_else(|| {
+            GalError::backend("acquired swapchain image layout index is out of range")
+        })?;
+        Ok(FrameTargetObject {
+            token,
+            frame_id: acquired.frame.0,
+            render_target,
+            extent,
+            color_format,
+            image_index: acquired.image_index,
+            image,
+            image_view,
+            image_layout,
+        })
+    }
+
+    /// The extent a recreation would choose for the current requested size.
+    fn current_surface_extent(&self) -> GalResult<vk::Extent2D> {
+        let surface = self
+            .context
+            .surface
+            .ok_or_else(|| GalError::backend("Vulkan presentation surface is missing"))?;
+        let surface_loader = self
+            .context
+            .surface_loader
+            .as_ref()
+            .ok_or_else(|| GalError::backend("Vulkan surface loader is missing"))?;
+        let capabilities = unsafe {
+            surface_loader
+                .get_physical_device_surface_capabilities(self.context.physical_device, surface)
+        }
+        .map_err(|error| {
+            GalError::backend(format!(
+                "failed to query Vulkan surface capabilities: {error:?}"
+            ))
+        })?;
+        Ok(choose_extent(capabilities, self.desc.extent))
+    }
+
+    fn render_target_for_image(&self, image_index: u32) -> FrameRenderTargetId {
+        FrameRenderTargetId((self.recreate_count << 32) | (u64::from(image_index) + 1))
+    }
+
+    fn recreate(&mut self, old_swapchain: vk::SwapchainKHR) -> GalResult<()> {
+        let _zone = trace::Zone::new("vulkan.swapchain.recreate");
+        if old_swapchain != vk::SwapchainKHR::null() {
+            // Acquisition can request recreation independently of explicit resize.
+            // Both graphics and presentation must release the old image views.
+            unsafe { self.context.device.device_wait_idle() }.map_err(|error| {
+                GalError::backend(format!("swapchain recreation wait failed: {error:?}"))
+            })?;
+        }
+        if self.desc.extent.width == 0 || self.desc.extent.height == 0 {
+            return Ok(());
+        }
+        let surface = self
+            .context
+            .surface
+            .ok_or_else(|| GalError::backend("Vulkan presentation surface is missing"))?;
+        let surface_loader = self
+            .context
+            .surface_loader
+            .as_ref()
+            .ok_or_else(|| GalError::backend("Vulkan surface loader is missing"))?;
+        let capabilities = unsafe {
+            surface_loader
+                .get_physical_device_surface_capabilities(self.context.physical_device, surface)
+        }
+        .map_err(|error| {
+            GalError::backend(format!(
+                "failed to query Vulkan surface capabilities: {error:?}"
+            ))
+        })?;
+        let formats = unsafe {
+            surface_loader
+                .get_physical_device_surface_formats(self.context.physical_device, surface)
+        }
+        .map_err(|error| {
+            GalError::backend(format!("failed to query Vulkan surface formats: {error:?}"))
+        })?;
+        let present_modes = unsafe {
+            surface_loader
+                .get_physical_device_surface_present_modes(self.context.physical_device, surface)
+        }
+        .map_err(|error| {
+            GalError::backend(format!("failed to query Vulkan present modes: {error:?}"))
+        })?;
+        let (format, color_format) = choose_format(&formats, self.desc.color_format);
+        let extent = choose_extent(capabilities, self.desc.extent);
+        let present_policy = choose_present_mode(&present_modes, self.desc.present_mode);
+        let present_mode = present_policy.selected;
+        let image_count = choose_image_count(capabilities, self.desc.max_frames_in_flight);
+        // Fabulous's explicit handoff snapshots the acquired image into a
+        // private Rust-owned attachment before it composes translucent work.
+        // That makes the acquired image a real copy source; declare the
+        // capability on the swapchain itself instead of relying on an
+        // invalid layout transition succeeding on a permissive driver.
+        let required_image_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT
+            | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::TRANSFER_SRC;
+        if !capabilities
+            .supported_usage_flags
+            .contains(required_image_usage)
+        {
+            return Err(GalError::unsupported_feature(format!(
+                "presentation surface cannot support Rust VulkanicGAL's explicit acquired-frame snapshot: required=0x{:x}, supported=0x{:x}",
+                required_image_usage.as_raw(),
+                capabilities.supported_usage_flags.as_raw(),
+            )));
+        }
+        let create = vk::SwapchainCreateInfoKHR::default()
+            .surface(surface)
+            .min_image_count(image_count)
+            .image_format(format.format)
+            .image_color_space(format.color_space)
+            .image_extent(extent)
+            .image_array_layers(1)
+            .image_usage(required_image_usage)
+            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .pre_transform(capabilities.current_transform)
+            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(present_mode)
+            .clipped(true)
+            .old_swapchain(old_swapchain);
+        let swapchain =
+            unsafe { self.loader.create_swapchain(&create, None) }.map_err(|error| {
+                GalError::backend(format!("failed to create Vulkan swapchain: {error:?}"))
+            })?;
+        self.destroy_image_views();
+        if old_swapchain != vk::SwapchainKHR::null() {
+            unsafe { self.loader.destroy_swapchain(old_swapchain, None) };
+        }
+        let images = unsafe { self.loader.get_swapchain_images(swapchain) }.map_err(|error| {
+            GalError::backend(format!(
+                "failed to enumerate Vulkan swapchain images: {error:?}"
+            ))
+        })?;
+        let image_views = images
+            .iter()
+            .enumerate()
+            .map(|(index, image)| {
+                create_image_view(&self.context, *image, color_format, index as u32)
+            })
+            .collect::<GalResult<Vec<_>>>()?;
+        self.swapchain = swapchain;
+        self.format = format.format;
+        self.color_format = color_format;
+        self.extent = extent;
+        self.present_mode = present_mode;
+        self.images = images;
+        self.image_layouts = vec![vk::ImageLayout::UNDEFINED; self.images.len()];
+        self.image_views = image_views;
+        self.acquired.clear();
+        self.recreate_count += 1;
+        self.metrics.present_mode = present_mode.as_raw() as u64;
+        self.metrics.requested_present_mode = self.desc.present_mode as u64;
+        self.metrics.supported_present_modes = present_modes_mask(&present_modes);
+        self.metrics.present_mode_fallback_reason = present_policy.reason as u64;
+        self.metrics.swapchain_generation = self.recreate_count;
+        self.metrics.swapchain_image_count = self.images.len() as u64;
+        self.metrics.surface_min_image_count = u64::from(capabilities.min_image_count);
+        self.metrics.surface_max_image_count = u64::from(capabilities.max_image_count);
+        self.metrics.configured_frames_in_flight = u64::from(self.desc.max_frames_in_flight);
+        self.metrics.images_in_flight = 0;
+        self.metrics.available_frame_slots = self.images.len() as u64;
+        trace::message(&format!(
+            "gal.swapchain.recreate backend=vulkan count={} extent={}x{} images={} min_images={} max_images={} requested_present={} supported_present_mask=0x{:x} selected_present={} fallback_reason={} format={} window={}",
+            self.recreate_count,
+            self.extent.width,
+            self.extent.height,
+            self.images.len(),
+            capabilities.min_image_count,
+            capabilities.max_image_count,
+            self.desc.present_mode as u32,
+            self.metrics.supported_present_modes,
+            self.present_mode.as_raw(),
+            present_policy.reason as u32,
+            self.format.as_raw(),
+            self.stable_window_id
+        ));
+        Ok(())
+    }
+
+    fn destroy_swapchain_objects(&mut self) {
+        self.destroy_image_views();
+        if self.swapchain != vk::SwapchainKHR::null() {
+            unsafe { self.loader.destroy_swapchain(self.swapchain, None) };
+            self.swapchain = vk::SwapchainKHR::null();
+        }
+        self.acquired.clear();
+    }
+
+    fn destroy_image_views(&mut self) {
+        for view in self.image_views.drain(..) {
+            unsafe { self.context.device.destroy_image_view(view, None) };
+        }
+        self.images.clear();
+        self.image_layouts.clear();
+    }
+}
+
+#[cfg(test)]
+impl VulkanSwapchain {
+    pub(super) fn clear_acquired_for_test(
+        &mut self,
+        frame: FrameId,
+        color: [f32; 4],
+    ) -> GalResult<()> {
+        let Some(acquired) = self
+            .acquired
+            .iter()
+            .find(|acquired| acquired.frame == frame)
+        else {
+            return Err(GalError::backend("test frame was not acquired"));
+        };
+        let image = *self
+            .images
+            .get(acquired.image_index as usize)
+            .ok_or_else(|| GalError::backend("test acquired image index was out of range"))?;
+        let current_layout = *self
+            .image_layouts
+            .get(acquired.image_index as usize)
+            .ok_or_else(|| GalError::backend("test acquired image layout was out of range"))?;
+        let src_stage = if current_layout == vk::ImageLayout::PRESENT_SRC_KHR {
+            vk::PipelineStageFlags2::BOTTOM_OF_PIPE
+        } else {
+            vk::PipelineStageFlags2::TOP_OF_PIPE
+        };
+        let allocate = vk::CommandBufferAllocateInfo::default()
+            .command_pool(self.context.command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        let command_buffer = unsafe { self.context.device.allocate_command_buffers(&allocate) }
+            .map_err(|error| {
+                GalError::backend(format!(
+                    "failed to allocate test present command buffer: {error:?}"
+                ))
+            })?
+            .into_iter()
+            .next()
+            .ok_or_else(|| GalError::backend("Vulkan returned no test command buffer"))?;
+        let begin = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        unsafe {
+            self.context
+                .device
+                .begin_command_buffer(command_buffer, &begin)
+        }
+        .map_err(|error| {
+            GalError::backend(format!("failed to begin test present command: {error:?}"))
+        })?;
+        let range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        let to_transfer = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(src_stage)
+            .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .old_layout(current_layout)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .image(image)
+            .subresource_range(range);
+        unsafe {
+            self.context.device.cmd_pipeline_barrier2(
+                command_buffer,
+                &vk::DependencyInfo::default()
+                    .image_memory_barriers(std::slice::from_ref(&to_transfer)),
+            );
+            self.context.device.cmd_clear_color_image(
+                command_buffer,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &vk::ClearColorValue { float32: color },
+                &[range],
+            );
+        }
+        let to_present = vk::ImageMemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .image(image)
+            .subresource_range(range);
+        unsafe {
+            self.context.device.cmd_pipeline_barrier2(
+                command_buffer,
+                &vk::DependencyInfo::default()
+                    .image_memory_barriers(std::slice::from_ref(&to_present)),
+            );
+            self.context
+                .device
+                .end_command_buffer(command_buffer)
+                .map_err(|error| {
+                    GalError::backend(format!("failed to end test present command: {error:?}"))
+                })?;
+        }
+        let fence = unsafe {
+            self.context
+                .device
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+        }
+        .map_err(|error| {
+            GalError::backend(format!("failed to create test present fence: {error:?}"))
+        })?;
+        let command_buffer_info =
+            [vk::CommandBufferSubmitInfo::default().command_buffer(command_buffer)];
+        let submit = vk::SubmitInfo2::default().command_buffer_infos(&command_buffer_info);
+        let submit_result = unsafe {
+            self.context
+                .device
+                .queue_submit2(self.context.queue, &[submit], fence)
+        };
+        if let Err(error) = submit_result {
+            unsafe {
+                self.context.device.destroy_fence(fence, None);
+                self.context
+                    .device
+                    .free_command_buffers(self.context.command_pool, &[command_buffer]);
+            }
+            return Err(GalError::backend(format!(
+                "test present queue submit failed: {error:?}"
+            )));
+        }
+        let wait_result = unsafe {
+            self.context
+                .device
+                .wait_for_fences(&[fence], true, 1_000_000_000)
+        };
+        unsafe {
+            self.context.device.destroy_fence(fence, None);
+            self.context
+                .device
+                .free_command_buffers(self.context.command_pool, &[command_buffer]);
+        }
+        wait_result.map_err(|error| {
+            GalError::backend(format!("test present fence wait failed: {error:?}"))
+        })?;
+        if let Some(layout) = self.image_layouts.get_mut(acquired.image_index as usize) {
+            *layout = vk::ImageLayout::PRESENT_SRC_KHR;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for VulkanSwapchain {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn create_image_view(
+    context: &VulkanContext,
+    image: vk::Image,
+    format: TextureFormat,
+    index: u32,
+) -> GalResult<vk::ImageView> {
+    let view_info = vk::ImageViewCreateInfo::default()
+        .image(image)
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(texture_format(format))
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: aspect_for_format(format),
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+    let view = unsafe { context.device.create_image_view(&view_info, None) }.map_err(|error| {
+        GalError::backend(format!(
+            "failed to create Vulkan swapchain image view #{index}: {error:?}"
+        ))
+    })?;
+    context.set_object_name(view, &format!("gal.swapchain.image-view.{index}"));
+    Ok(view)
+}
+
+fn choose_format(
+    formats: &[vk::SurfaceFormatKHR],
+    requested: TextureFormat,
+) -> (vk::SurfaceFormatKHR, TextureFormat) {
+    let wanted = texture_format(requested);
+    formats
+        .iter()
+        .copied()
+        .find(|format| format.format == wanted)
+        .map(|format| (format, requested))
+        .or_else(|| {
+            formats.iter().copied().find_map(|format| {
+                if format.format == vk::Format::B8G8R8A8_UNORM {
+                    Some((format, TextureFormat::Bgra8Unorm))
+                } else if format.format == vk::Format::R8G8B8A8_UNORM {
+                    Some((format, TextureFormat::Rgba8Unorm))
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or((
+            vk::SurfaceFormatKHR {
+                format: wanted,
+                color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
+            },
+            requested,
+        ))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AcquireExtentAction {
+    /// The surface has a new size: recreate the swapchain from it.
+    Recreate,
+    /// The surface still reports the swapchain's size (the window manager has
+    /// not finished resizing): skip the frame and check again next frame.
+    Wait,
+}
+
+/// What to do when a frame expects `expected` but the swapchain images are
+/// `swapchain`, given the extent a recreation would choose now.
+fn acquire_extent_action(
+    expected: vk::Extent2D,
+    swapchain: vk::Extent2D,
+    surface: vk::Extent2D,
+) -> AcquireExtentAction {
+    debug_assert!(expected != swapchain);
+    if surface != swapchain {
+        AcquireExtentAction::Recreate
+    } else {
+        AcquireExtentAction::Wait
+    }
+}
+
+fn choose_extent(capabilities: vk::SurfaceCapabilitiesKHR, requested: Extent3d) -> vk::Extent2D {
+    if capabilities.current_extent.width != u32::MAX {
+        return capabilities.current_extent;
+    }
+    vk::Extent2D {
+        width: requested.width.clamp(
+            capabilities.min_image_extent.width,
+            capabilities.max_image_extent.width,
+        ),
+        height: requested.height.clamp(
+            capabilities.min_image_extent.height,
+            capabilities.max_image_extent.height,
+        ),
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct PresentModeSelection {
+    selected: vk::PresentModeKHR,
+    reason: PresentModeFallbackReason,
+}
+
+impl std::fmt::Debug for PresentModeSelection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PresentModeSelection")
+            .field("selected_raw", &self.selected.as_raw())
+            .field("reason", &self.reason)
+            .finish()
+    }
+}
+
+#[repr(u64)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PresentModeFallbackReason {
+    RequestedSupported = 1,
+    AutoVsyncFifo = 2,
+    AutoNoVsyncMailbox = 3,
+    AutoNoVsyncImmediate = 4,
+    FallbackFifo = 5,
+    FallbackImmediate = 6,
+    FallbackFifoRelaxed = 7,
+}
+
+fn choose_present_mode(
+    available: &[vk::PresentModeKHR],
+    requested: PresentMode,
+) -> PresentModeSelection {
+    let explicit = match requested {
+        PresentMode::Immediate => Some(vk::PresentModeKHR::IMMEDIATE),
+        PresentMode::Mailbox => Some(vk::PresentModeKHR::MAILBOX),
+        PresentMode::Fifo => Some(vk::PresentModeKHR::FIFO),
+        PresentMode::FifoRelaxed => Some(vk::PresentModeKHR::FIFO_RELAXED),
+        PresentMode::AutoVsync | PresentMode::AutoNoVsync => None,
+    };
+    if let Some(wanted) = explicit {
+        if available.contains(&wanted) {
+            return PresentModeSelection {
+                selected: wanted,
+                reason: PresentModeFallbackReason::RequestedSupported,
+            };
+        }
+        return fallback_present_mode(available);
+    }
+    match requested {
+        PresentMode::AutoVsync => {
+            if available.contains(&vk::PresentModeKHR::FIFO) {
+                PresentModeSelection {
+                    selected: vk::PresentModeKHR::FIFO,
+                    reason: PresentModeFallbackReason::AutoVsyncFifo,
+                }
+            } else {
+                fallback_present_mode(available)
+            }
+        }
+        PresentMode::AutoNoVsync => {
+            if available.contains(&vk::PresentModeKHR::MAILBOX) {
+                PresentModeSelection {
+                    selected: vk::PresentModeKHR::MAILBOX,
+                    reason: PresentModeFallbackReason::AutoNoVsyncMailbox,
+                }
+            } else if available.contains(&vk::PresentModeKHR::IMMEDIATE) {
+                PresentModeSelection {
+                    selected: vk::PresentModeKHR::IMMEDIATE,
+                    reason: PresentModeFallbackReason::AutoNoVsyncImmediate,
+                }
+            } else {
+                fallback_present_mode(available)
+            }
+        }
+        _ => fallback_present_mode(available),
+    }
+}
+
+fn fallback_present_mode(available: &[vk::PresentModeKHR]) -> PresentModeSelection {
+    if available.contains(&vk::PresentModeKHR::FIFO) {
+        PresentModeSelection {
+            selected: vk::PresentModeKHR::FIFO,
+            reason: PresentModeFallbackReason::FallbackFifo,
+        }
+    } else if available.contains(&vk::PresentModeKHR::IMMEDIATE) {
+        PresentModeSelection {
+            selected: vk::PresentModeKHR::IMMEDIATE,
+            reason: PresentModeFallbackReason::FallbackImmediate,
+        }
+    } else if available.contains(&vk::PresentModeKHR::FIFO_RELAXED) {
+        PresentModeSelection {
+            selected: vk::PresentModeKHR::FIFO_RELAXED,
+            reason: PresentModeFallbackReason::FallbackFifoRelaxed,
+        }
+    } else {
+        PresentModeSelection {
+            selected: vk::PresentModeKHR::FIFO,
+            reason: PresentModeFallbackReason::FallbackFifo,
+        }
+    }
+}
+
+fn present_modes_mask(available: &[vk::PresentModeKHR]) -> u64 {
+    available.iter().fold(0_u64, |mask, mode| {
+        let bit = match *mode {
+            vk::PresentModeKHR::IMMEDIATE => 1_u64 << 0,
+            vk::PresentModeKHR::MAILBOX => 1_u64 << 1,
+            vk::PresentModeKHR::FIFO => 1_u64 << 2,
+            vk::PresentModeKHR::FIFO_RELAXED => 1_u64 << 3,
+            _ => 1_u64 << 60,
+        };
+        mask | bit
+    })
+}
+
+fn choose_image_count(capabilities: vk::SurfaceCapabilitiesKHR, requested: u32) -> u32 {
+    let minimum = capabilities.min_image_count.max(2);
+    let desired = minimum.max(requested);
+    if capabilities.max_image_count == 0 {
+        desired
+    } else {
+        desired.min(capabilities.max_image_count)
+    }
+}
+
+fn wait_timeline(context: &VulkanContext, id: SubmissionId) -> GalResult<()> {
+    let semaphores = [context.timeline];
+    let values = [id.0];
+    let wait_info = vk::SemaphoreWaitInfo::default()
+        .semaphores(&semaphores)
+        .values(&values);
+    unsafe { context.device.wait_semaphores(&wait_info, 30_000_000_000) }
+        .map_err(|error| GalError::backend(format!("Vulkan present wait failed: {error:?}")))
+}
+
+fn frame_slot_available(acquired_slots: usize, configured_slots: usize) -> bool {
+    configured_slots != 0 && acquired_slots < configured_slots
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swapchain_image_count_respects_surface_limits() {
+        let mut capabilities = vk::SurfaceCapabilitiesKHR {
+            min_image_count: 2,
+            max_image_count: 3,
+            ..Default::default()
+        };
+        assert_eq!(choose_image_count(capabilities, 2), 2);
+        assert_eq!(choose_image_count(capabilities, 8), 3);
+        capabilities.max_image_count = 0;
+        assert_eq!(choose_image_count(capabilities, 5), 5);
+    }
+
+    #[test]
+    fn mismatched_frame_extent_recreates_only_after_the_surface_changes() {
+        let extent = |width, height| vk::Extent2D { width, height };
+        // Startup fullscreen: frames now expect 1920x1080 but the swapchain was
+        // built at the windowed size. Once the surface reports a new size,
+        // recreate; while it still matches the old images, skip and wait.
+        assert_eq!(
+            acquire_extent_action(extent(1920, 1080), extent(854, 480), extent(1920, 1080)),
+            AcquireExtentAction::Recreate
+        );
+        assert_eq!(
+            acquire_extent_action(extent(1920, 1080), extent(854, 480), extent(854, 480)),
+            AcquireExtentAction::Wait
+        );
+        // A recreation that landed on an intermediate size is redone.
+        assert_eq!(
+            acquire_extent_action(extent(1920, 1080), extent(1600, 900), extent(1920, 1080)),
+            AcquireExtentAction::Recreate
+        );
+    }
+
+    #[test]
+    fn acquire_slot_budget_is_strictly_bounded() {
+        assert!(frame_slot_available(0, 2));
+        assert!(frame_slot_available(1, 2));
+        assert!(!frame_slot_available(2, 2));
+        assert!(!frame_slot_available(1, 0));
+    }
+
+    #[test]
+    fn swapchain_present_mode_falls_back_to_fifo() {
+        assert_eq!(
+            choose_present_mode(&[vk::PresentModeKHR::FIFO], PresentMode::Mailbox),
+            PresentModeSelection {
+                selected: vk::PresentModeKHR::FIFO,
+                reason: PresentModeFallbackReason::FallbackFifo,
+            }
+        );
+        assert_eq!(
+            choose_present_mode(&[vk::PresentModeKHR::MAILBOX], PresentMode::Mailbox),
+            PresentModeSelection {
+                selected: vk::PresentModeKHR::MAILBOX,
+                reason: PresentModeFallbackReason::RequestedSupported,
+            }
+        );
+    }
+
+    #[test]
+    fn swapchain_auto_no_vsync_prefers_mailbox_then_immediate_then_fifo() {
+        assert_eq!(
+            choose_present_mode(
+                &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::MAILBOX],
+                PresentMode::AutoNoVsync
+            ),
+            PresentModeSelection {
+                selected: vk::PresentModeKHR::MAILBOX,
+                reason: PresentModeFallbackReason::AutoNoVsyncMailbox,
+            }
+        );
+        assert_eq!(
+            choose_present_mode(
+                &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::IMMEDIATE],
+                PresentMode::AutoNoVsync
+            ),
+            PresentModeSelection {
+                selected: vk::PresentModeKHR::IMMEDIATE,
+                reason: PresentModeFallbackReason::AutoNoVsyncImmediate,
+            }
+        );
+        assert_eq!(
+            choose_present_mode(&[vk::PresentModeKHR::FIFO], PresentMode::AutoNoVsync),
+            PresentModeSelection {
+                selected: vk::PresentModeKHR::FIFO,
+                reason: PresentModeFallbackReason::FallbackFifo,
+            }
+        );
+    }
+}

@@ -1,0 +1,28 @@
+Quasar Pong 0.1.0
+
+Run app/bin/pong directly. No launcher, terminal input, network, or asset
+extraction is needed. Q closes the game; --help lists controls and CLI options.
+
+Linux: a desktop X11 or Wayland session, standard desktop libraries (including
+xkbcommon), and a Vulkan 1.3 graphics driver/loader are required. VulkanicGAL
+currently needs dynamic rendering, synchronization2 and timeline semaphores.
+The GLSL compiler is statically linked; no shader compiler installation is needed.
+This archive uses the build host's libc baseline. Build on the oldest distribution
+you intend to support. No portable Linux baseline has been certified yet.
+Windows/macOS code paths have not yet been verified. macOS needs a compatible
+Vulkan portability driver (such as MoltenVK); it is not bundled by this tool.
+
+The archive contains only app/. Normal play writes display settings under
+<install>/data/config/display.json, controls under
+<install>/data/config/shared/controls.json, and records under
+<install>/data/save/records.json.
+BASALT_GAME_DIR, BASALT_APP_DIR, BASALT_SAVE_DIR, BASALT_CONFIG_DIR,
+BASALT_SHARED_CONFIG_DIR and BASALT_CACHE_DIR overrides are honored. Missing data
+is initialized; corrupt/unsupported settings, controls and records are left intact.
+--no-save skips loading and writing these files. --bindings FILE.json applies
+an explicit preset for one run; --write-default-bindings and --check-bindings
+export/validate controls without opening a window. Headless runs never load them.
+Explicit CLI record, state and screenshot destinations are written as requested.
+
+No updater is included. The package is prepared for Basalt v1; publishing a
+release and registering the catalog entry are separate, unperformed steps.
