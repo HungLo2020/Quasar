@@ -1,0 +1,24 @@
+[package]
+name = "quasar-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Independent Quasar audio mixing, decoding, scheduling and device backend"
+
+[features]
+default = ["native"]
+native = ["dep:cpal"]
+settings = ["dep:serde", "dep:quasar-storage"]
+
+[dependencies]
+crossbeam-channel = "0.5"
+hound = "3.5"
+lewton = "0.10"
+cpal = { version = "0.15.3", optional = true }
+serde = { workspace = true, optional = true }
+quasar-storage = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

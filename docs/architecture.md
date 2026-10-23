@@ -101,6 +101,40 @@ recorded as a pause input, so it replays without needing OS focus events.
 Headless execution advances directly by tick count. Autoplay is a deterministic
 exercise driver, not proof that a human can complete a particular game.
 
+## Audio
+
+`quasar-audio` is independent of the renderers, window, input, storage, ECS and
+application loop. `Mixer` is a deterministic sample-frame mixer with no device
+dependency; `OfflineRenderer` writes the same mix to PCM/WAV for headless
+verification. The optional CPAL backend owns a device thread and feeds the same
+`Mixer`.
+
+A mixer has a master bus, caller-created named buses, and optional voice groups.
+Buses carry gain/mute/voice limits; groups carry admission limits independent of
+mixing. Voices reference immutable `Arc` clip data, a bounded streaming decoder,
+or a procedural generator. `VoiceHandle` is a stable identity with status and
+position, not a reusable slot.
+
+Scheduling uses an absolute 64-bit mixer frame. Simulation time remains the
+game's clock; a fixed-step game converts its tick to mixer frames and calls
+`play_at`. Mixer frames stop while globally paused. Requested frames in the past
+start on the next rendered frame and increment a late-start diagnostic. Device
+presentation is later than mixer time by backend buffering; no API claims
+sample-accurate speaker output.
+
+The native callback drains a bounded crossbeam command queue with `try_recv` and
+publishes atomics for diagnostics. Streaming decoder threads are started on the
+caller and use bounded queues; they never run in the callback. CPAL streams are
+created and destroyed on one device-owner thread because some backends mark them
+`!Send`; the `AudioEngine` handle is `Send + Sync`. Device loss is reported, and
+`reopen` reconstructs the engine without pretending active voices survived.
+
+WAV and Ogg Vorbis are decoded (`hound`, `lewton`); Ogg can stream. Spatial
+models support listener transforms, inverse/linear/exponential attenuation,
+stereo pan and a game-supplied `SpatialModel`. `AudioSettings` is an optional
+schema-versioned adapter for Basalt-resolved paths; it does not hardcode a game
+directory or own game-specific sound names.
+
 ## Persistence and Basalt
 
 `quasar-storage` resolves each Basalt location from its environment override.

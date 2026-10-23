@@ -11,9 +11,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --locked -p quasar-input -p pong -p quasar-tilemap -p tilequest --no-default-features
+      - run: cargo test --locked -p quasar-input -p pong -p quasar-tilemap -p tilequest -p quasar-audio --no-default-features
+      - run: cargo test --locked -p quasar-audio --no-default-features --features settings --test settings
       - run: python tools/verify_pong.py
       - run: python tools/verify_tilemap.py
+  audio-native:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install ALSA headers on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
+      - run: cargo check --locked -p quasar-audio --all-features
   desktop:
     runs-on: ubuntu-latest
     steps:
@@ -22,17 +35,19 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libxkbcommon-dev libxkbcommon-x11-0 libasound2-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy -p quasar-audio --all-targets --all-features --locked -- -D warnings
+      - run: RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
   gpu-composition:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install software Vulkan and native test dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev mesa-vulkan-drivers xvfb
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libxkbcommon-dev libxkbcommon-x11-0 libasound2-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev mesa-vulkan-drivers xvfb
       - name: Run GPU lifetime and pixel tests
         run: xvfb-run -a cargo test --locked -p quasar-composition -p quasar-render-2d -p tilequest -p vulkanic-gal -p pong --lib -- --include-ignored --test-threads=1
       - name: Exercise native resize and failed-frame recovery
@@ -48,3 +63,6 @@ jobs:
 
       - name: Render a headless software-framebuffer screenshot
         run: xvfb-run -a cargo run --locked -p framebuffer -- --headless --screenshot /tmp/framebuffer.png
+
+      - name: Render deterministic offline audio
+        run: cargo run --locked -p audio-example -- --offline /tmp/audio-example.wav --benchmark /tmp/audio-benchmark.json

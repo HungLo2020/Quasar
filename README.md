@@ -23,6 +23,7 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `quasar-window` | Native windows, desktop identity, fullscreen, DPI, cursor capture, native input adapter | quasar-input |
 | `quasar-core` | Fixed-step timing and shared viewport/scaling math | None |
 | `quasar-storage` | Basalt v1 paths and atomic JSON persistence | None |
+| `quasar-audio` | WAV/Ogg decode, deterministic mixing, buses, spatial audio, scheduling, streaming Ogg, offline WAV and CPAL output | Optional quasar-storage (settings) |
 | `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
 | `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, camera/transforms, clipping, GPU readback, persistent software-framebuffer presentation | VulkanicGAL, quasar-core, quasar-frame |
 | `quasar-tilemap` | Versioned/Tiled maps, indexed tile/object queries, PNG atlases, animation, culled draw lists and CLI | Optional quasar-render-2d |
@@ -30,6 +31,7 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `quasar-frame` | Optional recording transactions, target caching, acquire/present/cancel and completion polling | VulkanicGAL |
 | `examples/tilequest` | Scrolling top-down quest, layered maps, collision, replays and headless/native verification | Selected crates |
 | `examples/framebuffer` | CPU-rendered RGBA8 framebuffer presented through `quasar-render-2d`, with headless screenshots, window exercises and benchmarks | quasar-render-2d |
+| `examples/audio` | Music, overlapping/spatial effects, buses, voice groups, procedural audio, offline WAV output and audio benchmarks | quasar-audio |
 | `examples/pong` | Game rules, 2D draw lists, desktop application, headless CLI and replay | Selected crates |
 
 The desktop example submits a 640×400 logical canvas to `quasar-render-2d`,
@@ -43,14 +45,16 @@ verified architecture; arm64 and riscv64 remain unverified targets.
 
 There is no editor yet. The working interpretation of [requirements](REQUIREMENTS.md)
 is that a future optional editor uses Qt/KDE frameworks; standalone game windows
-use Rust/winit. Audio, controller/analog backends, advanced 3D rendering,
-and an editor are future additions.
+use Rust/winit. Controller/analog backends, advanced 3D rendering,
+and an editor are future additions. Audio is provided by `quasar-audio`; see
+[the audio audit and feature matrix](docs/audio-audit.md) and
+[the implementation report](docs/audio-implementation-report.md).
 
 ## Shared 3D and 2D rendering
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.2`, with workspace package versions set to `0.2.2`.
+release is `v0.2.3`, with workspace package versions set to `0.2.3`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.
@@ -92,6 +96,24 @@ a window, so software framebuffers can be drawn alongside 3D, native 2D, and
 direct VulkanicGAL passes in one submission. See the
 [framebuffer example](examples/framebuffer/README.md).
 
+## Audio
+
+`quasar-audio` is an independent, device-optional audio system: deterministic
+sample-frame mixing, WAV/Ogg decoding, streaming Ogg, buses and voice groups,
+priority/limit policies, spatial attenuation and pan, procedural sources, and an
+optional CPAL backend. The same mixer renders offline PCM/WAV for tests and
+benchmarks, so audio verification does not require speakers.
+
+```sh
+cargo run -p audio-example -- --offline /tmp/audio-example.wav
+cargo run -p audio-example -- --devices
+cargo run -p audio-example -- --play
+```
+
+See the [audio example](examples/audio/README.md), [audit and feature
+matrix](docs/audio-audit.md), and [implementation
+report](docs/audio-implementation-report.md).
+
 ## Configurable controls
 
 Pong defines action names; `quasar-input` handles devices, bindings, and action
@@ -118,15 +140,25 @@ See [quasar-input's API and semantics](crates/quasar-input/README.md).
 Use a current stable Rust toolchain (minimum 1.94; developed with Rust 1.94). The initial
 build needs CMake, Ninja or Make, and a C++ compiler to build shaderc from source.
 On Debian/Ubuntu, useful development packages are `build-essential cmake ninja-build
-pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev
-libxcursor-dev libvulkan-dev`. A Vulkan loader/driver and a desktop session are
+pkg-config libxkbcommon-dev libxkbcommon-x11-0 libasound2-dev libwayland-dev
+libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev`. A Vulkan loader/driver and a desktop session are
 needed to play; no standalone GLSL compiler is needed at runtime.
 
 ```sh
 cargo fmt --all -- --check
 cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked
+cargo test -p quasar-audio --no-default-features --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo doc --workspace --no-deps --locked
 python3 tools/verify_pong.py
+```
+
+Audio can be verified without a sound device:
+
+```sh
+cargo run -p audio-example -- --offline /tmp/audio-example.wav
+cargo run -p audio-example -- --devices
+cargo run -p audio-example -- --play   # requires a working output device
 ```
 
 Imported OpenGL/GPU checks and the 2D renderer conformance tests are explicitly ignored in ordinary tests because
