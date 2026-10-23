@@ -1,0 +1,68 @@
+{
+  "acquire_ms": {
+    "mean": 0.09439330166666667,
+    "p50": 0.01787,
+    "p95": 0.240707,
+    "p99": 1.924559,
+    "samples": 600
+  },
+  "blocking_timeline_waits": 2,
+  "build": "release",
+  "configured_frames": 3,
+  "cpu_frame_ms": {
+    "mean": 0.21684312,
+    "p50": 0.12702,
+    "p95": 0.421069,
+    "p99": 2.12684,
+    "samples": 600
+  },
+  "cpu_submit_ms": {
+    "mean": 0.07056810666666667,
+    "p50": 0.062688,
+    "p95": 0.10484,
+    "p99": 0.130572,
+    "samples": 600
+  },
+  "device": "Rust Vulkan",
+  "device_creations": 1,
+  "device_idle_waits": 0,
+  "elapsed_ms": 137.477159,
+  "engine_frame_to_observed_completion_ms": {
+    "mean": 0.4163644166666667,
+    "p50": 0.258059,
+    "p95": 2.144261,
+    "p99": 2.476515,
+    "samples": 600
+  },
+  "explicit_submission": false,
+  "frames": 600,
+  "gpu_frame_ms": {
+    "mean": 0.028080345776031433,
+    "p50": 0.027968,
+    "p95": 0.029088,
+    "p99": 0.035232,
+    "samples": 509
+  },
+  "host_upload_bytes": 1795200,
+  "latency_note": "CPU observation of GPU completion; excludes display/compositor/input-to-photon latency; poll cadence affects observations",
+  "policy": "completion-poll",
+  "present_and_retire_ms": {
+    "mean": 0.0373045,
+    "p50": 0.031148,
+    "p95": 0.053923,
+    "p99": 0.062048,
+    "samples": 600
+  },
+  "resource_creates": 2,
+  "resource_destroys": 0,
+  "rust_allocated_bytes": 17139304,
+  "rust_allocations": 62898,
+  "submission_to_observed_completion_ms": {
+    "mean": 0.23684223999999998,
+    "p50": 0.164795,
+    "p95": 0.556876,
+    "p99": 2.14042,
+    "samples": 600
+  },
+  "swapchain_images": 3
+}

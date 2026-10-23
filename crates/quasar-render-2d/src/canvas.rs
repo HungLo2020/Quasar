@@ -163,14 +163,14 @@ impl Canvas {
                 ));
             }
             let image = textures
-                .get(q.texture)
+                .dimensions(q.texture)
                 .ok_or_else(|| invalid("draw references a removed or unknown texture"))?;
             if let Some(r) = q.source
                 && (!r.valid()
                     || r.x < 0.0
                     || r.y < 0.0
-                    || r.x + r.width > image.width as f32
-                    || r.y + r.height > image.height as f32)
+                    || r.x + r.width > image.0 as f32
+                    || r.y + r.height > image.1 as f32)
             {
                 return Err(invalid("sprite region is outside its texture"));
             }

@@ -25,10 +25,13 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `quasar-storage` | Basalt v1 paths and atomic JSON persistence | None |
 | `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
 | `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, camera/transforms, clipping and GPU readback | VulkanicGAL, quasar-core |
+| `quasar-render-3d` | Indexed meshes, camera/model transforms, textured materials, lighting, depth and prepared passes | VulkanicGAL |
+| `quasar-frame` | Optional recording transactions, target caching, acquire/present/cancel and completion polling | VulkanicGAL |
 | `quasar-present` | VulkanicGAL framebuffer upload, GPU scaling/filtering, letterboxing, surface lifecycle | VulkanicGAL, quasar-core |
-| `examples/pong` | Game rules, software drawing, desktop application, headless CLI and replay | Selected crates |
+| `examples/pong` | Game rules, 2D draw lists, desktop application, headless CLI and replay | Selected crates |
 
-The desktop example presents a 640×400 RGBA image through VulkanicGAL. It uses
+The desktop example submits a 640×400 logical canvas to `quasar-render-2d`,
+which draws GPU quads and font atlas sprites through VulkanicGAL. It uses
 native X11/Wayland on Linux; window/surface integration also has Win32 and macOS
 paths through winit/ash-window. Only Linux has been verified so far. Native
 Vulkan requires a Vulkan 1.3 driver with dynamic rendering, synchronization2,
@@ -38,8 +41,30 @@ verified architecture; arm64 and riscv64 remain unverified targets.
 
 There is no editor yet. The working interpretation of [requirements](REQUIREMENTS.md)
 is that a future optional editor uses Qt/KDE frameworks; standalone game windows
-use Rust/winit. Audio, controller/analog backends, general scene rendering,
+use Rust/winit. Audio, controller/analog backends, advanced 3D rendering,
 and an editor are future additions.
+
+## Shared 3D and 2D rendering
+
+Git tag `2.1` adds caller-owned render state, shared targets and GPU textures,
+bounded prepared-command lifetimes, and optional frame helpers. Cargo package
+versions remain `0.2.0`.
+The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
+their API and synchronous retirement by default; native targets are cached and
+completion polling can be enabled with `set_frame_overlap(true)`.
+
+```sh
+cargo run -p quasar-composition
+cargo run -p quasar-composition -- --frames 40 --exercise-window
+cargo run -p quasar-composition -- --headless --screenshot /tmp/composition.png
+```
+
+See the [composition example](examples/composition/README.md),
+[2D API](crates/quasar-render-2d/README.md),
+[3D API](crates/quasar-render-3d/README.md), and
+[optional frame helper](crates/quasar-frame/README.md) for ownership, cleanup,
+GPU tests and reproducible synchronous/overlap measurements. Renderer crates
+consume VulkanicGAL's public API and do not depend on a frame coordinator.
 
 ## Configurable controls
 
@@ -109,7 +134,8 @@ cmp /tmp/pong-state.json /tmp/pong-replayed.json
 mode, version, and simulation rate. Native and headless playback use the same
 simulation. Determinism is checked within this implementation; replay compatibility
 across future gameplay changes or all floating-point architectures is not promised.
-Screenshots are native game framebuffer images, rather than desktop captures.
+Native screenshots use GPU readback at the logical game resolution. Headless
+screenshots use the renderer's CPU reference path with the same draw list.
 `cargo run -p pong -- --help` lists all options.
 
 ## Packaging and storage

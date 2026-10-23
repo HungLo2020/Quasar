@@ -1,12 +1,18 @@
 use crate::{Canvas, DisplayOptions, Filter, TextureId, Textures, Viewport};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{collections::BTreeMap, sync::Arc};
-use vulkanic_gal::{resources::*, *};
+use vulkanic_gal::{commands::SubmissionUsage, resources::*, *};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresentOutcome {
     Presented,
     Deferred,
+}
+/// Whether a 2D pass clears its target or preserves the existing image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadOp {
+    Clear,
+    Load,
 }
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RenderStats {
@@ -15,17 +21,33 @@ pub struct RenderStats {
     pub geometry_upload_bytes: usize,
     pub texture_upload_bytes: usize,
 }
+/// Owned GAL commands. Keeping this value (or a command-list clone) reserves
+/// its buffers. Dropping unsubmitted commands abandons the reservation.
+#[derive(Debug, Clone)]
+pub struct Prepared2D {
+    pub commands: CommandList,
+    pub stats: RenderStats,
+}
 struct TextureGpu {
-    texture: Handle,
+    texture: Option<Handle>,
     view: Handle,
     samplers: [Handle; 2],
     combined: [Handle; 2],
-    sets: [Handle; 2],
+}
+struct Slot {
+    geometry: Handle,
+    uniform: Handle,
+    geometry_capacity: usize,
+    uniform_capacity: usize,
+    sets: BTreeMap<TextureId, [Handle; 2]>,
+    passes: BTreeMap<Handle, Handle>,
+    usage: SubmissionUsage,
 }
 struct Surface {
     size: Extent3d,
     dirty: bool,
     options: DisplayOptions,
+    targets: BTreeMap<FrameRenderTargetId, Handle>,
 }
 struct Batch {
     texture: TextureId,
@@ -33,25 +55,13 @@ struct Batch {
     first: u32,
     count: u32,
 }
-/// A consumer of VulkanicGAL, owning its GAL and reusable rendering resources.
-/// No native graphics APIs or backend implementation types are used here.
+/// Standalone convenience owner. Existing games keep their original API.
 pub struct Renderer2D {
     gal: VulkanicGal,
+    state: RenderState2D,
     surface: Option<Surface>,
-    layout: Handle,
-    resource_layout: Handle,
-    vertex: Handle,
-    fragment: Handle,
-    pipelines: BTreeMap<TextureFormat, Handle>,
-    geometry: Handle,
-    uniform: Handle,
-    geometry_capacity: usize,
-    uniform_capacity: usize,
-    uniform_stride: usize,
-    textures: BTreeMap<TextureId, TextureGpu>,
     correlation: u64,
-    stats: RenderStats,
-    pending_passes: Vec<Handle>,
+    frame_overlap: bool,
 }
 impl Renderer2D {
     pub fn headless() -> GalResult<Self> {
@@ -60,58 +70,21 @@ impl Renderer2D {
             "Quasar 2D offscreen",
         )?)
     }
-    /// Accepts an existing GAL. The current shaders require Vulkan-style GLSL.
     pub fn from_gal(mut gal: VulkanicGal) -> GalResult<Self> {
-        if gal.capabilities().shader_conventions.glsl_dialect != GlslDialect::ExplicitBindings {
-            return Err(GalError::unsupported_feature(
-                "2D shaders require explicit-binding GLSL conventions",
-            ));
-        }
-        let stride = (gal.capabilities().limits.uniform_buffer_offset_alignment as usize)
-            .max(32)
-            .next_power_of_two();
-        let resource_layout = gal.create_resource_layout(ResourceLayoutDesc {
-            label: "2d-resources".into(),
-            bindings: vec![
-                desc(0, ResourceBindingKind::CombinedTextureSampler, 0),
-                desc(1, ResourceBindingKind::StorageBuffer, 0),
-                desc(2, ResourceBindingKind::UniformBuffer, 1),
-            ],
-        })?;
-        let layout = gal.create_pipeline_layout(PipelineLayoutDesc {
-            label: "2d-layout".into(),
-            resource_layouts: vec![resource_layout],
-        })?;
-        let vertex = gal.create_shader_module(shader(
-            "2d-vertex",
-            ShaderStage::Vertex,
-            include_str!("quad.vert"),
-        ))?;
-        let fragment = gal.create_shader_module(shader(
-            "2d-fragment",
-            ShaderStage::Fragment,
-            include_str!("quad.frag"),
-        ))?;
-        let geometry = buffer(&mut gal, "2d-geometry", 80, BufferUsage::Storage)?;
-        let uniform = buffer(&mut gal, "2d-frame", stride, BufferUsage::Uniform)?;
+        let state = RenderState2D::new(&mut gal)?;
         Ok(Self {
             gal,
+            state,
             surface: None,
-            layout,
-            resource_layout,
-            vertex,
-            fragment,
-            pipelines: BTreeMap::new(),
-            geometry,
-            uniform,
-            geometry_capacity: 80,
-            uniform_capacity: stride,
-            uniform_stride: stride,
-            textures: BTreeMap::new(),
             correlation: 0,
-            stats: RenderStats::default(),
-            pending_passes: Vec::new(),
+            frame_overlap: false,
         })
+    }
+    /// Enables completion polling and bounded multi-frame resource reuse.
+    /// The default retains synchronous native retirement for existing clients.
+    /// Readback always waits regardless of this presentation policy.
+    pub fn set_frame_overlap(&mut self, enabled: bool) {
+        self.frame_overlap = enabled;
     }
     pub fn for_window<W: HasDisplayHandle + HasWindowHandle + 'static>(
         window: Arc<W>,
@@ -127,7 +100,7 @@ impl Renderer2D {
                 extent: extent(size),
                 color_format: TextureFormat::Bgra8Unorm,
                 present_mode: PresentMode::AutoVsync,
-                max_frames_in_flight: 1,
+                max_frames_in_flight: 3,
             },
         )?;
         let mut renderer = Self::from_gal(gal)?;
@@ -135,6 +108,7 @@ impl Renderer2D {
             size: extent(size),
             dirty: false,
             options,
+            targets: BTreeMap::new(),
         });
         Ok(renderer)
     }
@@ -155,7 +129,7 @@ impl Renderer2D {
         }
     }
     pub fn stats(&self) -> RenderStats {
-        self.stats
+        self.state.stats
     }
     pub fn viewport(&self, canvas: &Canvas) -> Option<Viewport> {
         let s = self.surface.as_ref()?;
@@ -181,6 +155,10 @@ impl Renderer2D {
         let size = surface.size;
         let options = surface.options;
         if surface.dirty {
+            self.state.release_targets(&mut self.gal)?;
+            for h in std::mem::take(&mut surface.targets).into_values() {
+                self.gal.retire(h)?;
+            }
             self.gal.resize_frame_surface(FrameResizeDesc {
                 correlation_id,
                 extent: size,
@@ -198,29 +176,52 @@ impl Renderer2D {
             return Ok(PresentOutcome::Deferred);
         }
         let result = (|| {
-            let target = self.gal.create_frame_target(FrameTargetDesc {
-                label: "2d-window-target".into(),
-                frame_id: acquired.frame.0,
-                render_target: acquired.render_target,
-                extent: acquired.extent,
-                color_format: acquired.color_format,
-            })?;
-            let result = (|| {
-                let operations = self.record(
+            let target = if let Some(target) = self
+                .surface
+                .as_ref()
+                .unwrap()
+                .targets
+                .get(&acquired.render_target)
+            {
+                *target
+            } else {
+                let target = self.gal.create_frame_target(FrameTargetDesc {
+                    label: "2d-window-target".into(),
+                    frame_id: acquired.frame.0,
+                    render_target: acquired.render_target,
+                    extent: acquired.extent,
+                    color_format: acquired.color_format,
+                })?;
+                self.surface
+                    .as_mut()
+                    .unwrap()
+                    .targets
+                    .insert(acquired.render_target, target);
+                target
+            };
+            (|| {
+                let prepared = self.state.prepare(
+                    &mut self.gal,
                     canvas,
                     textures,
                     target,
-                    acquired.color_format,
-                    acquired.extent,
                     options,
+                    LoadOp::Clear,
                 )?;
-                let token = self.submit(operations)?;
+                let token = self.gal.submit(SubmissionBatch {
+                    label: "2d-frame".into(),
+                    command_lists: vec![prepared.commands],
+                })?;
                 let presented = self.gal.present_frame(PresentFrameDesc {
                     frame: acquired.frame,
                     correlation_id,
                     wait_for: token.submission,
                 })?;
-                self.gal.retire_through(token.submission)?;
+                if self.frame_overlap {
+                    self.gal.retire_completed()?;
+                } else {
+                    self.gal.retire_through(token.submission)?;
+                }
                 if acquired.status == FrameAcquireStatus::Suboptimal
                     || matches!(
                         presented.status,
@@ -239,12 +240,14 @@ impl Renderer2D {
                         PresentOutcome::Deferred
                     },
                 )
-            })();
-            self.gal.destroy(target)?;
-            result
+            })()
         })();
         if result.is_err() {
             let _ = self.gal.cancel_frame(acquired.frame);
+            let _ = self.state.release_targets(&mut self.gal);
+            for h in std::mem::take(&mut self.surface.as_mut().unwrap().targets).into_values() {
+                let _ = self.gal.retire(h);
+            }
         }
         result
     }
@@ -286,14 +289,15 @@ impl Renderer2D {
             usages: vec![BufferUsage::TransferDst, BufferUsage::HostRead],
         })?;
         let result = (|| {
-            let mut operations = self.record(
+            let prepared = self.state.prepare(
+                &mut self.gal,
                 canvas,
                 textures,
                 target,
-                TextureFormat::Rgba8Unorm,
-                size,
                 DisplayOptions::default(),
+                LoadOp::Clear,
             )?;
+            let mut operations = prepared.commands.operations;
             operations.extend([
                 barrier(
                     texture,
@@ -312,7 +316,13 @@ impl Renderer2D {
                     size: u64::from(size.width) * u64::from(size.height) * 4,
                 },
             ]);
-            let token = self.submit(operations)?;
+            let token = self.gal.submit(SubmissionBatch {
+                label: "2d-readback".into(),
+                command_lists: vec![CommandList::from(CommandListDesc {
+                    label: "2d-readback".into(),
+                    operations,
+                })],
+            })?;
             self.gal.retire_through(token.submission)?;
             let read = self
                 .gal
@@ -322,180 +332,223 @@ impl Renderer2D {
                 .ok_or_else(|| GalError::backend("2D readback did not complete"))?;
             Ok(read.bytes)
         })();
+        self.state.release_targets(&mut self.gal)?;
         self.gal.destroy(readback)?;
         self.gal.destroy(target)?;
         self.gal.destroy(view)?;
         self.gal.destroy(texture)?;
         result
     }
-    fn submit(&mut self, operations: Vec<CommandOp>) -> GalResult<SyncToken> {
+}
+impl Drop for Renderer2D {
+    fn drop(&mut self) {
+        let _ = self.gal.retire_through(self.gal.latest_submission_id());
+        let _ = self.state.release(&mut self.gal);
+        if let Some(surface) = &mut self.surface {
+            for h in std::mem::take(&mut surface.targets).into_values() {
+                let _ = self.gal.retire(h);
+            }
+        }
+        let _ = self.gal.shutdown_frame_surface();
+    }
+}
+/// Reusable rendering state on a caller-owned GAL. No window, submission or
+/// presentation ownership. All methods must use the same GAL as `new`.
+/// Call `release` before dropping to return cached resources to GAL.
+pub struct RenderState2D {
+    layout: Handle,
+    resource_layout: Handle,
+    vertex: Handle,
+    fragment: Handle,
+    pipelines: BTreeMap<(TextureFormat, Option<TextureFormat>), Handle>,
+    slots: Vec<Slot>,
+    textures: BTreeMap<TextureId, TextureGpu>,
+    uniform_stride: usize,
+    stats: RenderStats,
+}
+impl RenderState2D {
+    pub fn new(gal: &mut VulkanicGal) -> GalResult<Self> {
+        let mut created = Vec::new();
         let result = (|| {
-            let list = self.gal.create_command_list(CommandListDesc {
-                label: "2d-frame".into(),
-                operations,
-            })?;
-            self.gal.submit(SubmissionBatch {
-                label: "2d-submit".into(),
-                command_lists: vec![list],
-            })
-        })();
-        let mut cleanup = Ok(());
-        for pass in std::mem::take(&mut self.pending_passes) {
-            if let Err(error) = self.gal.destroy(pass) {
-                cleanup = Err(error);
+            if gal.capabilities().shader_conventions.glsl_dialect != GlslDialect::ExplicitBindings {
+                return Err(GalError::unsupported_feature(
+                    "2D shaders require explicit-binding GLSL conventions",
+                ));
             }
-        }
-        result.and_then(|token| cleanup.map(|_| token))
-    }
-
-    fn reserve(&mut self, geometry: usize, uniform: usize) -> GalResult<()> {
-        if geometry <= self.geometry_capacity && uniform <= self.uniform_capacity {
-            return Ok(());
-        }
-        // One frame in flight: all previous uses have completed before reallocation.
-        let ids: Vec<_> = self.textures.keys().copied().collect();
-        for id in ids {
-            self.destroy_texture(id)?;
-        }
-        if geometry > self.geometry_capacity {
-            let next = geometry.next_power_of_two();
-            let new = buffer(&mut self.gal, "2d-geometry", next, BufferUsage::Storage)?;
-            self.gal.destroy(self.geometry)?;
-            self.geometry = new;
-            self.geometry_capacity = next;
-        }
-        if uniform > self.uniform_capacity {
-            let next = uniform.next_power_of_two();
-            let new = buffer(&mut self.gal, "2d-frame", next, BufferUsage::Uniform)?;
-            self.gal.destroy(self.uniform)?;
-            self.uniform = new;
-            self.uniform_capacity = next;
-        }
-        Ok(())
-    }
-    fn destroy_texture(&mut self, id: TextureId) -> GalResult<()> {
-        if let Some(t) = self.textures.remove(&id) {
-            for h in t.sets {
-                self.gal.destroy(h)?;
-            }
-            for h in t.combined {
-                self.gal.destroy(h)?;
-            }
-            for h in t.samplers {
-                self.gal.destroy(h)?;
-            }
-            self.gal.destroy(t.view)?;
-            self.gal.destroy(t.texture)?;
-        }
-        Ok(())
-    }
-    fn upload(&mut self, id: TextureId, assets: &Textures) -> GalResult<()> {
-        if self.textures.contains_key(&id) {
-            return Ok(());
-        }
-        let image = assets.get(id).unwrap();
-        let size = extent((image.width, image.height));
-        let texture = self.gal.create_texture(TextureDesc {
-            label: "2d-texture".into(),
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8Unorm,
-            extent: size,
-            mip_levels: 1,
-            array_layers: 1,
-            usages: vec![TextureUsage::Sampled, TextureUsage::TransferDst],
-        })?;
-        let upload = buffer(
-            &mut self.gal,
-            "2d-texture-upload",
-            image.rgba.len(),
-            BufferUsage::TransferSrc,
-        )?;
-        let token = self.submit(vec![
-            CommandOp::HostWriteBuffer {
-                buffer: upload,
-                offset: 0,
-                data: image.rgba.to_vec(),
-            },
-            barrier(
-                upload,
-                TextureUsageState::TransferDst,
-                TextureUsageState::TransferSrc,
-            ),
-            barrier(
-                texture,
-                TextureUsageState::Undefined,
-                TextureUsageState::TransferDst,
-            ),
-            CommandOp::CopyBufferToTexture(copy(upload, texture, size)),
-            barrier(
-                texture,
-                TextureUsageState::TransferDst,
-                TextureUsageState::ShaderRead,
-            ),
-        ])?;
-        self.gal.retire_through(token.submission)?;
-        self.gal.destroy(upload)?;
-        self.stats.texture_upload_bytes += image.rgba.len();
-        let view = self.gal.create_texture_view(TextureViewDesc {
-            label: "2d-texture-view".into(),
-            texture,
-            format: TextureFormat::Rgba8Unorm,
-            base_mip: 0,
-            mip_count: 1,
-            base_layer: 0,
-            layer_count: 1,
-        })?;
-        let mut samplers = Vec::new();
-        let mut combined = Vec::new();
-        let mut sets = Vec::new();
-        for filter in [SamplerFilter::Nearest, SamplerFilter::Linear] {
-            let sampler = self.gal.create_sampler(SamplerDesc {
-                label: "2d-sampler".into(),
-                min_filter: filter,
-                mag_filter: filter,
-                mip_filter: SamplerFilter::Nearest,
-                address_u: SamplerAddressMode::ClampToEdge,
-                address_v: SamplerAddressMode::ClampToEdge,
-                address_w: SamplerAddressMode::ClampToEdge,
-                comparison: None,
-            })?;
-            let pair = self
-                .gal
-                .create_combined_texture_sampler(CombinedTextureSamplerDesc {
-                    label: "2d-image".into(),
-                    texture_view: view,
-                    sampler,
-                })?;
-            let set = self.gal.create_resource_set(ResourceSetDesc {
-                label: "2d-set".into(),
-                layout: self.resource_layout,
+            let stride = (gal.capabilities().limits.uniform_buffer_offset_alignment as usize)
+                .max(32)
+                .next_power_of_two();
+            let resource_layout = gal.create_resource_layout(ResourceLayoutDesc {
+                label: "2d-resources".into(),
                 bindings: vec![
-                    binding(
-                        0,
-                        pair,
-                        ResourceBindingKind::CombinedTextureSampler,
-                        None,
-                        vec![],
-                    ),
-                    binding(
-                        1,
-                        self.geometry,
-                        ResourceBindingKind::StorageBuffer,
-                        None,
-                        vec![],
-                    ),
-                    binding(
-                        2,
-                        self.uniform,
-                        ResourceBindingKind::UniformBuffer,
-                        Some(32),
-                        vec![0],
-                    ),
+                    desc(0, ResourceBindingKind::CombinedTextureSampler, 0),
+                    desc(1, ResourceBindingKind::StorageBuffer, 0),
+                    desc(2, ResourceBindingKind::UniformBuffer, 1),
                 ],
             })?;
-            samplers.push(sampler);
-            combined.push(pair);
-            sets.push(set);
+            created.push(resource_layout);
+            let layout = gal.create_pipeline_layout(PipelineLayoutDesc {
+                label: "2d-layout".into(),
+                resource_layouts: vec![resource_layout],
+            })?;
+            created.push(layout);
+            let vertex = gal.create_shader_module(shader(
+                "2d-vertex",
+                ShaderStage::Vertex,
+                include_str!("quad.vert"),
+            ))?;
+            created.push(vertex);
+            let fragment = gal.create_shader_module(shader(
+                "2d-fragment",
+                ShaderStage::Fragment,
+                include_str!("quad.frag"),
+            ))?;
+            created.push(fragment);
+            Ok(Self {
+                layout,
+                resource_layout,
+                vertex,
+                fragment,
+                pipelines: BTreeMap::new(),
+                slots: Vec::new(),
+                textures: BTreeMap::new(),
+                uniform_stride: stride,
+                stats: RenderStats::default(),
+            })
+        })();
+        if result.is_err() {
+            for h in created.into_iter().rev() {
+                let _ = gal.retire(h);
+            }
+        }
+        result
+    }
+
+    pub fn stats(&self) -> RenderStats {
+        self.stats
+    }
+    /// Prepares a pass without acquiring, presenting, or waiting for this pass.
+    /// First-use CPU images are uploaded on this GAL queue before their draws.
+    /// Up to three independent command lists may reserve transient slots.
+    pub fn prepare(
+        &mut self,
+        gal: &mut VulkanicGal,
+        canvas: &Canvas,
+        assets: &Textures,
+        target: Handle,
+        options: DisplayOptions,
+        load: LoadOp,
+    ) -> GalResult<Prepared2D> {
+        if self.layout.is_null() {
+            return Err(GalError::invalid_argument("2D state is released"));
+        }
+        canvas
+            .validate(assets)
+            .map_err(|e| GalError::invalid_argument(e.to_string()))?;
+        options.validate().map_err(GalError::invalid_argument)?;
+        let format = gal.pass_target_color_format(target)?;
+        let size = gal.pass_target_extent(target)?;
+        let depth = None;
+        gal.begin_command_recording()?;
+        let result = self.record(
+            gal, canvas, assets, target, format, size, depth, options, load,
+        );
+        let finish = gal.finish_command_recording();
+        result.and_then(|prepared| finish.map(|()| prepared))
+    }
+    /// Registers a private view of another renderer's sampled image. The source
+    /// owner keeps the texture; this renderer owns only its view and bindings.
+    /// The caller orders writes -> ShaderRead before recording consumers.
+    pub fn register_texture(
+        &mut self,
+        gal: &mut VulkanicGal,
+        assets: &mut Textures,
+        source_view: Handle,
+    ) -> GalResult<TextureId> {
+        if self.layout.is_null() {
+            return Err(GalError::invalid_argument("2D state is released"));
+        }
+        let info = gal.texture_view_info(source_view)?;
+        if info.dimension != TextureDimension::D2
+            || info.extent.width > 16384
+            || info.extent.height > 16384
+            || info.range.base_mip != 0
+            || info.range.mip_count != 1
+            || info.range.layer_count != 1
+            || info.extent.depth != 1
+            || !info.usages.contains(&TextureUsage::Sampled)
+            || !matches!(
+                info.format,
+                TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm
+            )
+        {
+            return Err(GalError::invalid_argument(
+                "shared image must be a sampled 2D RGBA8/BGRA8 single-mip view",
+            ));
+        }
+        let view = gal.create_texture_view(TextureViewDesc {
+            label: "2d-shared-view".into(),
+            texture: info.texture,
+            format: info.format,
+            base_mip: 0,
+            mip_count: 1,
+            base_layer: info.range.base_layer,
+            layer_count: 1,
+        })?;
+        let id = assets
+            .declare_external(info.extent.width, info.extent.height)
+            .map_err(|e| GalError::invalid_argument(e.to_string()))?;
+        if let Err(error) =
+            self.install_texture(gal, id, None, view, info.extent.width, info.extent.height)
+        {
+            assets.remove(id);
+            let _ = gal.retire(view);
+            return Err(error);
+        }
+        Ok(id)
+    }
+    fn install_texture(
+        &mut self,
+        gal: &mut VulkanicGal,
+        id: TextureId,
+        texture: Option<Handle>,
+        view: Handle,
+        _width: u32,
+        _height: u32,
+    ) -> GalResult<()> {
+        let mut samplers = Vec::new();
+        let mut combined = Vec::new();
+        let result = (|| {
+            for filter in [SamplerFilter::Nearest, SamplerFilter::Linear] {
+                let sampler = gal.create_sampler(SamplerDesc {
+                    label: "2d-sampler".into(),
+                    min_filter: filter,
+                    mag_filter: filter,
+                    mip_filter: SamplerFilter::Nearest,
+                    address_u: SamplerAddressMode::ClampToEdge,
+                    address_v: SamplerAddressMode::ClampToEdge,
+                    address_w: SamplerAddressMode::ClampToEdge,
+                    comparison: None,
+                })?;
+                samplers.push(sampler);
+                combined.push(
+                    gal.create_combined_texture_sampler(CombinedTextureSamplerDesc {
+                        label: "2d-image".into(),
+                        texture_view: view,
+                        sampler,
+                    })?,
+                );
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            for h in combined.into_iter().rev() {
+                let _ = gal.retire(h);
+            }
+            for h in samplers.into_iter().rev() {
+                let _ = gal.retire(h);
+            }
+            return Err(error);
         }
         self.textures.insert(
             id,
@@ -504,16 +557,313 @@ impl Renderer2D {
                 view,
                 samplers: [samplers[0], samplers[1]],
                 combined: [combined[0], combined[1]],
-                sets: [sets[0], sets[1]],
             },
         );
         Ok(())
     }
-    fn pipeline(&mut self, format: TextureFormat) -> GalResult<Handle> {
-        if let Some(pipeline) = self.pipelines.get(&format) {
+    fn collect_removed(&mut self, gal: &mut VulkanicGal, assets: &Textures) -> GalResult<()> {
+        for slot in &mut self.slots {
+            if slot.usage.has_pending_commands() {
+                continue;
+            }
+            let removed: Vec<_> = slot
+                .sets
+                .keys()
+                .filter(|id| assets.dimensions(**id).is_none())
+                .copied()
+                .collect();
+            for id in removed {
+                for h in slot.sets.remove(&id).unwrap() {
+                    gal.retire(h)?;
+                }
+            }
+        }
+        let removed: Vec<_> = self
+            .textures
+            .keys()
+            .filter(|id| assets.dimensions(**id).is_none())
+            .copied()
+            .collect();
+        for id in removed {
+            let t = self.textures.remove(&id).unwrap();
+            for h in t.combined {
+                gal.retire(h)?;
+            }
+            for h in t.samplers {
+                gal.retire(h)?;
+            }
+            gal.retire(t.view)?;
+            if let Some(h) = t.texture {
+                gal.retire(h)?;
+            }
+        }
+        Ok(())
+    }
+    fn ensure_set(&mut self, gal: &mut VulkanicGal, index: usize, id: TextureId) -> GalResult<()> {
+        let slot = &mut self.slots[index];
+        if slot.sets.contains_key(&id) {
+            return Ok(());
+        }
+        let texture = &self.textures[&id];
+        let mut sets = Vec::new();
+        let result = (|| {
+            for pair in texture.combined {
+                sets.push(gal.create_resource_set(ResourceSetDesc {
+                    label: "2d-set".into(),
+                    layout: self.resource_layout,
+                    bindings: vec![
+                        binding(
+                            0,
+                            pair,
+                            ResourceBindingKind::CombinedTextureSampler,
+                            None,
+                            vec![],
+                        ),
+                        binding(
+                            1,
+                            slot.geometry,
+                            ResourceBindingKind::StorageBuffer,
+                            None,
+                            vec![],
+                        ),
+                        binding(
+                            2,
+                            slot.uniform,
+                            ResourceBindingKind::UniformBuffer,
+                            Some(32),
+                            vec![0],
+                        ),
+                    ],
+                })?);
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            for h in sets {
+                let _ = gal.retire(h);
+            }
+            return Err(error);
+        }
+        slot.sets.insert(id, [sets[0], sets[1]]);
+        Ok(())
+    }
+    fn acquire_slot(
+        &mut self,
+        gal: &mut VulkanicGal,
+        geometry: usize,
+        uniform: usize,
+    ) -> GalResult<usize> {
+        let completed = gal.poll_completed();
+        let mut index = self.slots.iter().position(|s| {
+            !s.usage.has_pending_commands() && s.usage.last_submission() <= completed
+        });
+        if index.is_none() && self.slots.len() < 3 {
+            let g = geometry.next_power_of_two();
+            let u = uniform.next_power_of_two();
+            self.slots.push(Slot {
+                geometry: buffer(gal, "2d-geometry", g, BufferUsage::Storage)?,
+                uniform: buffer(gal, "2d-frame", u, BufferUsage::Uniform)?,
+                geometry_capacity: g,
+                uniform_capacity: u,
+                sets: BTreeMap::new(),
+                passes: BTreeMap::new(),
+                usage: SubmissionUsage::default(),
+            });
+            index = Some(self.slots.len() - 1);
+        }
+        if index.is_none() {
+            let (i, submission) = self
+                .slots
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| !s.usage.has_pending_commands())
+                .map(|(i, s)| (i, s.usage.last_submission()))
+                .min_by_key(|(_, id)| *id)
+                .ok_or_else(|| {
+                    GalError::submission(
+                        StatusCode::InFlight,
+                        "all 2D slots are reserved by unsubmitted commands",
+                    )
+                })?;
+            gal.retire_through(submission)?;
+            index = Some(i);
+        }
+        let i = index.unwrap();
+        let s = &mut self.slots[i];
+        if geometry > s.geometry_capacity || uniform > s.uniform_capacity {
+            for sets in std::mem::take(&mut s.sets).into_values() {
+                for h in sets {
+                    gal.retire(h)?;
+                }
+            }
+            if geometry > s.geometry_capacity {
+                gal.retire(s.geometry)?;
+                s.geometry_capacity = geometry.next_power_of_two();
+                s.geometry = buffer(
+                    gal,
+                    "2d-geometry",
+                    s.geometry_capacity,
+                    BufferUsage::Storage,
+                )?;
+            }
+            if uniform > s.uniform_capacity {
+                gal.retire(s.uniform)?;
+                s.uniform_capacity = uniform.next_power_of_two();
+                s.uniform = buffer(gal, "2d-frame", s.uniform_capacity, BufferUsage::Uniform)?;
+            }
+        }
+        Ok(i)
+    }
+    pub fn release_targets(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
+        self.require_no_pending()?;
+        for slot in &mut self.slots {
+            for h in std::mem::take(&mut slot.passes).into_values() {
+                gal.retire(h)?;
+            }
+        }
+        Ok(())
+    }
+    fn require_no_pending(&self) -> GalResult<()> {
+        if self.slots.iter().any(|s| s.usage.has_pending_commands()) {
+            return Err(GalError::submission(
+                StatusCode::InFlight,
+                "2D commands still retain resources",
+            ));
+        }
+        Ok(())
+    }
+    /// Explicit cleanup; rejected without mutation while prepared commands live.
+    /// Submitted work uses GAL's deferred retirement, without a device idle wait.
+    pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
+        if self.layout.is_null() {
+            return Ok(());
+        }
+        self.require_no_pending()?;
+        self.release_targets(gal)?;
+        for slot in self.slots.drain(..) {
+            for sets in slot.sets.into_values() {
+                for h in sets {
+                    gal.retire(h)?;
+                }
+            }
+            gal.retire(slot.geometry)?;
+            gal.retire(slot.uniform)?;
+        }
+        for t in std::mem::take(&mut self.textures).into_values() {
+            for h in t.combined {
+                gal.retire(h)?;
+            }
+            for h in t.samplers {
+                gal.retire(h)?;
+            }
+            gal.retire(t.view)?;
+            if let Some(h) = t.texture {
+                gal.retire(h)?;
+            }
+        }
+        for h in std::mem::take(&mut self.pipelines).into_values() {
+            gal.retire(h)?;
+        }
+        for h in [
+            self.layout,
+            self.vertex,
+            self.fragment,
+            self.resource_layout,
+        ] {
+            gal.retire(h)?;
+        }
+        self.layout = Handle::NULL;
+        Ok(())
+    }
+    fn upload(&mut self, gal: &mut VulkanicGal, id: TextureId, assets: &Textures) -> GalResult<()> {
+        if self.textures.contains_key(&id) {
+            return Ok(());
+        }
+        let image = assets.get(id).ok_or_else(|| {
+            GalError::invalid_argument("GPU-only image is not registered on this renderer")
+        })?;
+        let size = extent((image.width, image.height));
+        let mut created = Vec::new();
+        let result = (|| {
+            let texture = gal.create_texture(TextureDesc {
+                label: "2d-texture".into(),
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                extent: size,
+                mip_levels: 1,
+                array_layers: 1,
+                usages: vec![TextureUsage::Sampled, TextureUsage::TransferDst],
+            })?;
+            created.push(texture);
+            let upload = buffer(
+                gal,
+                "2d-texture-upload",
+                image.rgba.len(),
+                BufferUsage::TransferSrc,
+            )?;
+            created.push(upload);
+            let operations = vec![
+                CommandOp::HostWriteBuffer {
+                    buffer: upload,
+                    offset: 0,
+                    data: image.rgba.to_vec(),
+                },
+                barrier(
+                    upload,
+                    TextureUsageState::TransferDst,
+                    TextureUsageState::TransferSrc,
+                ),
+                barrier(
+                    texture,
+                    TextureUsageState::Undefined,
+                    TextureUsageState::TransferDst,
+                ),
+                CommandOp::CopyBufferToTexture(copy(upload, texture, size)),
+                barrier(
+                    texture,
+                    TextureUsageState::TransferDst,
+                    TextureUsageState::ShaderRead,
+                ),
+            ];
+            gal.submit(SubmissionBatch {
+                label: "2d-initial-upload".into(),
+                command_lists: vec![CommandList::from(CommandListDesc {
+                    label: "2d-initial-upload".into(),
+                    operations,
+                })],
+            })?;
+            gal.destroy(upload)?;
+            self.stats.texture_upload_bytes += image.rgba.len();
+            let view = gal.create_texture_view(TextureViewDesc {
+                label: "2d-texture-view".into(),
+                texture,
+                format: TextureFormat::Rgba8Unorm,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+            })?;
+            created.push(view);
+            self.install_texture(gal, id, Some(texture), view, image.width, image.height)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            for h in created.into_iter().rev() {
+                let _ = gal.retire(h);
+            }
+        }
+        result
+    }
+    fn pipeline(
+        &mut self,
+        gal: &mut VulkanicGal,
+        format: TextureFormat,
+        depth: Option<TextureFormat>,
+    ) -> GalResult<Handle> {
+        if let Some(pipeline) = self.pipelines.get(&(format, depth)) {
             return Ok(*pipeline);
         }
-        let pipeline = self.gal.create_graphics_pipeline(GraphicsPipelineDesc {
+        let pipeline = gal.create_graphics_pipeline(GraphicsPipelineDesc {
             label: "2d-quads".into(),
             layout: self.layout,
             vertex_shader: self.vertex,
@@ -528,21 +878,26 @@ impl Renderer2D {
             depth_write: false,
             depth_bias: None,
             color_formats: vec![format],
-            depth_format: None,
+            depth_format: depth,
             stencil: None,
         })?;
-        self.pipelines.insert(format, pipeline);
+        self.pipelines.insert((format, depth), pipeline);
         Ok(pipeline)
     }
+    #[allow(clippy::too_many_arguments)]
     fn record(
         &mut self,
+        gal: &mut VulkanicGal,
         canvas: &Canvas,
         assets: &Textures,
         target: Handle,
         format: TextureFormat,
         size: Extent3d,
+        depth: Option<(Handle, Handle, TextureFormat)>,
         options: DisplayOptions,
-    ) -> GalResult<Vec<CommandOp>> {
+        load: LoadOp,
+    ) -> GalResult<Prepared2D> {
+        self.collect_removed(gal, assets)?;
         self.stats = RenderStats {
             quads: canvas.quads.len(),
             ..Default::default()
@@ -550,13 +905,10 @@ impl Renderer2D {
         let mut data = Vec::with_capacity(canvas.quads.len() * 80);
         let mut batches: Vec<Batch> = Vec::new();
         for (index, q) in canvas.quads.iter().enumerate() {
-            let image = assets.get(q.texture).unwrap();
-            let source = q.source.unwrap_or(crate::Rect::new(
-                0.0,
-                0.0,
-                image.width as f32,
-                image.height as f32,
-            ));
+            let image = assets.dimensions(q.texture).unwrap();
+            let source =
+                q.source
+                    .unwrap_or(crate::Rect::new(0.0, 0.0, image.0 as f32, image.1 as f32));
             let values = [
                 q.origin[0],
                 q.origin[1],
@@ -566,10 +918,10 @@ impl Renderer2D {
                 q.y[1],
                 0.0,
                 0.0,
-                source.x / image.width as f32,
-                source.y / image.height as f32,
-                (source.x + source.width) / image.width as f32,
-                (source.y + source.height) / image.height as f32,
+                source.x / image.0 as f32,
+                source.y / image.1 as f32,
+                (source.x + source.width) / image.0 as f32,
+                (source.y + source.height) / image.1 as f32,
                 q.color.0[0] as f32 / 255.0,
                 q.color.0[1] as f32 / 255.0,
                 q.color.0[2] as f32 / 255.0,
@@ -597,21 +949,14 @@ impl Renderer2D {
         }
         self.stats.batches = batches.len();
         self.stats.geometry_upload_bytes = data.len();
-        self.reserve(
+        let index = self.acquire_slot(
+            gal,
             data.len().max(80),
             batches.len().max(1) * self.uniform_stride,
         )?;
-        let removed: Vec<_> = self
-            .textures
-            .keys()
-            .filter(|id| assets.get(**id).is_none())
-            .copied()
-            .collect();
-        for id in removed {
-            self.destroy_texture(id)?;
-        }
         for batch in &batches {
-            self.upload(batch.texture, assets)?;
+            self.upload(gal, batch.texture, assets)?;
+            self.ensure_set(gal, index, batch.texture)?;
         }
         let viewport = Viewport::calculate(
             (canvas.width, canvas.height),
@@ -634,30 +979,40 @@ impl Renderer2D {
             let bytes: Vec<_> = values.into_iter().flat_map(f32::to_ne_bytes).collect();
             uniforms[i * self.uniform_stride..i * self.uniform_stride + 32].copy_from_slice(&bytes);
         }
-        let pipeline = self.pipeline(format)?;
-        let pass = self.gal.create_render_pass(RenderPassDesc {
-            label: "2d-pass".into(),
-            target,
-            color_formats: vec![format],
-            depth_format: None,
-        })?;
-        let attachment = self.gal.pass_target_color_attachment(target)?;
+        let pipeline = self.pipeline(gal, format, depth.map(|(_, _, format)| format))?;
+        let slot = &mut self.slots[index];
+        if !slot.passes.contains_key(&target) {
+            if slot.passes.len() >= 8 {
+                for h in std::mem::take(&mut slot.passes).into_values() {
+                    gal.retire(h)?;
+                }
+            }
+            let pass = gal.create_render_pass(RenderPassDesc {
+                label: "2d-pass".into(),
+                target,
+                color_formats: vec![format],
+                depth_format: None,
+            })?;
+            slot.passes.insert(target, pass);
+        }
+        let pass = slot.passes[&target];
+        let attachment = gal.pass_target_color_attachment(target)?;
         let clear = canvas.clear.0;
         let mut operations = Vec::new();
         if !data.is_empty() {
             operations.extend([
                 barrier(
-                    self.geometry,
+                    slot.geometry,
                     TextureUsageState::ShaderRead,
                     TextureUsageState::TransferDst,
                 ),
                 CommandOp::HostWriteBuffer {
-                    buffer: self.geometry,
+                    buffer: slot.geometry,
                     offset: 0,
                     data,
                 },
                 barrier(
-                    self.geometry,
+                    slot.geometry,
                     TextureUsageState::TransferDst,
                     TextureUsageState::ShaderRead,
                 ),
@@ -665,17 +1020,17 @@ impl Renderer2D {
         }
         operations.extend([
             barrier(
-                self.uniform,
+                slot.uniform,
                 TextureUsageState::ShaderRead,
                 TextureUsageState::TransferDst,
             ),
             CommandOp::HostWriteBuffer {
-                buffer: self.uniform,
+                buffer: slot.uniform,
                 offset: 0,
                 data: uniforms,
             },
             barrier(
-                self.uniform,
+                slot.uniform,
                 TextureUsageState::TransferDst,
                 TextureUsageState::ShaderRead,
             ),
@@ -684,22 +1039,30 @@ impl Renderer2D {
                 target,
                 colors: vec![PassAttachment {
                     view: attachment,
-                    load_op: AttachmentLoadOp::Clear,
+                    load_op: if load == LoadOp::Clear {
+                        AttachmentLoadOp::Clear
+                    } else {
+                        AttachmentLoadOp::Load
+                    },
                     store_op: AttachmentStoreOp::Store,
-                    clear_color: Some(ClearColor {
+                    clear_color: (load == LoadOp::Clear).then_some(ClearColor {
                         r: clear[0] as f32 / 255.0,
                         g: clear[1] as f32 / 255.0,
                         b: clear[2] as f32 / 255.0,
                         a: clear[3] as f32 / 255.0,
                     }),
                 }],
-                depth_stencil: None,
+                depth_stencil: depth.map(|(_, view, _)| PassAttachment {
+                    view,
+                    load_op: AttachmentLoadOp::Load,
+                    store_op: AttachmentStoreOp::Store,
+                    clear_color: None,
+                }),
             },
             CommandOp::BindGraphicsPipeline(pipeline),
         ]);
         for (i, batch) in batches.iter().enumerate() {
-            let set =
-                self.textures[&batch.texture].sets[usize::from(batch.filter == Filter::Linear)];
+            let set = slot.sets[&batch.texture][usize::from(batch.filter == Filter::Linear)];
             operations.extend([
                 CommandOp::BindResourceSet {
                     pipeline_layout: self.layout,
@@ -714,15 +1077,15 @@ impl Renderer2D {
             ]);
         }
         operations.push(CommandOp::EndPass);
-        // submit() destroys the transient pass after GAL has retained its use.
-        self.pending_passes.push(pass);
-        Ok(operations)
-    }
-}
-impl Drop for Renderer2D {
-    fn drop(&mut self) {
-        let _ = self.gal.retire_through(self.gal.latest_submission_id());
-        let _ = self.gal.shutdown_frame_surface();
+        operations.push(CommandOp::TrackSubmission(slot.usage.clone()));
+        let commands = gal.create_command_list(CommandListDesc {
+            label: "2d-prepared".into(),
+            operations,
+        })?;
+        Ok(Prepared2D {
+            commands,
+            stats: self.stats,
+        })
     }
 }
 fn extent(size: (u32, u32)) -> Extent3d {

@@ -69,7 +69,12 @@ impl Session {
             .as_ref()
             .is_some_and(|r| self.ticks >= r.inputs.len())
     }
-    fn outputs(&self, options: &Options, hints: Option<&pong::render::ControlHints>) -> Result {
+    fn outputs(
+        &self,
+        options: &Options,
+        hints: Option<&pong::render::ControlHints>,
+        gpu_pixels: Option<&[u8]>,
+    ) -> Result {
         if let Some(path) = &options.record {
             quasar_storage::write_json(path, self.recording.as_ref().unwrap())?;
         }
@@ -77,10 +82,12 @@ impl Session {
             quasar_storage::write_json(path, &self.game)?;
         }
         if let Some(path) = &options.screenshot {
-            let pixels = hints.map_or_else(
-                || render::frame(&self.game),
-                |hints| render::frame_with_hints(&self.game, hints),
-            );
+            let pixels = gpu_pixels.map(ToOwned::to_owned).unwrap_or_else(|| {
+                hints.map_or_else(
+                    || render::frame(&self.game),
+                    |hints| render::frame_with_hints(&self.game, hints),
+                )
+            });
             write_png(path, &pixels)?;
         }
         println!(
@@ -134,7 +141,7 @@ fn main() -> Result {
                 break;
             }
         }
-        return session.outputs(&options, None);
+        return session.outputs(&options, None, None);
     }
     #[cfg(feature = "desktop")]
     {

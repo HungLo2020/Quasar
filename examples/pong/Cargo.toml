@@ -6,14 +6,14 @@ publish.workspace = true
 
 [features]
 default = ["desktop"]
-desktop = ["dep:quasar-window", "dep:quasar-present"]
+desktop = ["dep:quasar-window", "quasar-render-2d/gpu"]
 
 [dependencies]
 quasar-input.workspace = true
 quasar-core.workspace = true
 quasar-storage.workspace = true
 quasar-window = { workspace = true, optional = true }
-quasar-present = { workspace = true, optional = true }
+quasar-render-2d.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 png.workspace = true

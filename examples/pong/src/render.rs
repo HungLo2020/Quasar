@@ -1,4 +1,4 @@
-//! Small asset-free software renderer: top-down RGBA pixels and bitmap lettering.
+//! Ordered 2D drawing shared by GPU presentation and headless reference snapshots.
 use crate::*;
 const BACK: [u8; 4] = [12, 18, 28, 255];
 const PANEL: [u8; 4] = [16, 25, 37, 255];
@@ -36,7 +36,15 @@ pub fn frame(game: &Game) -> Vec<u8> {
     frame_with_hints(game, &ControlHints::default())
 }
 pub fn frame_with_hints(game: &Game, hints: &ControlHints) -> Vec<u8> {
-    let mut c = Canvas(vec![0; (WIDTH * HEIGHT * 4) as usize]);
+    quasar_render_2d::reference::rasterize(
+        &scene_with_hints(game, hints),
+        &quasar_render_2d::Textures::default(),
+    )
+    .expect("valid game draw list")
+}
+pub fn scene_with_hints(game: &Game, hints: &ControlHints) -> quasar_render_2d::Canvas {
+    let mut c =
+        Canvas(quasar_render_2d::Canvas::new(WIDTH, HEIGHT).expect("valid game dimensions"));
     c.rect(0, 0, WIDTH as i32, HEIGHT as i32, BACK);
     c.text(24, 15, "PONG", 3, WHITE);
     c.text(25, 43, "QUASAR EXAMPLE 01", 1, MUTED);
@@ -134,15 +142,13 @@ pub fn frame_with_hints(game: &Game, hints: &ControlHints) -> Vec<u8> {
     );
     c.0
 }
-struct Canvas(Vec<u8>);
+struct Canvas(quasar_render_2d::Canvas);
 impl Canvas {
     fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: [u8; 4]) {
-        for row in y.max(0)..(y + h).min(HEIGHT as i32) {
-            for col in x.max(0)..(x + w).min(WIDTH as i32) {
-                let i = ((row as u32 * WIDTH + col as u32) * 4) as usize;
-                self.0[i..i + 4].copy_from_slice(&color);
-            }
-        }
+        self.0.rect(
+            quasar_render_2d::Rect::new(x as f32, y as f32, w as f32, h as f32),
+            color,
+        );
     }
     fn label(&mut self, x: i32, y: i32, width: usize, text: &str, color: [u8; 4]) {
         let text: String = text.chars().take(width / 6).collect();
@@ -159,66 +165,31 @@ impl Canvas {
         );
     }
     fn text(&mut self, x: i32, y: i32, text: &str, scale: i32, color: [u8; 4]) {
-        for (i, ch) in text.chars().enumerate() {
-            for (row, bits) in glyph(ch).into_iter().enumerate() {
-                for col in 0..5 {
-                    if bits & (1 << (4 - col)) != 0 {
-                        self.rect(
-                            x + (i as i32 * 6 + col) * scale,
-                            y + row as i32 * scale,
-                            scale,
-                            scale,
-                            color,
-                        );
-                    }
-                }
-            }
-        }
+        self.0.text([x as f32, y as f32], text, scale as f32, color);
     }
 }
-fn glyph(c: char) -> [u8; 7] {
-    match c {
-        'A' => [14, 17, 17, 31, 17, 17, 17],
-        'B' => [30, 17, 17, 30, 17, 17, 30],
-        'C' => [14, 17, 16, 16, 16, 17, 14],
-        'D' => [30, 17, 17, 17, 17, 17, 30],
-        'E' => [31, 16, 16, 30, 16, 16, 31],
-        'F' => [31, 16, 16, 30, 16, 16, 16],
-        'G' => [14, 17, 16, 23, 17, 17, 15],
-        'H' => [17, 17, 17, 31, 17, 17, 17],
-        'I' => [14, 4, 4, 4, 4, 4, 14],
-        'J' => [7, 2, 2, 2, 18, 18, 12],
-        'K' => [17, 18, 20, 24, 20, 18, 17],
-        'L' => [16, 16, 16, 16, 16, 16, 31],
-        'M' => [17, 27, 21, 21, 17, 17, 17],
-        'N' => [17, 25, 25, 21, 19, 19, 17],
-        'O' => [14, 17, 17, 17, 17, 17, 14],
-        'P' => [30, 17, 17, 30, 16, 16, 16],
-        'Q' => [14, 17, 17, 17, 21, 18, 13],
-        'R' => [30, 17, 17, 30, 20, 18, 17],
-        'S' => [15, 16, 16, 14, 1, 1, 30],
-        'T' => [31, 4, 4, 4, 4, 4, 4],
-        'U' => [17, 17, 17, 17, 17, 17, 14],
-        'V' => [17, 17, 17, 17, 17, 10, 4],
-        'W' => [17, 17, 17, 21, 21, 27, 17],
-        'X' => [17, 17, 10, 4, 10, 17, 17],
-        'Y' => [17, 17, 10, 4, 4, 4, 4],
-        'Z' => [31, 1, 2, 4, 8, 16, 31],
-        '0' => [14, 17, 19, 21, 25, 17, 14],
-        '1' => [4, 12, 4, 4, 4, 4, 14],
-        '2' => [14, 17, 1, 2, 4, 8, 31],
-        '3' => [30, 1, 1, 14, 1, 1, 30],
-        '4' => [2, 6, 10, 18, 31, 2, 2],
-        '5' => [31, 16, 16, 30, 1, 1, 30],
-        '6' => [14, 16, 16, 30, 17, 17, 14],
-        '7' => [31, 1, 2, 4, 8, 8, 8],
-        '8' => [14, 17, 17, 14, 17, 17, 14],
-        '9' => [14, 17, 17, 15, 1, 1, 14],
-        '/' => [1, 1, 2, 4, 8, 16, 16],
-        ':' => [0, 4, 4, 0, 4, 4, 0],
-        '+' => [0, 4, 4, 31, 4, 4, 0],
-        '?' => [14, 17, 1, 2, 4, 0, 4],
-        '-' => [0, 0, 0, 31, 0, 0, 0],
-        _ => [0; 7],
+
+#[cfg(all(test, feature = "desktop"))]
+#[test]
+#[ignore = "requires Vulkan; run cargo test -- --include-ignored"]
+fn gpu_game_scenes_match_headless_snapshots() {
+    let textures = quasar_render_2d::Textures::default();
+    let mut renderer = quasar_render_2d::Renderer2D::headless().unwrap();
+    let mut game = Game::new(Mode::Solo);
+    for phase in [Phase::Ready, Phase::Playing, Phase::Paused, Phase::Finished] {
+        game.phase = phase;
+        let canvas = scene_with_hints(&game, &ControlHints::default());
+        let expected = quasar_render_2d::reference::rasterize(&canvas, &textures).unwrap();
+        let actual = renderer.render_to_image(&canvas, &textures).unwrap();
+        let differences = actual
+            .iter()
+            .zip(&expected)
+            .filter(|(a, b)| a.abs_diff(**b) > 1)
+            .count();
+        assert_eq!(differences, 0, "GPU snapshot mismatch in {phase:?}");
+        let stats = renderer.stats();
+        assert!(stats.quads > 100);
+        assert!(stats.batches < 16);
+        assert!(stats.geometry_upload_bytes < expected.len() / 4);
     }
 }

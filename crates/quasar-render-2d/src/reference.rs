@@ -15,7 +15,9 @@ pub fn rasterize_with_filter(
         .0
         .repeat((canvas.width * canvas.height) as usize);
     for q in &canvas.quads {
-        let image = textures.get(q.texture).unwrap();
+        let image = textures
+            .get(q.texture)
+            .ok_or_else(|| crate::invalid("GPU-only texture has no CPU reference pixels"))?;
         let source = q.source.unwrap_or(crate::Rect::new(
             0.0,
             0.0,

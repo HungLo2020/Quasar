@@ -8,6 +8,8 @@ use super::*;
 pub struct TextureViewInfo {
     /// The texture the view belongs to.
     pub texture: Handle,
+    /// The source texture dimension, for validating shader/view compatibility.
+    pub dimension: TextureDimension,
     /// The view's format (always the texture's format).
     pub format: TextureFormat,
     /// The texture's full extent at mip 0.
@@ -386,6 +388,7 @@ impl VulkanicGal {
         let texture_record = self.textures.get(view_record.desc.texture)?;
         Ok(TextureViewInfo {
             texture: view_record.desc.texture,
+            dimension: texture_record.desc.dimension,
             format: view_record.desc.format,
             extent: texture_record.desc.extent,
             range: TextureSubresourceRange {

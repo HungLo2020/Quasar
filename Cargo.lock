@@ -1125,7 +1125,7 @@ dependencies = [
  "png",
  "quasar-core",
  "quasar-input",
- "quasar-present",
+ "quasar-render-2d",
  "quasar-storage",
  "quasar-window",
  "serde",
@@ -1151,8 +1151,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "quasar-composition"
+version = "0.2.0"
+dependencies = [
+ "png",
+ "quasar-frame",
+ "quasar-render-2d",
+ "quasar-render-3d",
+ "quasar-window",
+ "serde_json",
+ "vulkanic-gal",
+]
+
+[[package]]
 name = "quasar-core"
 version = "0.2.0"
+
+[[package]]
+name = "quasar-frame"
+version = "0.2.0"
+dependencies = [
+ "vulkanic-gal",
+]
 
 [[package]]
 name = "quasar-input"
@@ -1178,6 +1198,13 @@ version = "0.2.0"
 dependencies = [
  "quasar-core",
  "raw-window-handle",
+ "vulkanic-gal",
+]
+
+[[package]]
+name = "quasar-render-3d"
+version = "0.2.0"
+dependencies = [
  "vulkanic-gal",
 ]
 

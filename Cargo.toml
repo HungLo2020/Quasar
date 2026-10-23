@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "examples/pong"]
+members = ["crates/*", "examples/pong", "examples/composition"]
 default-members = ["examples/pong"]
 resolver = "2"
 
@@ -9,6 +9,8 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+quasar-frame = { path = "crates/quasar-frame" }
+quasar-render-3d = { path = "crates/quasar-render-3d" }
 quasar-render-2d = { path = "crates/quasar-render-2d", default-features = false }
 quasar-input = { path = "crates/quasar-input" }
 quasar-window = { path = "crates/quasar-window" }

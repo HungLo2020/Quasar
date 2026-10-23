@@ -10,7 +10,7 @@ pub mod reference;
 mod texture;
 pub use canvas::{Canvas, Quad, Sprite};
 #[cfg(feature = "gpu")]
-pub use gpu::{PresentOutcome, RenderStats, Renderer2D};
+pub use gpu::{LoadOp, Prepared2D, PresentOutcome, RenderState2D, RenderStats, Renderer2D};
 pub use math::{Camera2D, Color, Rect, Transform2D};
 pub use quasar_core::{DisplayOptions, Filter, Scaling, Viewport};
 use std::{error::Error as StdError, fmt};

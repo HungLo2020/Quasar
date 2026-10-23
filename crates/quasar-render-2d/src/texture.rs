@@ -52,10 +52,12 @@ impl Image {
 #[derive(Clone, Debug)]
 pub struct Textures {
     pub(crate) images: BTreeMap<TextureId, Image>,
+    external: BTreeMap<TextureId, (u32, u32)>,
 }
 impl Default for Textures {
     fn default() -> Self {
         Self {
+            external: BTreeMap::new(),
             images: BTreeMap::from([
                 (TextureId::WHITE, Image::new(1, 1, vec![255; 4]).unwrap()),
                 (TextureId::FONT, crate::font::atlas()),
@@ -69,6 +71,21 @@ impl Textures {
         self.images.insert(id, image);
         id
     }
+    /// Declares GPU-only image metadata. A GPU renderer must register the image.
+    pub fn declare_external(&mut self, width: u32, height: u32) -> Result<TextureId> {
+        if width == 0 || height == 0 || width > 16384 || height > 16384 {
+            return Err(invalid("invalid external image dimensions"));
+        }
+        let id = TextureId(NEXT.fetch_add(1, Ordering::Relaxed));
+        self.external.insert(id, (width, height));
+        Ok(id)
+    }
+    pub fn dimensions(&self, id: TextureId) -> Option<(u32, u32)> {
+        self.images
+            .get(&id)
+            .map(|i| (i.width, i.height))
+            .or_else(|| self.external.get(&id).copied())
+    }
     pub fn get(&self, id: TextureId) -> Option<&Image> {
         self.images.get(&id)
     }
@@ -76,7 +93,7 @@ impl Textures {
         if id.0 < 2 {
             false
         } else {
-            self.images.remove(&id).is_some()
+            self.images.remove(&id).is_some() | self.external.remove(&id).is_some()
         }
     }
 }

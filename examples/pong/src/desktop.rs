@@ -1,7 +1,7 @@
 use super::*;
-use pong::{HEIGHT, Phase, WIDTH};
+use pong::Phase;
 use quasar_core::FixedStep;
-use quasar_present::{DisplayOptions, Filter, FramebufferPresenter, PresentOutcome, Scaling};
+use quasar_render_2d::{DisplayOptions, Filter, PresentOutcome, Renderer2D, Scaling, Textures};
 use quasar_storage::{GamePaths, read_json, write_json};
 use quasar_window::{
     GameWindow, WindowConfig,
@@ -150,6 +150,8 @@ pub fn run(
     display.integer |= options.integer;
     let mut app = App {
         presenter: None,
+        textures: Textures::default(),
+        screenshot: None,
         window: None,
         options,
         session,
@@ -172,8 +174,11 @@ pub fn run(
     if let Some(error) = app.error.take() {
         return Err(error.into());
     }
-    app.session
-        .outputs(&app.options, Some(&app.controls.hints()))?;
+    app.session.outputs(
+        &app.options,
+        Some(&app.controls.hints()),
+        app.screenshot.as_deref(),
+    )?;
     if app.save_controls {
         write_json(
             &app.paths.shared_config.join("controls.json"),
@@ -191,7 +196,9 @@ pub fn run(
 }
 struct App {
     // Graphics is explicitly destroyed before the window on suspension/exit.
-    presenter: Option<FramebufferPresenter>,
+    presenter: Option<Renderer2D>,
+    textures: Textures,
+    screenshot: Option<Vec<u8>>,
     window: Option<GameWindow>,
     options: Options,
     session: Session,
@@ -233,10 +240,9 @@ impl App {
         )?;
         window.input.set_bindings(self.controls.bindings.clone())?;
         let size = window.native().inner_size();
-        self.presenter = Some(FramebufferPresenter::new(
+        self.presenter = Some(Renderer2D::for_window(
             window.shared_native(),
             (size.width.max(1), size.height.max(1)),
-            (WIDTH, HEIGHT),
             self.display.options(),
         )?);
         self.window = Some(window);
@@ -249,14 +255,10 @@ impl App {
         if !window.drawable() {
             return Ok(());
         }
-        let outcome = self
-            .presenter
-            .as_mut()
-            .unwrap()
-            .present(&render::frame_with_hints(
-                &self.session.game,
-                &self.controls.hints(),
-            ))?;
+        let outcome = self.presenter.as_mut().unwrap().present(
+            &render::scene_with_hints(&self.session.game, &self.controls.hints()),
+            &self.textures,
+        )?;
         if outcome == PresentOutcome::Presented {
             self.frames += 1;
             if self.options.exercise_window {
@@ -297,10 +299,10 @@ impl App {
                     aspect: None,
                 })?;
                 presenter.resize(0, 0);
-                if presenter.present(&render::frame_with_hints(
-                    &self.session.game,
-                    &self.controls.hints(),
-                ))? != PresentOutcome::Deferred
+                if presenter.present(
+                    &render::scene_with_hints(&self.session.game, &self.controls.hints()),
+                    &self.textures,
+                )? != PresentOutcome::Deferred
                 {
                     return Err("zero-size surface was not deferred".into());
                 }
@@ -448,6 +450,18 @@ impl ApplicationHandler for App {
         ));
     }
     fn exiting(&mut self, _: &ActiveEventLoop) {
+        if let Some(renderer) = &mut self.presenter {
+            if self.options.screenshot.is_some() {
+                let canvas = render::scene_with_hints(&self.session.game, &self.controls.hints());
+                match renderer.render_to_image(&canvas, &self.textures) {
+                    Ok(pixels) => self.screenshot = Some(pixels),
+                    Err(error) => self.error = Some(error.to_string()),
+                }
+            }
+            if self.options.smoke_frames.is_some() {
+                println!("render_2d_stats={:?}", renderer.stats());
+            }
+        }
         self.presenter.take();
         self.window.take();
     }

@@ -25,3 +25,14 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+  gpu-composition:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install software Vulkan and native test dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev mesa-vulkan-drivers xvfb
+      - name: Run GPU lifetime and pixel tests
+        run: xvfb-run -a cargo test --locked -p quasar-composition -p quasar-render-2d --lib -- --include-ignored --test-threads=1
+      - name: Exercise native resize and failed-frame recovery
+        run: xvfb-run -a cargo run --locked -p quasar-composition -- --frames 40 --exercise-window

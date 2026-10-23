@@ -7,7 +7,8 @@ Standalone adaptations: crate paths and logging; an independent Cargo manifest;
 architecture checks rooted at this crate; explicit opt-in shader cache location
 (`VULKANIC_SPIRV_CACHE_DIR`) instead of MattMC/HOME defaults; owned native-window
 surface creation for independent applications; Vulkan portability enumeration;
-raw-handle constructor safety contract; mechanical formatting/lint fixes.
+raw-handle constructor safety contract; additive source-dimension metadata in
+`TextureViewInfo` for shared-image shader compatibility checks; mechanical formatting/lint fixes.
 
 The shaderpack/world-renderer integration suites (backend `conformance.rs`,
 `conformance_matrix.rs`, and `terrain_interpolation_observation.rs`) remain in

@@ -1,0 +1,102 @@
+{
+  "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+  "rust": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+  "frames_per_run": 600,
+  "pairs": 3,
+  "validation": false,
+  "gpu_timestamps": true,
+  "latency_scope": "submission to host-observed GPU completion; excludes input, compositor, and display",
+  "baseline_scope": "same scene, shaders, target cache, mesh and slot allocator; synchronous policy waits after every presented frame; poll policy reclaims completed slots",
+  "results": {
+    "sync": {
+      "blocking_timeline_waits": 588,
+      "device_idle_waits": 0,
+      "resource_creates": 0,
+      "resource_destroys": 0,
+      "rust_allocations": 63066,
+      "rust_allocated_bytes": 17158736,
+      "host_upload_bytes": 1795200,
+      "cpu_frame_ms": {
+        "mean": 0.18597532166666667,
+        "p50": 0.122102,
+        "p95": 0.442682,
+        "p99": 1.84362
+      },
+      "gpu_frame_ms": {
+        "mean": 0.02870650666666667,
+        "p50": 0.028288,
+        "p95": 0.03184,
+        "p99": 0.042688
+      },
+      "cpu_submit_ms": {
+        "mean": 0.04942414,
+        "p50": 0.047236,
+        "p95": 0.069377,
+        "p99": 0.089485
+      },
+      "submission_to_observed_completion_ms": {
+        "mean": 0.076360755,
+        "p50": 0.053792,
+        "p95": 0.229988,
+        "p99": 0.425537
+      },
+      "engine_frame_to_observed_completion_ms": {
+        "mean": 0.18575915666666667,
+        "p50": 0.121884,
+        "p95": 0.442487,
+        "p99": 1.843386
+      }
+    },
+    "poll": {
+      "blocking_timeline_waits": 1,
+      "device_idle_waits": 0,
+      "resource_creates": 0,
+      "resource_destroys": 0,
+      "rust_allocations": 62898,
+      "rust_allocated_bytes": 17139304,
+      "host_upload_bytes": 1795200,
+      "cpu_frame_ms": {
+        "mean": 0.21371070166666667,
+        "p50": 0.124788,
+        "p95": 0.342875,
+        "p99": 2.12684
+      },
+      "gpu_frame_ms": {
+        "mean": 0.02813938767395626,
+        "p50": 0.028064,
+        "p95": 0.028704,
+        "p99": 0.035232
+      },
+      "cpu_submit_ms": {
+        "mean": 0.07056810666666667,
+        "p50": 0.062077,
+        "p95": 0.099259,
+        "p99": 0.130572
+      },
+      "submission_to_observed_completion_ms": {
+        "mean": 0.22600078833333334,
+        "p50": 0.156911,
+        "p95": 0.504,
+        "p99": 2.14042
+      },
+      "engine_frame_to_observed_completion_ms": {
+        "mean": 0.3920260933333333,
+        "p50": 0.24925,
+        "p95": 2.063781,
+        "p99": 2.476515
+      }
+    }
+  },
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 2070",
+    "driver": "580.178.04",
+    "desktop": "Wayland, desktop compositor active"
+  },
+  "scope_notes": [
+    "Small 800x600 cube/HUD workload; not a MattMC gameplay benchmark.",
+    "No exclusive machine/GPU reservation; timing tails include desktop/OS noise.",
+    "Baseline preserves synchronous per-frame retirement policy on otherwise identical composition code; not an archived v0.2.0 binary.",
+    "Wait counters include the final session drain.",
+    "Engine-frame latency covers acquire entry through host-observed GPU completion; excludes event dispatch, compositor and physical display."
+  ]
+}
