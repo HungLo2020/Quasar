@@ -262,6 +262,7 @@ mod tests {
         }
     }
     #[test]
+    #[ignore = "requires Vulkan; run cargo test --workspace -- --include-ignored"]
     fn vulkan_capture_tracks_accepted_uploads_across_submissions_and_invalidates_gpu_writes() {
         use super::super::resources::{BufferDesc, BufferUsage, MemoryDomain};
         use super::super::{CommandList, CommandListDesc, CommandOp, SubmissionBatch, VulkanicGal};

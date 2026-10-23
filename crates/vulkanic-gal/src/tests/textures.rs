@@ -190,6 +190,7 @@ fn texture_row_reversal_is_capability_checked_and_retains_copy_validation() {
 }
 
 #[test]
+#[ignore = "requires Vulkan; run cargo test --workspace -- --include-ignored"]
 fn vulkan_texture_row_reversal_copies_exact_asymmetric_color_and_depth_rows() {
     use crate::backends::vulkan::VulkanBackend;
     // This is deliberately a real device test: inability to create the backend
