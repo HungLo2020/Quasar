@@ -101,17 +101,17 @@ impl VulkanicGal {
         for list in &batch.command_lists {
             for operation in &list.operations {
                 match operation {
-                    CommandOp::BindGraphicsPipeline(handle) => {
-                        if !graphics_pipeline_layouts.contains_key(handle) {
-                            graphics_pipeline_layouts
-                                .insert(*handle, self.graphics_pipelines.get(*handle)?.desc.layout);
-                        }
+                    CommandOp::BindGraphicsPipeline(handle)
+                        if !graphics_pipeline_layouts.contains_key(handle) =>
+                    {
+                        graphics_pipeline_layouts
+                            .insert(*handle, self.graphics_pipelines.get(*handle)?.desc.layout);
                     }
-                    CommandOp::BindComputePipeline(handle) => {
-                        if !compute_pipeline_layouts.contains_key(handle) {
-                            compute_pipeline_layouts
-                                .insert(*handle, self.compute_pipelines.get(*handle)?.desc.layout);
-                        }
+                    CommandOp::BindComputePipeline(handle)
+                        if !compute_pipeline_layouts.contains_key(handle) =>
+                    {
+                        compute_pipeline_layouts
+                            .insert(*handle, self.compute_pipelines.get(*handle)?.desc.layout);
                     }
                     _ => {}
                 }
