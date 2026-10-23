@@ -3,7 +3,8 @@
 Small optional frame helpers extracted after the explicit cube/HUD composition
 worked. This crate depends only on VulkanicGAL. Renderers remain usable without
 it. It owns no GAL, window, game loop, scene, renderer registry or render graph.
-These APIs are available in Git tag `2.1`; Cargo package versions remain `0.2.0`.
+These APIs were introduced in Git tag `2.1`. The current release is `v0.2.1`,
+with Cargo package versions set to `0.2.1`.
 
 `record_and_submit(&mut gal, closure)` opens GAL's existing nestable command
 recording scope. The closure prepares an ordered `Vec<CommandList>` on that GAL.

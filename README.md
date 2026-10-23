@@ -48,9 +48,9 @@ and an editor are future additions.
 
 ## Shared 3D and 2D rendering
 
-Git tag `2.1` adds caller-owned render state, shared targets and GPU textures,
-bounded prepared-command lifetimes, and optional frame helpers. Cargo package
-versions remain `0.2.0`.
+Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
+bounded prepared-command lifetimes, and optional frame helpers. The current
+release is `v0.2.1`, with workspace package versions set to `0.2.1`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.

@@ -1120,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "pong"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "png",
  "quasar-core",
@@ -1152,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-composition"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "png",
  "quasar-frame",
@@ -1165,18 +1165,18 @@ dependencies = [
 
 [[package]]
 name = "quasar-core"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "quasar-frame"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "vulkanic-gal",
 ]
 
 [[package]]
 name = "quasar-input"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-present"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "png",
  "quasar-core",
@@ -1194,7 +1194,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-render-2d"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "png",
  "quasar-core",
@@ -1204,14 +1204,14 @@ dependencies = [
 
 [[package]]
 name = "quasar-render-3d"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "vulkanic-gal",
 ]
 
 [[package]]
 name = "quasar-storage"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-tilemap"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "png",
  "quasar-render-2d",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-window"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "quasar-input",
  "winit",
@@ -1651,7 +1651,7 @@ dependencies = [
 
 [[package]]
 name = "tilequest"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "png",
  "quasar-core",
@@ -1832,7 +1832,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vulkanic-gal"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ash",
  "ash-window",
