@@ -74,26 +74,28 @@ impl World {
         let markers = role("markers")?;
         let runtime = Runtime::new(map)?;
         let objects = runtime.objects(markers)?;
-        let point = |o: &quasar_tilemap::Object| {
-            [
-                (o.x + o.width / 2.).round() as i32 * 256,
-                (o.y + o.height / 2.).round() as i32 * 256,
-            ]
+        let point = |o: &quasar_tilemap::Object| -> Result<[i32; 2]> {
+            Ok([
+                fixed_pixel(o.x + o.width / 2.)?,
+                fixed_pixel(o.y + o.height / 2.)?,
+            ])
         };
         let spawn = objects
             .iter()
             .find(|o| o.class == "spawn")
             .map(point)
+            .transpose()?
             .ok_or("missing spawn marker")?;
         let beacons = objects
             .iter()
             .filter(|o| o.class == "beacon")
-            .map(|o| (o.id, point(o)))
-            .collect::<Vec<_>>();
+            .map(|o| point(o).map(|point| (o.id, point)))
+            .collect::<Result<Vec<_>>>()?;
         let exit = objects
             .iter()
             .find(|o| o.class == "exit")
             .map(point)
+            .transpose()?
             .ok_or("missing exit marker")?;
         if beacons.is_empty() {
             return Err("quest needs at least one beacon".into());
@@ -217,6 +219,16 @@ impl World {
 }
 fn near(a: [i32; 2], b: [i32; 2]) -> bool {
     a[0].abs_diff(b[0]) <= 10 * 256 && a[1].abs_diff(b[1]) <= 10 * 256
+}
+/// Converts a world-space pixel coordinate to the fixed-point units used by the
+/// simulation. Object transforms are validated to `|v| <= 1e9`, so multiplying
+/// by 256 in `i32` would overflow; reject anything outside the representable range.
+fn fixed_pixel(value: f64) -> Result<i32> {
+    let scaled = (value * 256.).round();
+    if !scaled.is_finite() || scaled < f64::from(i32::MIN) || scaled > f64::from(i32::MAX) {
+        return Err("object coordinates exceed fixed-point range".into());
+    }
+    Ok(scaled as i32)
 }
 pub struct Art {
     pub textures: Textures,

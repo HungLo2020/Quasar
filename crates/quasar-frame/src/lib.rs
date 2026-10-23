@@ -92,6 +92,7 @@ pub struct FrameSurface {
     pending: VecDeque<(SubmissionId, Instant, Instant)>,
     completed: VecDeque<(SubmissionId, u64)>,
     frame_completed: VecDeque<(SubmissionId, u64)>,
+    last_present_status: Option<FramePresentStatus>,
 }
 impl FrameSurface {
     pub fn new(width: u32, height: u32) -> Self {
@@ -103,11 +104,20 @@ impl FrameSurface {
             pending: VecDeque::new(),
             completed: VecDeque::new(),
             frame_completed: VecDeque::new(),
+            last_present_status: None,
         }
     }
     pub fn resize(&mut self, width: u32, height: u32) {
         self.size = (width, height);
         self.dirty = true;
+    }
+    /// Current logical surface size.
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+    /// Whether the next acquire will resize the surface and retire cached targets.
+    pub fn needs_resize(&self) -> bool {
+        self.dirty
     }
     pub fn acquire(&mut self, gal: &mut VulkanicGal) -> GalResult<Option<SurfaceFrame>> {
         let started = Instant::now();
@@ -186,6 +196,7 @@ impl FrameSurface {
             correlation_id: frame.acquired.correlation_id,
             wait_for: token.submission,
         })?;
+        self.last_present_status = Some(presented.status);
         if frame.acquired.status == FrameAcquireStatus::Suboptimal
             || matches!(
                 presented.status,
@@ -209,6 +220,10 @@ impl FrameSurface {
     pub fn cancel(&mut self, gal: &mut VulkanicGal, frame: &SurfaceFrame) -> GalResult<()> {
         gal.cancel_frame(frame.acquired.frame)?;
         self.release_targets(gal)
+    }
+    /// Status returned by the most recent successful `present`, if any.
+    pub fn last_present_status(&self) -> Option<FramePresentStatus> {
+        self.last_present_status
     }
     pub fn render(
         &mut self,

@@ -2,7 +2,9 @@
 
 An ordered 2D renderer that consumes VulkanicGAL's public API. It imports no
 native graphics APIs or GAL backend implementations. VulkanicGAL owns driver
-abstraction, shaders, resources, synchronization, and surfaces.
+abstraction, shaders, resources, synchronization, and surfaces. Windowed
+presentation uses `quasar-frame`'s `FrameSurface` for target caching and
+acquire/present; `RenderState2D` composition does not require a surface.
 
 ```rust
 use quasar_render_2d::{Canvas, Rect, Textures, Renderer2D};
@@ -19,7 +21,8 @@ For a desktop surface, construct `Renderer2D::for_window` with an owned window
 `Arc`, physical surface dimensions, and `DisplayOptions`, then call
 `present(&canvas, &textures)`. Forward physical size changes to `resize`.
 Zero-sized surfaces defer presentation. Fit, integer scaling, aspect overrides,
-and nearest/linear texture sampling share viewport math with `quasar-present`.
+and nearest/linear texture sampling share viewport math with the framebuffer
+presenter.
 The logical canvas dimensions determine the game coordinate system.
 
 `Image::new` accepts immutable RGBA8 data. Insert it into `Textures`, retain the
@@ -73,7 +76,8 @@ first use and adds explicit dependencies when moving between attachment,
 sampled and copy uses. GAL manages acquired swapchain-image transitions. See
 [the composition example](../../examples/composition/README.md) for a complete
 world/HUD transaction, including an explicit orchestration path and an optional
-`quasar-frame` path. This crate does not depend on `quasar-frame`.
+`quasar-frame` path. The windowed renderer uses `quasar-frame`'s surface helper;
+`RenderState2D` itself has no surface dependency.
 
 `register_texture(&mut gal, &mut textures, source_view)` validates a same-GAL,
 sampled single-mip 2D RGBA8/BGRA8 view and makes a private view of the existing
@@ -81,6 +85,32 @@ image. It returns a normal `TextureId`; no image copy or CPU pixels are required
 The source owner controls texture contents and orders writes before sampling.
 Publish a new ID when replacing a generation, then remove the old ID. The CPU
 reference renderer returns an error for GPU-only images.
+
+## Software framebuffers and dynamic textures
+
+`FramebufferPresenter::new(window, window_size, source, options)` is the
+drop-in windowed path for a CPU-rendered RGBA8 framebuffer. Call
+`present(&pixels)` with tightly packed, top-to-bottom pixels; scaling,
+filtering, letterboxing, resize, deferred surfaces and completion polling use
+the same code as `Renderer2D`. `render_to_image` returns the source-resolution
+pixels through the same GPU pipeline.
+
+For shared-device composition, use the lower-level dynamic-texture API:
+
+```rust
+let id = state.create_dynamic_texture(&mut gal, &mut textures, width, height)?;
+state.update_dynamic_texture(id, &rgba)?;
+let prepared = state.prepare(&mut gal, &canvas, &textures, target, options, LoadOp::Load)?;
+```
+
+The texture, view, samplers and bindings are created once. `update_dynamic_texture`
+stages pixels; `prepare` consumes them into the prepared command list using a
+per-frame upload slot. Each command list owns its framebuffer snapshot, so
+frames submitted out of preparation order keep their own pixels. Up to three
+slots keep uploads from overwriting in-flight frames; slots are reused only
+after their submission completes. A dynamic texture must be updated before each
+`prepare` that draws it. `destroy_dynamic_texture` releases its GPU resources;
+dynamic textures are not reclaimed by ordinary `Textures` removal.
 
 Prepared command lists contain `TrackSubmission` receipts. Retaining or cloning
 lists keeps their slots reserved. Dropping unsubmitted lists abandons them;
@@ -102,7 +132,8 @@ must belong to the construction GAL, and renderer access must be exclusive.
 
 The optional `png` feature adds `Image::load_png`/`decode_png` with bounded decode
 buffers, palette/transparency expansion, grayscale and 16-bit conversion to RGBA8.
-It does not require the `gpu` feature. APNG is rejected. Insert the decoded image
+It also provides `write_png` for tightly packed RGBA8 output. It does not require
+the `gpu` feature. APNG is rejected. Insert the decoded image
 into the caller-owned `Textures`, then use `SpriteAtlas::grid` for checked uniform
 regions with optional margin/spacing. `AnimationClip` selects frame indices from
 caller-provided elapsed milliseconds; neither helper owns a clock or GPU device.

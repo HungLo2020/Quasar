@@ -31,9 +31,11 @@ in Pong with `--no-default-features`; this 3D example is explicitly GPU-dependen
 The explicit `submit_explicit` implementation opens/closes GAL recording scopes
 and submits directly. It was implemented and tested before extracting
 `quasar-frame::record_and_submit`. `--explicit` retains that direct submission
-path; both native modes use the extracted surface-target cache. Neither renderer
-depends on `quasar-frame`, and clients can coordinate raw GAL acquire/present
-without it. There is no renderer registry, ECS, render graph or plugin system.
+path; both native modes use the extracted surface-target cache. `RenderState2D`
+and `MeshRenderer3D` do not require the surface helper, and clients can
+coordinate raw GAL acquire/present without it; the windowed `Renderer2D` and
+`FramebufferPresenter` use it. There is no renderer registry, ECS, render graph
+or plugin system.
 
 The application owns GAL, its surface and source texture. Each renderer owns
 its pipelines, descriptors and transient storage. The 2D renderer creates a

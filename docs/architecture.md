@@ -13,10 +13,14 @@ The desktop runner implements winit's ordinary `ApplicationHandler`.
 monitor access, raw handles, icons, and advanced window operations. `GameWindow`
 adds shared lifecycle and input behavior without hiding those capabilities.
 
-`quasar-present` accepts any owned window implementing raw-window-handle traits;
-it has no dependency on `quasar-window`. A custom application can use either
-crate alone. It can also skip the framebuffer presenter and record directly
-through VulkanicGAL for higher-level 2D/3D rendering.
+`quasar-render-2d` contains the windowed 2D renderer and the
+`FramebufferPresenter` for CPU-rendered RGBA8 framebuffers. It accepts any owned
+window implementing raw-window-handle traits and uses `quasar-frame` for target
+caching, acquire/present, cancellation and completion polling. A custom
+application can use `RenderState2D` on a caller-owned GAL instead, or skip the
+presenter and record directly through VulkanicGAL for higher-level 2D/3D
+rendering. Dynamic RGBA8 textures are persistent GPU resources updated through
+per-frame upload slots, so they compose with 3D and direct GAL work.
 
 ## Windowing and input contract
 
@@ -59,27 +63,31 @@ Cursor locking falls back to confinement if the platform does not support a lock
 The presenter creates an owned VulkanicGAL surface through ash-window. The
 backend retains an Arc to the native window until its Vulkan resources have
 been destroyed. The legacy raw-integer native-window constructor is unsafe:
-its caller must guarantee native handle validity and lifetime.
+its caller must guarantee native handle validity and lifetime. Framebuffer
+pixels are uploaded into a persistent RGBA8 texture; a fullscreen quad uses the
+same viewport math as other 2D draws.
 
 A framebuffer is tightly packed RGBA8, top row first. Source dimensions stay
-fixed for one presenter. A sampled GPU texture and a fullscreen triangle handle
-letterboxing, nearest/linear filtering and scaling. `Viewport` maps physical
-cursor coordinates back to source pixels and rejects positions in the bars.
-A custom display aspect accommodates non-square source pixels. Integer scaling
-falls back to fit when the window is too small, and custom non-square proportions
-use fit scaling.
+fixed for one presenter. A persistent sampled GPU texture and a fullscreen quad
+handle letterboxing, nearest/linear filtering and scaling. `Viewport` maps
+physical cursor coordinates back to source pixels and rejects positions in the
+bars. A custom display aspect accommodates non-square source pixels. Integer
+scaling falls back to fit when the window is too small, and custom non-square
+proportions use fit scaling.
 
 Resize events mark the surface for recreation before the next acquisition.
 Zero-sized windows defer presentation. Acquire/present status handles changing
 and suboptimal swapchains. OS suspension drops the presenter before the game
 window; resume reconstructs both while preserving simulation state.
 
-The initial presenter uses one frame in flight and waits for submission
-retirement before reusing its upload storage. This favors straightforward
-resource ownership. It is a functional baseline, not a high-throughput renderer;
-per-acquisition frame targets and passes could be cached/pool-managed later.
-The imported GAL also serializes graphics backend lifetimes with a global lock;
-multiple simultaneous GAL instances are not currently supported by this layer.
+`FrameSurface` caches acquired targets and `RenderState2D` caches passes.
+Up to three prepared slots keep geometry, uniforms and framebuffer uploads
+separate until their submission completes; synchronous retirement remains the
+default and completion polling is opt-in. Dynamic framebuffer pixels are staged
+per prepared command list, so out-of-order submission cannot overwrite an
+in-flight frame's contents. The imported GAL still serializes graphics backend
+lifetimes with a global lock; multiple simultaneous GAL instances are not
+currently supported by this layer.
 
 ## Timing and automation
 

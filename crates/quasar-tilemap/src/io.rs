@@ -83,7 +83,10 @@ fn read_json(path: &Path, budget: &mut usize) -> Result<Value> {
 }
 pub fn load(path: impl AsRef<Path>) -> Result<(Map, AssetRoot)> {
     let path = std::fs::canonicalize(path).map_err(|e| error("io", e.to_string()))?;
-    let root = AssetRoot::new(path.parent().unwrap())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| error("path", "map path has no parent directory"))?;
+    let root = AssetRoot::new(parent)?;
     let mut budget = MAX_JSON;
     let value = read_json(&path, &mut budget)?;
     let map = decode(value, &root, &mut budget)?;
@@ -743,7 +746,9 @@ pub fn write_bundle(
         {
             return Err(error("path", "map output aliases an asset"));
         }
-        let dir = target.parent().unwrap();
+        let dir = target
+            .parent()
+            .ok_or_else(|| error("path", "asset path has no parent directory"))?;
         std::fs::create_dir_all(dir).map_err(|e| error("io", e.to_string()))?;
         if !std::fs::canonicalize(dir)
             .map_err(|e| error("io", e.to_string()))?

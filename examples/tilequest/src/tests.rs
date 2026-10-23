@@ -3,6 +3,14 @@ fn world() -> World {
     World::load(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/island.tmj")).unwrap()
 }
 #[test]
+fn object_coordinates_outside_fixed_point_range_are_rejected() {
+    assert_eq!(fixed_pixel(1.0).unwrap(), 256);
+    assert_eq!(fixed_pixel(-1.0).unwrap(), -256);
+    assert!(fixed_pixel(1e9).is_err());
+    assert!(fixed_pixel(-1e9).is_err());
+    assert!(fixed_pixel(f64::NAN).is_err());
+}
+#[test]
 fn autoplay_completes_quest_and_replays_identically() {
     let world = world();
     let mut state = world.initial();

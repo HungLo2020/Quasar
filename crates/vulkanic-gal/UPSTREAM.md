@@ -18,4 +18,6 @@ test creates a stencil attachment instead of assuming the default target has
 stencil storage. Test helpers and diagnostics retained for upstream compatibility
 may be unused by this standalone crate.
 
-The imported source retains its upstream licensing; no new license is asserted.
+The imported source is distributed under the MIT license; see the repository
+[root LICENSE](../../LICENSE). Upstream provenance and attribution are recorded
+above.

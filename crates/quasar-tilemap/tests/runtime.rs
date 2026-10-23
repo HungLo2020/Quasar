@@ -12,6 +12,10 @@ fn parse_fixture(value: Value) -> Map {
     .unwrap()
 }
 #[test]
+fn map_paths_without_a_parent_are_rejected_without_panicking() {
+    assert!(quasar_tilemap::load("/").is_err());
+}
+#[test]
 fn canonical_and_tiled_round_trips_preserve_metadata() {
     let dir = tempfile::tempdir().unwrap();
     let root = AssetRoot::new(dir.path()).unwrap();

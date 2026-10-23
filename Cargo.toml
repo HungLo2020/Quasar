@@ -1,11 +1,13 @@
 [workspace]
-members = ["crates/*", "examples/pong", "examples/composition", "examples/tilequest"]
+members = ["crates/*", "examples/pong", "examples/composition", "examples/tilequest", "examples/framebuffer"]
 default-members = ["examples/pong"]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
+rust-version = "1.94"
+license = "MIT"
 publish = false
 
 [workspace.dependencies]
@@ -15,7 +17,6 @@ quasar-render-3d = { path = "crates/quasar-render-3d" }
 quasar-render-2d = { path = "crates/quasar-render-2d", default-features = false }
 quasar-input = { path = "crates/quasar-input" }
 quasar-window = { path = "crates/quasar-window" }
-quasar-present = { path = "crates/quasar-present" }
 quasar-core = { path = "crates/quasar-core" }
 quasar-storage = { path = "crates/quasar-storage" }
 vulkanic-gal = { path = "crates/vulkanic-gal" }

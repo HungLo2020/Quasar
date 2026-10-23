@@ -2,15 +2,21 @@
 name = "quasar-render-2d"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [features]
 default = ["gpu"]
-gpu = ["dep:vulkanic-gal", "dep:raw-window-handle"]
+gpu = ["dep:vulkanic-gal", "dep:raw-window-handle", "dep:quasar-frame"]
 png = ["dep:png"]
 
 [dependencies]
 quasar-core.workspace = true
+quasar-frame = { workspace = true, optional = true }
 vulkanic-gal = { workspace = true, optional = true }
 raw-window-handle = { workspace = true, optional = true }
 png = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -3,8 +3,8 @@
 An optional mesh renderer consuming VulkanicGAL's public API. No window,
 application loop, scene graph, ECS, asset decoder, or frame coordinator is
 required. This is an initial mesh/material layer, not a full game world renderer.
-These APIs were introduced in Git tag `2.1`. The current release is `v0.2.1`,
-with Cargo package versions set to `0.2.1`.
+These APIs were introduced in Git tag `2.1`. The current release is `v0.2.2`,
+with Cargo package versions set to `0.2.2`.
 
 - `Mesh::upload` accepts indexed triangles with positions, normals and UVs.
 - `Mat4` supplies column-major transforms and right-handed perspective with

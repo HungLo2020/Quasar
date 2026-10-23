@@ -100,8 +100,7 @@ impl Textures {
 
 #[cfg(feature = "png")]
 impl Image {
-    /// Bounded CPU decode of PNG RGB/RGBA/grayscale/indexed images to RGBA8.
-    /// No graphics device is required. Both decoder and output have 64 MiB caps.
+    /// Bounded CPU decode of PNG RGB/RGBA/grayscale/indexed images to RGBA8.    /// No graphics device is required. Both decoder and output have 64 MiB caps.
     pub fn decode_png(reader: impl std::io::Read) -> Result<Self> {
         let mut decoder = png::Decoder::new(reader);
         decoder.set_limits(png::Limits {
@@ -151,4 +150,31 @@ impl Image {
             .map_err(|e| invalid(format!("{}: {e}", path.as_ref().display())))?;
         Self::decode_png(std::io::BufReader::new(file))
     }
+}
+
+/// Saves tightly packed, top-to-bottom RGBA8 pixels without a graphics device.
+#[cfg(feature = "png")]
+pub fn write_png(
+    path: impl AsRef<std::path::Path>,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> Result<()> {
+    if width == 0 || height == 0 || width > 16384 || height > 16384 {
+        return Err(invalid("PNG dimensions must be 1..16384"));
+    }
+    let expected = u64::from(width) * u64::from(height) * 4;
+    if rgba.len() as u64 != expected {
+        return Err(invalid("RGBA length does not match PNG dimensions"));
+    }
+    let file = std::fs::File::create(path.as_ref())
+        .map_err(|e| invalid(format!("{}: {e}", path.as_ref().display())))?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .and_then(|mut writer| writer.write_image_data(rgba))
+        .map_err(|e| invalid(format!("PNG write: {e}")))?;
+    Ok(())
 }

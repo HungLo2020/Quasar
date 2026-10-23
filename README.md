@@ -24,12 +24,12 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `quasar-core` | Fixed-step timing and shared viewport/scaling math | None |
 | `quasar-storage` | Basalt v1 paths and atomic JSON persistence | None |
 | `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
-| `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, camera/transforms, clipping and GPU readback | VulkanicGAL, quasar-core |
+| `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, camera/transforms, clipping, GPU readback, persistent software-framebuffer presentation | VulkanicGAL, quasar-core, quasar-frame |
 | `quasar-tilemap` | Versioned/Tiled maps, indexed tile/object queries, PNG atlases, animation, culled draw lists and CLI | Optional quasar-render-2d |
 | `quasar-render-3d` | Indexed meshes, camera/model transforms, textured materials, lighting, depth and prepared passes | VulkanicGAL |
 | `quasar-frame` | Optional recording transactions, target caching, acquire/present/cancel and completion polling | VulkanicGAL |
-| `quasar-present` | VulkanicGAL framebuffer upload, GPU scaling/filtering, letterboxing, surface lifecycle | VulkanicGAL, quasar-core |
 | `examples/tilequest` | Scrolling top-down quest, layered maps, collision, replays and headless/native verification | Selected crates |
+| `examples/framebuffer` | CPU-rendered RGBA8 framebuffer presented through `quasar-render-2d`, with headless screenshots, window exercises and benchmarks | quasar-render-2d |
 | `examples/pong` | Game rules, 2D draw lists, desktop application, headless CLI and replay | Selected crates |
 
 The desktop example submits a 640×400 logical canvas to `quasar-render-2d`,
@@ -50,7 +50,7 @@ and an editor are future additions.
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.1`, with workspace package versions set to `0.2.1`.
+release is `v0.2.2`, with workspace package versions set to `0.2.2`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.
@@ -66,7 +66,31 @@ See the [composition example](examples/composition/README.md),
 [3D API](crates/quasar-render-3d/README.md), and
 [optional frame helper](crates/quasar-frame/README.md) for ownership, cleanup,
 GPU tests and reproducible synchronous/overlap measurements. Renderer crates
-consume VulkanicGAL's public API and do not depend on a frame coordinator.
+consume VulkanicGAL's public API. The windowed 2D presenter uses
+`quasar-frame` for surface lifecycle; `RenderState2D` composition remains
+usable directly on a caller-owned GAL.
+
+## Software framebuffer presentation
+
+`quasar-render-2d::FramebufferPresenter` presents a tightly packed RGBA8
+software framebuffer through the same GPU quad pipeline, viewport math, and
+surface lifecycle as native 2D rendering. The texture, view, samplers, bindings,
+and per-frame upload slots persist; only pixels are uploaded. Fit/integer
+scaling, nearest/linear filtering, letterboxing, resize, minimized-surface
+deferral, and completion polling match `Renderer2D`. `write_png` and
+`render_to_image` remain available for headless output.
+
+```sh
+cargo run -p framebuffer -- --frames 30 --exercise-window
+cargo run -p framebuffer -- --headless --screenshot /tmp/framebuffer.png
+cargo run -p framebuffer -- --frames 364 --benchmark /tmp/framebuffer-bench.json
+```
+
+For shared-device composition, `RenderState2D::create_dynamic_texture` and
+`update_dynamic_texture` provide the same persistent-texture path without owning
+a window, so software framebuffers can be drawn alongside 3D, native 2D, and
+direct VulkanicGAL passes in one submission. See the
+[framebuffer example](examples/framebuffer/README.md).
 
 ## Configurable controls
 
@@ -91,7 +115,7 @@ See [quasar-input's API and semantics](crates/quasar-input/README.md).
 
 ## Build and verify
 
-Use a current stable Rust toolchain (developed with Rust 1.94). The initial
+Use a current stable Rust toolchain (minimum 1.94; developed with Rust 1.94). The initial
 build needs CMake, Ninja or Make, and a C++ compiler to build shaderc from source.
 On Debian/Ubuntu, useful development packages are `build-essential cmake ninja-build
 pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev
@@ -181,3 +205,9 @@ conversion/edit/preview CLI and benchmarks. Its default drawing adapter creates
 Canvas commands; native rendering remains a consumer of VulkanicGAL through
 quasar-render-2d. Parsing and simulation also run without GPU/window dependencies.
 The map editor remains future work.
+
+## License
+
+Quasar is licensed under the MIT License. See [LICENSE](LICENSE). The imported
+VulkanicGAL source retains its upstream provenance as documented in
+[crates/vulkanic-gal/UPSTREAM.md](crates/vulkanic-gal/UPSTREAM.md).

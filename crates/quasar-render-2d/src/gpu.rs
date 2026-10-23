@@ -1,12 +1,34 @@
-use crate::{Canvas, DisplayOptions, Filter, TextureId, Textures, Viewport};
+use crate::{Canvas, DisplayOptions, Filter, Rect, Sprite, TextureId, Textures, Viewport};
+use quasar_frame::{CompletionPolicy, FrameSurface};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use std::{collections::BTreeMap, sync::Arc};
-use vulkanic_gal::{commands::SubmissionUsage, resources::*, *};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+use vulkanic_gal::{commands::SubmissionUsage, metrics::BackendRuntimeMetrics, resources::*, *};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresentOutcome {
     Presented,
     Deferred,
+}
+/// A persistent, dynamically updated RGBA8 texture owned by a `RenderState2D`.
+/// The GPU texture, view, samplers and resource bindings are created once; only
+/// the pixel contents are uploaded per frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DynamicTexture {
+    id: TextureId,
+    size: (u32, u32),
+}
+impl DynamicTexture {
+    /// Texture-store identity used by `Canvas`/`Sprite` draw commands.
+    pub fn id(self) -> TextureId {
+        self.id
+    }
+    /// Pixel dimensions of the persistent texture.
+    pub fn size(self) -> (u32, u32) {
+        self.size
+    }
 }
 /// Whether a 2D pass clears its target or preserves the existing image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,21 +55,22 @@ struct TextureGpu {
     view: Handle,
     samplers: [Handle; 2],
     combined: [Handle; 2],
+    dynamic: bool,
 }
 struct Slot {
     geometry: Handle,
     uniform: Handle,
+    upload: Handle,
     geometry_capacity: usize,
     uniform_capacity: usize,
+    upload_capacity: usize,
     sets: BTreeMap<TextureId, [Handle; 2]>,
     passes: BTreeMap<Handle, Handle>,
     usage: SubmissionUsage,
 }
-struct Surface {
-    size: Extent3d,
-    dirty: bool,
+struct WindowSurface {
+    frame: FrameSurface,
     options: DisplayOptions,
-    targets: BTreeMap<FrameRenderTargetId, Handle>,
 }
 struct Batch {
     texture: TextureId,
@@ -59,8 +82,7 @@ struct Batch {
 pub struct Renderer2D {
     gal: VulkanicGal,
     state: RenderState2D,
-    surface: Option<Surface>,
-    correlation: u64,
+    surface: Option<WindowSurface>,
     frame_overlap: bool,
 }
 impl Renderer2D {
@@ -76,7 +98,6 @@ impl Renderer2D {
             gal,
             state,
             surface: None,
-            correlation: 0,
             frame_overlap: false,
         })
     }
@@ -104,11 +125,9 @@ impl Renderer2D {
             },
         )?;
         let mut renderer = Self::from_gal(gal)?;
-        renderer.surface = Some(Surface {
-            size: extent(size),
-            dirty: false,
+        renderer.surface = Some(WindowSurface {
+            frame: FrameSurface::new(size.0, size.1),
             options,
-            targets: BTreeMap::new(),
         });
         Ok(renderer)
     }
@@ -124,132 +143,129 @@ impl Renderer2D {
     }
     pub fn resize(&mut self, width: u32, height: u32) {
         if let Some(surface) = &mut self.surface {
-            surface.size = extent((width, height));
-            surface.dirty = true;
+            surface.frame.resize(width, height);
         }
     }
     pub fn stats(&self) -> RenderStats {
         self.state.stats
     }
+    pub fn dynamic_texture_count(&self) -> usize {
+        self.state.dynamic_texture_count()
+    }
+    /// Creates a persistent RGBA8 texture updated through `update_dynamic_texture`.
+    pub fn create_dynamic_texture(
+        &mut self,
+        textures: &mut Textures,
+        width: u32,
+        height: u32,
+    ) -> GalResult<DynamicTexture> {
+        self.state
+            .create_dynamic_texture(&mut self.gal, textures, width, height)
+    }
+    /// Stages pixels for the next `present`/`prepare` that draws the texture.
+    pub fn update_dynamic_texture(
+        &mut self,
+        texture: DynamicTexture,
+        rgba: &[u8],
+    ) -> GalResult<()> {
+        self.state.update_dynamic_texture(texture, rgba)
+    }
+    /// Stages owned pixels without an additional copy.
+    pub fn update_dynamic_texture_owned(
+        &mut self,
+        texture: DynamicTexture,
+        rgba: Vec<u8>,
+    ) -> GalResult<()> {
+        self.state.update_dynamic_texture_owned(texture, rgba)
+    }
+    /// Destroys a dynamic texture and its bindings.
+    pub fn destroy_dynamic_texture(
+        &mut self,
+        textures: &mut Textures,
+        texture: DynamicTexture,
+    ) -> GalResult<()> {
+        self.state
+            .destroy_dynamic_texture(&mut self.gal, textures, texture)
+    }
+    /// GPU resource and submission counters for diagnostics/benchmarks.
+    pub fn gal_metrics(&self) -> Metrics {
+        self.gal.metrics().clone()
+    }
+    /// Backend or adapter name reported by VulkanicGAL.
+    pub fn device_name(&self) -> &str {
+        self.gal.capabilities().name
+    }
+    /// Backend timing, wait, and churn counters for diagnostics/benchmarks.
+    pub fn backend_metrics(&self) -> BackendRuntimeMetrics {
+        self.gal.backend_runtime_metrics()
+    }
+    /// Submission-to-observed-completion latencies accumulated by the surface.
+    pub fn take_completion_latencies(&mut self) -> Vec<(SubmissionId, u64)> {
+        self.surface
+            .as_mut()
+            .map(|surface| surface.frame.take_completion_latencies())
+            .unwrap_or_default()
+    }
+    /// Engine-frame-to-observed-completion latencies accumulated by the surface.
+    pub fn take_frame_completion_latencies(&mut self) -> Vec<(SubmissionId, u64)> {
+        self.surface
+            .as_mut()
+            .map(|surface| surface.frame.take_frame_completion_latencies())
+            .unwrap_or_default()
+    }
     pub fn viewport(&self, canvas: &Canvas) -> Option<Viewport> {
         let s = self.surface.as_ref()?;
-        Viewport::calculate(
-            (canvas.width, canvas.height),
-            (s.size.width, s.size.height),
-            s.options,
-        )
+        let size = s.frame.size();
+        Viewport::calculate((canvas.width, canvas.height), size, s.options)
     }
     pub fn present(&mut self, canvas: &Canvas, textures: &Textures) -> GalResult<PresentOutcome> {
         canvas
             .validate(textures)
             .map_err(|e| GalError::invalid_argument(e.to_string()))?;
-        let surface = self
-            .surface
+        let Self {
+            gal,
+            state,
+            surface,
+            frame_overlap,
+        } = self;
+        let surface = surface
             .as_mut()
             .ok_or_else(|| GalError::invalid_argument("renderer has no window surface"))?;
-        if surface.size.width == 0 || surface.size.height == 0 {
-            return Ok(PresentOutcome::Deferred);
-        }
-        self.correlation += 1;
-        let correlation_id = FrameCorrelationId(self.correlation);
-        let size = surface.size;
         let options = surface.options;
-        if surface.dirty {
-            self.state.release_targets(&mut self.gal)?;
-            for h in std::mem::take(&mut surface.targets).into_values() {
-                self.gal.retire(h)?;
+        let policy = if *frame_overlap {
+            CompletionPolicy::Poll
+        } else {
+            CompletionPolicy::Wait
+        };
+        if surface.frame.needs_resize() {
+            state.release_targets(gal)?;
+        }
+        let _report = match surface.frame.render(gal, policy, |gal, target| {
+            let prepared = state.prepare(gal, canvas, textures, target, options, LoadOp::Clear)?;
+            Ok(vec![prepared.commands])
+        }) {
+            Ok(Some(report)) => report,
+            Ok(None) => {
+                // The surface helper deferred (zero size, minimized, or resized).
+                let _ = state.release_targets(gal);
+                return Ok(PresentOutcome::Deferred);
             }
-            self.gal.resize_frame_surface(FrameResizeDesc {
-                correlation_id,
-                extent: size,
-            })?;
-            surface.dirty = false;
-        }
-        let acquired = self.gal.acquire_frame(FrameAcquireDesc {
-            correlation_id,
-            expected_extent: size,
-        })?;
-        if matches!(
-            acquired.status,
-            FrameAcquireStatus::Minimized | FrameAcquireStatus::Resized
-        ) {
-            return Ok(PresentOutcome::Deferred);
-        }
-        let result = (|| {
-            let target = if let Some(target) = self
-                .surface
-                .as_ref()
-                .unwrap()
-                .targets
-                .get(&acquired.render_target)
-            {
-                *target
-            } else {
-                let target = self.gal.create_frame_target(FrameTargetDesc {
-                    label: "2d-window-target".into(),
-                    frame_id: acquired.frame.0,
-                    render_target: acquired.render_target,
-                    extent: acquired.extent,
-                    color_format: acquired.color_format,
-                })?;
-                self.surface
-                    .as_mut()
-                    .unwrap()
-                    .targets
-                    .insert(acquired.render_target, target);
-                target
-            };
-            (|| {
-                let prepared = self.state.prepare(
-                    &mut self.gal,
-                    canvas,
-                    textures,
-                    target,
-                    options,
-                    LoadOp::Clear,
-                )?;
-                let token = self.gal.submit(SubmissionBatch {
-                    label: "2d-frame".into(),
-                    command_lists: vec![prepared.commands],
-                })?;
-                let presented = self.gal.present_frame(PresentFrameDesc {
-                    frame: acquired.frame,
-                    correlation_id,
-                    wait_for: token.submission,
-                })?;
-                if self.frame_overlap {
-                    self.gal.retire_completed()?;
-                } else {
-                    self.gal.retire_through(token.submission)?;
-                }
-                if acquired.status == FrameAcquireStatus::Suboptimal
-                    || matches!(
-                        presented.status,
-                        FramePresentStatus::Suboptimal | FramePresentStatus::OutOfDate
-                    )
-                {
-                    self.surface.as_mut().unwrap().dirty = true;
-                }
-                Ok(
-                    if matches!(
-                        presented.status,
-                        FramePresentStatus::Presented | FramePresentStatus::Suboptimal
-                    ) {
-                        PresentOutcome::Presented
-                    } else {
-                        PresentOutcome::Deferred
-                    },
-                )
-            })()
-        })();
-        if result.is_err() {
-            let _ = self.gal.cancel_frame(acquired.frame);
-            let _ = self.state.release_targets(&mut self.gal);
-            for h in std::mem::take(&mut self.surface.as_mut().unwrap().targets).into_values() {
-                let _ = self.gal.retire(h);
+            Err(error) => {
+                // The surface helper already cancelled the acquired frame and
+                // released its targets; drop cached passes that point at them.
+                let _ = state.release_targets(gal);
+                return Err(error);
             }
-        }
-        result
+        };
+        let presented = matches!(
+            surface.frame.last_present_status(),
+            Some(FramePresentStatus::Presented | FramePresentStatus::Suboptimal)
+        );
+        Ok(if presented {
+            PresentOutcome::Presented
+        } else {
+            PresentOutcome::Deferred
+        })
     }
     /// Real GPU rendering/readback using the same quad shaders as native frames.
     /// Returns tightly packed top-to-bottom RGBA8, without creating a window.
@@ -340,14 +356,112 @@ impl Renderer2D {
         result
     }
 }
+/// Ready-made software-framebuffer presenter. Owns a `Renderer2D`, a persistent
+/// RGBA8 dynamic texture, and a one-quad canvas; each `present` uploads pixels
+/// into the existing texture and uses the same scaling/letterbox/surface path as
+/// normal 2D rendering. For shared-device composition use `RenderState2D`
+/// directly with `create_dynamic_texture`/`update_dynamic_texture`.
+pub struct FramebufferPresenter {
+    renderer: Renderer2D,
+    source: (u32, u32),
+    textures: Textures,
+    dynamic: DynamicTexture,
+    canvas: Canvas,
+}
+impl FramebufferPresenter {
+    pub fn new<W: HasDisplayHandle + HasWindowHandle + 'static>(
+        window: Arc<W>,
+        window_size: (u32, u32),
+        source: (u32, u32),
+        options: DisplayOptions,
+    ) -> GalResult<Self> {
+        validate_framebuffer_size(source)?;
+        let mut renderer = Renderer2D::for_window(window, window_size, options)?;
+        let mut textures = Textures::default();
+        let dynamic = renderer.state.create_dynamic_texture(
+            &mut renderer.gal,
+            &mut textures,
+            source.0,
+            source.1,
+        )?;
+        let mut canvas = Canvas::new(source.0, source.1)
+            .map_err(|error| GalError::invalid_argument(error.to_string()))?;
+        canvas.sprite(Sprite::new(
+            dynamic.id(),
+            Rect::new(0.0, 0.0, source.0 as f32, source.1 as f32),
+        ));
+        Ok(Self {
+            renderer,
+            source,
+            textures,
+            dynamic,
+            canvas,
+        })
+    }
+    /// Presents one tightly packed, top-to-bottom RGBA8 framebuffer.
+    pub fn present(&mut self, rgba: &[u8]) -> GalResult<PresentOutcome> {
+        self.renderer
+            .state
+            .update_dynamic_texture(self.dynamic, rgba)?;
+        self.renderer.present(&self.canvas, &self.textures)
+    }
+    /// Presents owned pixels without an additional staging copy.
+    pub fn present_owned(&mut self, rgba: Vec<u8>) -> GalResult<PresentOutcome> {
+        self.renderer
+            .state
+            .update_dynamic_texture_owned(self.dynamic, rgba)?;
+        self.renderer.present(&self.canvas, &self.textures)
+    }
+    /// Renders the framebuffer through the same 2D pipeline to a headless image.
+    pub fn render_to_image(&mut self, rgba: &[u8]) -> GalResult<Vec<u8>> {
+        self.renderer
+            .state
+            .update_dynamic_texture(self.dynamic, rgba)?;
+        self.renderer.render_to_image(&self.canvas, &self.textures)
+    }
+    pub fn source_size(&self) -> (u32, u32) {
+        self.source
+    }
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.renderer.resize(width, height);
+    }
+    pub fn options(&self) -> DisplayOptions {
+        self.renderer.options()
+    }
+    pub fn set_options(&mut self, options: DisplayOptions) -> GalResult<()> {
+        self.renderer.set_options(options)
+    }
+    pub fn viewport(&self) -> Option<Viewport> {
+        self.renderer.viewport(&self.canvas)
+    }
+    pub fn set_frame_overlap(&mut self, enabled: bool) {
+        self.renderer.set_frame_overlap(enabled);
+    }
+    pub fn stats(&self) -> RenderStats {
+        self.renderer.stats()
+    }
+    pub fn gal_metrics(&self) -> Metrics {
+        self.renderer.gal_metrics()
+    }
+    pub fn device_name(&self) -> &str {
+        self.renderer.device_name()
+    }
+    pub fn backend_metrics(&self) -> BackendRuntimeMetrics {
+        self.renderer.backend_metrics()
+    }
+    pub fn take_completion_latencies(&mut self) -> Vec<(SubmissionId, u64)> {
+        self.renderer.take_completion_latencies()
+    }
+    pub fn take_frame_completion_latencies(&mut self) -> Vec<(SubmissionId, u64)> {
+        self.renderer.take_frame_completion_latencies()
+    }
+}
 impl Drop for Renderer2D {
     fn drop(&mut self) {
         let _ = self.gal.retire_through(self.gal.latest_submission_id());
         let _ = self.state.release(&mut self.gal);
         if let Some(surface) = &mut self.surface {
-            for h in std::mem::take(&mut surface.targets).into_values() {
-                let _ = self.gal.retire(h);
-            }
+            let _ = surface.frame.release_targets(&mut self.gal);
         }
         let _ = self.gal.shutdown_frame_surface();
     }
@@ -363,6 +477,7 @@ pub struct RenderState2D {
     pipelines: BTreeMap<(TextureFormat, Option<TextureFormat>), Handle>,
     slots: Vec<Slot>,
     textures: BTreeMap<TextureId, TextureGpu>,
+    pending_dynamic: BTreeMap<TextureId, Vec<u8>>,
     uniform_stride: usize,
     stats: RenderStats,
 }
@@ -412,6 +527,7 @@ impl RenderState2D {
                 pipelines: BTreeMap::new(),
                 slots: Vec::new(),
                 textures: BTreeMap::new(),
+                pending_dynamic: BTreeMap::new(),
                 uniform_stride: stride,
                 stats: RenderStats::default(),
             })
@@ -426,6 +542,13 @@ impl RenderState2D {
 
     pub fn stats(&self) -> RenderStats {
         self.stats
+    }
+    /// Number of live persistent dynamic textures owned by this state.
+    pub fn dynamic_texture_count(&self) -> usize {
+        self.textures
+            .values()
+            .filter(|texture| texture.dynamic)
+            .count()
     }
     /// Prepares a pass without acquiring, presenting, or waiting for this pass.
     /// First-use CPU images are uploaded on this GAL queue before their draws.
@@ -498,14 +621,146 @@ impl RenderState2D {
         let id = assets
             .declare_external(info.extent.width, info.extent.height)
             .map_err(|e| GalError::invalid_argument(e.to_string()))?;
-        if let Err(error) =
-            self.install_texture(gal, id, None, view, info.extent.width, info.extent.height)
-        {
+        if let Err(error) = self.install_texture(gal, id, None, view, false) {
             assets.remove(id);
             let _ = gal.retire(view);
             return Err(error);
         }
         Ok(id)
+    }
+    /// Creates a persistent RGBA8 texture whose contents are uploaded per frame.
+    /// The texture, view, samplers and bindings are created once. Call
+    /// [`Self::update_dynamic_texture`] before each `prepare` that draws it.
+    pub fn create_dynamic_texture(
+        &mut self,
+        gal: &mut VulkanicGal,
+        assets: &mut Textures,
+        width: u32,
+        height: u32,
+    ) -> GalResult<DynamicTexture> {
+        if self.layout.is_null() {
+            return Err(GalError::invalid_argument("2D state is released"));
+        }
+        validate_framebuffer_size((width, height))?;
+        let id = assets
+            .declare_external(width, height)
+            .map_err(|e| GalError::invalid_argument(e.to_string()))?;
+        let size = extent((width, height));
+        let mut created = Vec::new();
+        let result = (|| {
+            let texture = gal.create_texture(TextureDesc {
+                label: "2d-dynamic-texture".into(),
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                extent: size,
+                mip_levels: 1,
+                array_layers: 1,
+                usages: vec![TextureUsage::Sampled, TextureUsage::TransferDst],
+            })?;
+            created.push(texture);
+            let view = gal.create_texture_view(TextureViewDesc {
+                label: "2d-dynamic-view".into(),
+                texture,
+                format: TextureFormat::Rgba8Unorm,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+            })?;
+            created.push(view);
+            self.install_texture(gal, id, Some(texture), view, true)?;
+            Ok(DynamicTexture {
+                id,
+                size: (width, height),
+            })
+        })();
+        if result.is_err() {
+            assets.remove(id);
+            for h in created.into_iter().rev() {
+                let _ = gal.retire(h);
+            }
+        }
+        result
+    }
+    /// Stages a full RGBA8 frame for the next `prepare` that draws `texture`.
+    /// The caller supplies tightly packed, top-to-bottom pixels. Staging reuses
+    /// its CPU buffer while possible; the prepared command list owns its snapshot,
+    /// so frames submitted out of preparation order keep their own pixels.
+    pub fn update_dynamic_texture(
+        &mut self,
+        texture: DynamicTexture,
+        rgba: &[u8],
+    ) -> GalResult<()> {
+        let expected = self.validate_dynamic_texture(texture, rgba.len())?;
+        match self.pending_dynamic.get_mut(&texture.id) {
+            Some(buffer) if buffer.len() == expected => buffer.copy_from_slice(rgba),
+            Some(buffer) => *buffer = rgba.to_vec(),
+            None => {
+                self.pending_dynamic.insert(texture.id, rgba.to_vec());
+            }
+        }
+        Ok(())
+    }
+    /// Stages pixels without copying when the caller already owns a `Vec`.
+    pub fn update_dynamic_texture_owned(
+        &mut self,
+        texture: DynamicTexture,
+        rgba: Vec<u8>,
+    ) -> GalResult<()> {
+        self.validate_dynamic_texture(texture, rgba.len())?;
+        self.pending_dynamic.insert(texture.id, rgba);
+        Ok(())
+    }
+    fn validate_dynamic_texture(&self, texture: DynamicTexture, length: usize) -> GalResult<usize> {
+        let expected = validate_framebuffer_size(texture.size)? as usize;
+        if length != expected {
+            return Err(GalError::invalid_argument(format!(
+                "dynamic RGBA length {} does not match {}x{}",
+                length, texture.size.0, texture.size.1
+            )));
+        }
+        if !self
+            .textures
+            .get(&texture.id)
+            .is_some_and(|texture| texture.dynamic)
+        {
+            return Err(GalError::invalid_argument(
+                "dynamic texture is not owned by this render state",
+            ));
+        }
+        Ok(expected)
+    }
+    /// Destroys a dynamic texture and its bindings. Pending pixels are dropped.
+    /// The matching `Textures` entry is removed as well.
+    pub fn destroy_dynamic_texture(
+        &mut self,
+        gal: &mut VulkanicGal,
+        assets: &mut Textures,
+        texture: DynamicTexture,
+    ) -> GalResult<()> {
+        if !self
+            .textures
+            .get(&texture.id)
+            .is_some_and(|texture| texture.dynamic)
+        {
+            return Err(GalError::invalid_argument(
+                "dynamic texture is not owned by this render state",
+            ));
+        }
+        self.pending_dynamic.remove(&texture.id);
+        assets.remove(texture.id);
+        let owned = self.textures.remove(&texture.id).unwrap();
+        for h in owned.combined {
+            gal.retire(h)?;
+        }
+        for h in owned.samplers {
+            gal.retire(h)?;
+        }
+        gal.retire(owned.view)?;
+        if let Some(h) = owned.texture {
+            gal.retire(h)?;
+        }
+        Ok(())
     }
     fn install_texture(
         &mut self,
@@ -513,8 +768,7 @@ impl RenderState2D {
         id: TextureId,
         texture: Option<Handle>,
         view: Handle,
-        _width: u32,
-        _height: u32,
+        dynamic: bool,
     ) -> GalResult<()> {
         let mut samplers = Vec::new();
         let mut combined = Vec::new();
@@ -557,11 +811,18 @@ impl RenderState2D {
                 view,
                 samplers: [samplers[0], samplers[1]],
                 combined: [combined[0], combined[1]],
+                dynamic,
             },
         );
         Ok(())
     }
     fn collect_removed(&mut self, gal: &mut VulkanicGal, assets: &Textures) -> GalResult<()> {
+        let dynamic: BTreeSet<TextureId> = self
+            .textures
+            .iter()
+            .filter(|(_, texture)| texture.dynamic)
+            .map(|(id, _)| *id)
+            .collect();
         for slot in &mut self.slots {
             if slot.usage.has_pending_commands() {
                 continue;
@@ -569,7 +830,7 @@ impl RenderState2D {
             let removed: Vec<_> = slot
                 .sets
                 .keys()
-                .filter(|id| assets.dimensions(**id).is_none())
+                .filter(|id| !dynamic.contains(id) && assets.dimensions(**id).is_none())
                 .copied()
                 .collect();
             for id in removed {
@@ -580,9 +841,9 @@ impl RenderState2D {
         }
         let removed: Vec<_> = self
             .textures
-            .keys()
-            .filter(|id| assets.dimensions(**id).is_none())
-            .copied()
+            .iter()
+            .filter(|(id, texture)| !texture.dynamic && assets.dimensions(**id).is_none())
+            .map(|(id, _)| *id)
             .collect();
         for id in removed {
             let t = self.textures.remove(&id).unwrap();
@@ -652,6 +913,7 @@ impl RenderState2D {
         gal: &mut VulkanicGal,
         geometry: usize,
         uniform: usize,
+        upload: usize,
     ) -> GalResult<usize> {
         let completed = gal.poll_completed();
         let mut index = self.slots.iter().position(|s| {
@@ -660,11 +922,14 @@ impl RenderState2D {
         if index.is_none() && self.slots.len() < 3 {
             let g = geometry.next_power_of_two();
             let u = uniform.next_power_of_two();
+            let up = upload.next_power_of_two().max(1);
             self.slots.push(Slot {
                 geometry: buffer(gal, "2d-geometry", g, BufferUsage::Storage)?,
                 uniform: buffer(gal, "2d-frame", u, BufferUsage::Uniform)?,
+                upload: buffer(gal, "2d-framebuffer-upload", up, BufferUsage::TransferSrc)?,
                 geometry_capacity: g,
                 uniform_capacity: u,
+                upload_capacity: up,
                 sets: BTreeMap::new(),
                 passes: BTreeMap::new(),
                 usage: SubmissionUsage::default(),
@@ -712,6 +977,16 @@ impl RenderState2D {
                 s.uniform = buffer(gal, "2d-frame", s.uniform_capacity, BufferUsage::Uniform)?;
             }
         }
+        if upload > s.upload_capacity {
+            gal.retire(s.upload)?;
+            s.upload_capacity = upload.next_power_of_two();
+            s.upload = buffer(
+                gal,
+                "2d-framebuffer-upload",
+                s.upload_capacity,
+                BufferUsage::TransferSrc,
+            )?;
+        }
         Ok(i)
     }
     pub fn release_targets(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
@@ -740,6 +1015,7 @@ impl RenderState2D {
         }
         self.require_no_pending()?;
         self.release_targets(gal)?;
+        self.pending_dynamic.clear();
         for slot in self.slots.drain(..) {
             for sets in slot.sets.into_values() {
                 for h in sets {
@@ -748,6 +1024,7 @@ impl RenderState2D {
             }
             gal.retire(slot.geometry)?;
             gal.retire(slot.uniform)?;
+            gal.retire(slot.upload)?;
         }
         for t in std::mem::take(&mut self.textures).into_values() {
             for h in t.combined {
@@ -844,7 +1121,7 @@ impl RenderState2D {
                 layer_count: 1,
             })?;
             created.push(view);
-            self.install_texture(gal, id, Some(texture), view, image.width, image.height)?;
+            self.install_texture(gal, id, Some(texture), view, false)?;
             Ok(())
         })();
         if result.is_err() {
@@ -949,10 +1226,51 @@ impl RenderState2D {
         }
         self.stats.batches = batches.len();
         self.stats.geometry_upload_bytes = data.len();
+        let mut dynamic_uploads: Vec<(TextureId, Vec<u8>, (u32, u32))> = Vec::new();
+        let mut seen_dynamic = BTreeSet::new();
+        for batch in &batches {
+            if !seen_dynamic.insert(batch.texture) {
+                continue;
+            }
+            let Some(texture) = self.textures.get(&batch.texture) else {
+                continue;
+            };
+            if !texture.dynamic {
+                continue;
+            }
+            let pixels = self.pending_dynamic.remove(&batch.texture).ok_or_else(|| {
+                GalError::invalid_argument(
+                    "dynamic texture must be updated before it is prepared for drawing",
+                )
+            })?;
+            let size = assets.dimensions(batch.texture).ok_or_else(|| {
+                GalError::invalid_argument("dynamic texture is missing from the texture store")
+            })?;
+            let expected =
+                usize::try_from(u64::from(size.0) * u64::from(size.1) * 4).map_err(|_| {
+                    GalError::invalid_argument("dynamic texture size is not addressable")
+                })?;
+            if pixels.len() != expected {
+                return Err(GalError::invalid_argument(
+                    "dynamic texture pixel length changed after staging",
+                ));
+            }
+            dynamic_uploads.push((batch.texture, pixels, size));
+        }
+        let mut upload_offsets = BTreeMap::new();
+        let mut upload_bytes = 0usize;
+        for (id, pixels, _) in &dynamic_uploads {
+            upload_bytes = align_up(upload_bytes, 4);
+            upload_offsets.insert(*id, upload_bytes);
+            upload_bytes = upload_bytes.checked_add(pixels.len()).ok_or_else(|| {
+                GalError::invalid_argument("dynamic framebuffer upload exceeds addressable size")
+            })?;
+        }
         let index = self.acquire_slot(
             gal,
             data.len().max(80),
             batches.len().max(1) * self.uniform_stride,
+            upload_bytes,
         )?;
         for batch in &batches {
             self.upload(gal, batch.texture, assets)?;
@@ -980,6 +1298,13 @@ impl RenderState2D {
             uniforms[i * self.uniform_stride..i * self.uniform_stride + 32].copy_from_slice(&bytes);
         }
         let pipeline = self.pipeline(gal, format, depth.map(|(_, _, format)| format))?;
+        let mut dynamic_commands = Vec::with_capacity(dynamic_uploads.len());
+        for (id, pixels, size) in dynamic_uploads {
+            let texture = self.textures[&id]
+                .texture
+                .ok_or_else(|| GalError::invalid_argument("dynamic texture has no GPU texture"))?;
+            dynamic_commands.push((upload_offsets[&id] as u64, texture, size, pixels));
+        }
         let slot = &mut self.slots[index];
         if !slot.passes.contains_key(&target) {
             if slot.passes.len() >= 8 {
@@ -999,6 +1324,55 @@ impl RenderState2D {
         let attachment = gal.pass_target_color_attachment(target)?;
         let clear = canvas.clear.0;
         let mut operations = Vec::new();
+        if !dynamic_commands.is_empty() {
+            let mut copy_regions = Vec::with_capacity(dynamic_commands.len());
+            operations.push(barrier(
+                slot.upload,
+                TextureUsageState::TransferSrc,
+                TextureUsageState::TransferDst,
+            ));
+            for (offset, texture, size, pixels) in dynamic_commands {
+                operations.push(CommandOp::HostWriteBuffer {
+                    buffer: slot.upload,
+                    offset,
+                    data: pixels,
+                });
+                copy_regions.push((offset, texture, size));
+            }
+            operations.push(barrier(
+                slot.upload,
+                TextureUsageState::TransferDst,
+                TextureUsageState::TransferSrc,
+            ));
+            for (offset, texture, size) in copy_regions {
+                operations.extend([
+                    // The full image is overwritten, so discarding the previous
+                    // contents is valid and avoids tracking per-frame generations.
+                    barrier(
+                        texture,
+                        TextureUsageState::Undefined,
+                        TextureUsageState::TransferDst,
+                    ),
+                    CommandOp::CopyBufferToTexture(BufferImageCopyRegion {
+                        buffer: slot.upload,
+                        buffer_offset: offset,
+                        bytes_per_row: size.0 * 4,
+                        rows_per_image: size.1,
+                        texture,
+                        texture_mip: 0,
+                        texture_layer: 0,
+                        texture_origin: TextureOrigin3d { x: 0, y: 0, z: 0 },
+                        extent: extent(size),
+                    }),
+                    barrier(
+                        texture,
+                        TextureUsageState::TransferDst,
+                        TextureUsageState::ShaderRead,
+                    ),
+                ]);
+            }
+            self.stats.texture_upload_bytes += upload_bytes;
+        }
         if !data.is_empty() {
             operations.extend([
                 barrier(
@@ -1094,6 +1468,18 @@ fn extent(size: (u32, u32)) -> Extent3d {
         height: size.1,
         depth: 1,
     }
+}
+fn validate_framebuffer_size(size: (u32, u32)) -> GalResult<u64> {
+    if size.0 == 0 || size.1 == 0 || size.0 > 16384 || size.1 > 16384 {
+        return Err(GalError::invalid_argument(
+            "framebuffer dimensions must be 1..16384",
+        ));
+    }
+    Ok(u64::from(size.0) * u64::from(size.1) * 4)
+}
+fn align_up(value: usize, alignment: usize) -> usize {
+    debug_assert!(alignment.is_power_of_two());
+    (value + alignment - 1) & !(alignment - 1)
 }
 fn buffer(
     gal: &mut VulkanicGal,

@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """Build an app-only Basalt v1 archive; never publish or alter user data."""
 import argparse
+import json
 from pathlib import Path
 import platform
 import subprocess
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def package_version():
+    metadata = json.loads(subprocess.check_output(
+        ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'],
+        cwd=ROOT, text=True))
+    return next(package['version'] for package in metadata['packages']
+                if package['name'] == 'pong')
 
 
 def main():
@@ -27,7 +36,12 @@ def main():
     if not binary.is_file():
         parser.error(f'executable not found: {binary}')
     args.output.mkdir(parents=True, exist_ok=True)
-    archive = args.output / f'Pong-0.1.0-{system}-{machine}.zip'
+    version = package_version()
+    archive = args.output / f'Pong-{version}-{system}-{machine}.zip'
+    runtime_notes = (ROOT / 'packaging/PONG-RUNTIME.txt').read_text().splitlines(keepends=True)
+    if not runtime_notes or not runtime_notes[0].startswith('Quasar Pong '):
+        raise SystemExit('packaging/PONG-RUNTIME.txt must start with "Quasar Pong <version>"')
+    runtime_notes[0] = f'Quasar Pong {version}\n'
     with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as output:
         executable = zipfile.ZipInfo('app/bin/pong' + suffix)
         executable.create_system = 3
@@ -35,7 +49,7 @@ def main():
         executable.compress_type = zipfile.ZIP_DEFLATED
         output.writestr(executable, binary.read_bytes())
         output.write(ROOT / 'examples/pong/assets/cover.png', 'app/basalt/cover.png')
-        output.write(ROOT / 'packaging/PONG-RUNTIME.txt', 'app/PONG-RUNTIME.txt')
+        output.writestr('app/PONG-RUNTIME.txt', ''.join(runtime_notes))
     with zipfile.ZipFile(archive) as check:
         names = check.namelist()
         assert all(name.startswith('app/') and '..' not in Path(name).parts for name in names)

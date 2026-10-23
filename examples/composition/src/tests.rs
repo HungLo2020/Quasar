@@ -46,6 +46,99 @@ fn composed_pixels_preserve_world_and_share_texture_with_depth() {
 }
 #[test]
 #[ignore = "requires Vulkan"]
+fn dynamic_software_framebuffer_composes_with_world_and_hud() {
+    use quasar_render_2d::{Canvas, DisplayOptions, LoadOp, Rect, Sprite};
+
+    let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "dynamic composition").unwrap();
+    let mut demo = Demo::new(&mut gal).unwrap();
+    let target = Offscreen::new(&mut gal, 320, 240).unwrap();
+    let dynamic = demo
+        .two_d
+        .create_dynamic_texture(&mut gal, &mut demo.textures, 32, 32)
+        .unwrap();
+    let color = [20, 220, 90, 255];
+    demo.two_d
+        .update_dynamic_texture(dynamic, &color.repeat(32 * 32))
+        .unwrap();
+
+    let (token, _) = submit_explicit(&mut gal, |gal| {
+        let mut commands = vec![list(
+            "dynamic-in",
+            vec![barrier(
+                target.color,
+                TextureUsageState::Undefined,
+                TextureUsageState::ColorAttachment,
+            )],
+        )];
+        commands.extend(demo.commands(gal, target.target, 0.5, true)?);
+        let mut overlay = Canvas::new(320, 240).unwrap();
+        overlay.sprite(Sprite::new(dynamic.id(), Rect::new(8.0, 8.0, 32.0, 32.0)));
+        commands.push(
+            demo.two_d
+                .prepare(
+                    gal,
+                    &overlay,
+                    &demo.textures,
+                    target.target,
+                    DisplayOptions::default(),
+                    LoadOp::Load,
+                )?
+                .commands,
+        );
+        commands.push(list(
+            "dynamic-readback",
+            vec![
+                barrier(
+                    target.color,
+                    TextureUsageState::ColorAttachment,
+                    TextureUsageState::TransferSrc,
+                ),
+                CommandOp::CopyTextureToBuffer(copy(target.readback, target.color, target.size)),
+                barrier(
+                    target.readback,
+                    TextureUsageState::TransferDst,
+                    TextureUsageState::TransferSrc,
+                ),
+                CommandOp::HostReadBuffer {
+                    buffer: target.readback,
+                    offset: 0,
+                    size: u64::from(target.size.width) * u64::from(target.size.height) * 4,
+                },
+            ],
+        ));
+        Ok(commands)
+    })
+    .unwrap();
+    gal.retire_through(token.submission).unwrap();
+    let pixels = gal
+        .completed_host_reads()
+        .into_iter()
+        .find(|read| read.buffer == target.readback && read.submission == token.submission)
+        .unwrap()
+        .bytes;
+    let pixel = |x: usize, y: usize| pixels[(y * 320 + x) * 4..(y * 320 + x) * 4 + 4].to_vec();
+    assert_eq!(pixel(20, 20), color, "dynamic framebuffer must draw");
+    assert_ne!(
+        pixel(160, 145),
+        color,
+        "world pass must remain visible outside the framebuffer"
+    );
+
+    demo.two_d
+        .destroy_dynamic_texture(&mut gal, &mut demo.textures, dynamic)
+        .unwrap();
+    demo.release(&mut gal).unwrap();
+    target.release(&mut gal).unwrap();
+    gal.retire_through(gal.latest_submission_id()).unwrap();
+    assert_eq!(
+        gal.metrics().resource_creates,
+        gal.metrics().resource_destroys,
+        "dynamic composition resources must retire"
+    );
+}
+
+#[test]
+#[ignore = "requires Vulkan"]
 fn prepared_abandonment_clones_failure_and_interleaved_uploads_are_safe() {
     let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "prepared lifetime").unwrap();
     let mut demo = Demo::new(&mut gal).unwrap();

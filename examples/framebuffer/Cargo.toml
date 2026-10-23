@@ -1,0 +1,13 @@
+[package]
+name = "framebuffer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+quasar-render-2d = { workspace = true, features = ["gpu", "png"] }
+quasar-window.workspace = true
+vulkanic-gal.workspace = true
+serde_json.workspace = true

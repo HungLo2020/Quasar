@@ -1,0 +1,35 @@
+{
+  "blocking_timeline_waits": 298,
+  "cpu_present_ms": {
+    "mean": 6.320723,
+    "p50": 6.444492,
+    "p95": 7.065114,
+    "p99": 8.048436,
+    "samples": 299
+  },
+  "device": "Rust Vulkan",
+  "device_idle_waits": 0,
+  "elapsed_ms": 2079.499513,
+  "frames": 299,
+  "gpu_frame_ms": {
+    "mean": 0.264042,
+    "p50": 0.258912,
+    "p95": 0.290176,
+    "p99": 0.300736,
+    "samples": 299
+  },
+  "policy": "synchronous",
+  "resource_creates": 0,
+  "resource_destroys": 0,
+  "rust_allocated_bytes": 310812719,
+  "rust_allocations": 20710,
+  "submission_to_observed_completion_ms": {
+    "mean": 0.584679,
+    "p50": 0.54681,
+    "p95": 0.753782,
+    "p99": 1.114355,
+    "samples": 364
+  },
+  "texture_upload_bytes": 306176000,
+  "warmup_frames": 64
+}
