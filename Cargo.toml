@@ -4,11 +4,12 @@ default-members = ["examples/pong"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 publish = false
 
 [workspace.dependencies]
+quasar-render-2d = { path = "crates/quasar-render-2d", default-features = false }
 quasar-input = { path = "crates/quasar-input" }
 quasar-window = { path = "crates/quasar-window" }
 quasar-present = { path = "crates/quasar-present" }

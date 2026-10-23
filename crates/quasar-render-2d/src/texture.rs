@@ -1,0 +1,82 @@
+use crate::{Result, invalid};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+static NEXT: AtomicU64 = AtomicU64::new(2);
+/// Opaque, non-reused texture identity. Builtins are available in every store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TextureId(pub(crate) u64);
+impl TextureId {
+    pub const WHITE: Self = Self(0);
+    pub const FONT: Self = Self(1);
+}
+#[derive(Debug, Clone)]
+pub struct Image {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) rgba: Arc<[u8]>,
+}
+impl Image {
+    pub fn new(width: u32, height: u32, rgba: impl Into<Arc<[u8]>>) -> Result<Self> {
+        let rgba = rgba.into();
+        if width == 0
+            || height == 0
+            || width > 16384
+            || height > 16384
+            || rgba.len() as u64 != u64::from(width) * u64::from(height) * 4
+        {
+            return Err(invalid("invalid RGBA image dimensions or byte count"));
+        }
+        Ok(Self {
+            width,
+            height,
+            rgba,
+        })
+    }
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+}
+/// Immutable image assets; GPU renderers cache uploads by identity, not per frame.
+/// Removing an asset invalidates future draw lists referencing it.
+#[derive(Clone, Debug)]
+pub struct Textures {
+    pub(crate) images: BTreeMap<TextureId, Image>,
+}
+impl Default for Textures {
+    fn default() -> Self {
+        Self {
+            images: BTreeMap::from([
+                (TextureId::WHITE, Image::new(1, 1, vec![255; 4]).unwrap()),
+                (TextureId::FONT, crate::font::atlas()),
+            ]),
+        }
+    }
+}
+impl Textures {
+    pub fn insert(&mut self, image: Image) -> TextureId {
+        let id = TextureId(NEXT.fetch_add(1, Ordering::Relaxed));
+        self.images.insert(id, image);
+        id
+    }
+    pub fn get(&self, id: TextureId) -> Option<&Image> {
+        self.images.get(&id)
+    }
+    pub fn remove(&mut self, id: TextureId) -> bool {
+        if id.0 < 2 {
+            false
+        } else {
+            self.images.remove(&id).is_some()
+        }
+    }
+}

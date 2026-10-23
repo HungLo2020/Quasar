@@ -1,10 +1,9 @@
 //! A GPU framebuffer presenter built exclusively on VulkanicGAL's public API.
 //! Games supply tightly packed, top-to-bottom RGBA8 pixels. Scaling happens on
 //! the GPU, and the window need only implement raw-window-handle traits.
-mod viewport;
+pub use quasar_core::{DisplayOptions, Filter, Scaling, Viewport};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{path::Path, sync::Arc};
-pub use viewport::{DisplayOptions, Filter, Scaling, Viewport};
 use vulkanic_gal::{resources::*, *};
 
 const VERTEX: &str = include_str!("present.vert");
@@ -50,7 +49,7 @@ impl FramebufferPresenter {
                 "initial window size must be nonzero",
             ));
         }
-        options.validate()?;
+        options.validate().map_err(GalError::invalid_argument)?;
         let size = extent(size);
         let source = extent(source);
         let mut gal = VulkanicGal::create_windowed_vulkan(
@@ -158,7 +157,7 @@ impl FramebufferPresenter {
         self.options
     }
     pub fn set_options(&mut self, options: DisplayOptions) -> GalResult<()> {
-        options.validate()?;
+        options.validate().map_err(GalError::invalid_argument)?;
         self.options = options;
         Ok(())
     }

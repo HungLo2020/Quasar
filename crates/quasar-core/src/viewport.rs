@@ -1,5 +1,3 @@
-use vulkanic_gal::{GalError, GalResult};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Filter {
     #[default]
@@ -22,11 +20,9 @@ pub struct DisplayOptions {
     pub filter: Filter,
 }
 impl DisplayOptions {
-    pub(crate) fn validate(self) -> GalResult<()> {
+    pub fn validate(self) -> Result<(), &'static str> {
         if self.aspect.is_some_and(|(w, h)| w == 0 || h == 0) {
-            return Err(GalError::invalid_argument(
-                "display aspect must be positive",
-            ));
+            return Err("display aspect must be positive");
         }
         Ok(())
     }

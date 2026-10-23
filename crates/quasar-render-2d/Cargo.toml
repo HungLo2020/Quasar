@@ -1,0 +1,14 @@
+[package]
+name = "quasar-render-2d"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+default = ["gpu"]
+gpu = ["dep:vulkanic-gal", "dep:raw-window-handle"]
+
+[dependencies]
+quasar-core.workspace = true
+vulkanic-gal = { workspace = true, optional = true }
+raw-window-handle = { workspace = true, optional = true }

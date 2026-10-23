@@ -1,5 +1,7 @@
 //! Device-independent timing utilities. No window, renderer, or application loop required.
+mod viewport;
 use std::time::Duration;
+pub use viewport::{DisplayOptions, Filter, Scaling, Viewport};
 
 /// A bounded fixed-step accumulator. The game chooses its simulation frequency.
 #[derive(Debug)]

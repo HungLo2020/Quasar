@@ -21,10 +21,11 @@ Losing focus releases held input and pauses an active human-controlled match.
 |---|---|---|
 | `quasar-input` | Portable keyboard/mouse state, named actions, axes, chords, serializable bindings | None |
 | `quasar-window` | Native windows, desktop identity, fullscreen, DPI, cursor capture, native input adapter | quasar-input |
-| `quasar-core` | Bounded fixed-step timing with game-selected frequency | None |
+| `quasar-core` | Fixed-step timing and shared viewport/scaling math | None |
 | `quasar-storage` | Basalt v1 paths and atomic JSON persistence | None |
 | `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
-| `quasar-present` | VulkanicGAL framebuffer upload, GPU scaling/filtering, letterboxing, surface lifecycle | VulkanicGAL |
+| `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, camera/transforms, clipping and GPU readback | VulkanicGAL, quasar-core |
+| `quasar-present` | VulkanicGAL framebuffer upload, GPU scaling/filtering, letterboxing, surface lifecycle | VulkanicGAL, quasar-core |
 | `examples/pong` | Game rules, software drawing, desktop application, headless CLI and replay | Selected crates |
 
 The desktop example presents a 640×400 RGBA image through VulkanicGAL. It uses
@@ -77,7 +78,7 @@ cargo clippy --workspace --all-targets --locked
 python3 tools/verify_pong.py
 ```
 
-Four imported OpenGL/GPU checks are explicitly ignored in ordinary tests because
+Imported OpenGL/GPU checks and the 2D renderer conformance tests are explicitly ignored in ordinary tests because
 they require a graphics environment. Run the full suite with driver access:
 
 ```sh
