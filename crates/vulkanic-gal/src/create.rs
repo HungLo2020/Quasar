@@ -5,19 +5,22 @@
 //! `vulkanic`, and after creation every caller sees capabilities only
 //! (`BackendCapabilities`), never which backend is running.
 
-use super::backends::{
-    self, create_backend, create_borrowed_opengl_backend, create_native_windowed_vulkan_backend,
-};
+use super::backends::create_backend;
+#[cfg(feature = "opengl")]
+use super::backends::create_borrowed_opengl_backend;
+#[cfg(feature = "vulkan")]
+use super::backends::{self, create_native_windowed_vulkan_backend};
 use super::error::GalResult;
+#[cfg(feature = "vulkan")]
 use super::frame::FrameSurfaceDesc;
 use super::gal::VulkanicGal;
 
 /// The graphics API a new GAL runs on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BackendChoice {
-    /// The Vulkan backend.
+    /// The Vulkan backend; requires the `vulkan` feature.
     Vulkan,
-    /// The OpenGL backend.
+    /// The OpenGL backend; requires the `opengl` feature.
     OpenGl,
 }
 
@@ -41,6 +44,7 @@ impl VulkanicGal {
     }
 
     /// An OpenGL GAL that renders through the host's current GL context.
+    #[cfg(feature = "opengl")]
     pub fn create_borrowed_opengl(label: &str, stable_window_id: u64) -> GalResult<Self> {
         Ok(Self::new_with_backend(create_borrowed_opengl_backend(
             label,
@@ -54,6 +58,7 @@ impl VulkanicGal {
     /// The native handles must be valid for their declared platform, and the
     /// window/display must remain alive until the returned GAL is destroyed.
     /// Prefer `create_windowed_vulkan`, which retains the window owner.
+    #[cfg(feature = "vulkan")]
     pub unsafe fn create_native_windowed_vulkan(
         label: &str,
         window: NativeWindow,
@@ -74,7 +79,10 @@ impl VulkanicGal {
 
 /// Turns GPU frame timestamps on or off for every backend that records them.
 pub fn set_gpu_timestamps_requested(requested: bool) {
+    #[cfg(feature = "vulkan")]
     backends::set_gpu_timestamps_requested(requested);
+    #[cfg(not(feature = "vulkan"))]
+    let _ = requested;
 }
 
 impl VulkanicGal {
@@ -84,6 +92,7 @@ impl VulkanicGal {
     /// Wayland, Win32 and Metal (macOS requires a Vulkan portability driver).
     /// Call on the window's owning thread. The window stays alive until the GAL
     /// has destroyed its surface and device.
+    #[cfg(feature = "vulkan")]
     pub fn create_windowed_vulkan<
         W: raw_window_handle::HasDisplayHandle + raw_window_handle::HasWindowHandle + 'static,
     >(

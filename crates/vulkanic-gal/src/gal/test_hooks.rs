@@ -47,13 +47,13 @@ impl VulkanicGal {
         self.backend.as_any_mut().downcast_mut()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "vulkan"))]
     pub(crate) fn vulkan_backend(&self) -> Option<&crate::backends::vulkan::VulkanBackend> {
         self.backend.as_any().downcast_ref()
     }
 
     /// Clears an acquired presentation frame on the Vulkan backend (test GALs only).
-    #[cfg(test)]
+    #[cfg(all(test, feature = "vulkan"))]
     pub(crate) fn clear_acquired_frame_for_test(
         &mut self,
         frame: crate::frame::FrameId,
@@ -64,14 +64,14 @@ impl VulkanicGal {
             .clear_acquired_frame_for_test(frame, color)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "vulkan"))]
     pub(crate) fn vulkan_backend_mut(
         &mut self,
     ) -> Option<&mut crate::backends::vulkan::VulkanBackend> {
         self.backend.as_any_mut().downcast_mut()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "opengl"))]
     pub(crate) fn opengl_backend(&self) -> Option<&crate::backends::opengl::OpenGlBackend> {
         self.backend.as_any().downcast_ref()
     }

@@ -7,8 +7,10 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = ["gpu"]
-gpu = ["dep:vulkanic-gal", "dep:raw-window-handle", "dep:quasar-frame"]
+default = ["gpu", "vulkan"]
+gpu = ["dep:vulkanic-gal", "dep:quasar-frame"]
+vulkan = ["dep:raw-window-handle", "vulkanic-gal/vulkan"]
+opengl = ["vulkanic-gal/opengl"]
 png = ["dep:png"]
 
 [dependencies]

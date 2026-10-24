@@ -1,12 +1,15 @@
 // This module is intentionally private to render::vulkanic. Rust backend
 // implementations must stay behind the Vulkanic frontend boundary, matching the
 // Java rule that non-Vulkanic code cannot import net.vulkanic.backends.*.
+#[cfg(feature = "opengl")]
 pub(super) mod opengl;
+#[cfg(feature = "vulkan")]
 pub(super) mod vulkan;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vulkan", feature = "opengl"))]
 mod graphics_storage_conformance;
 
+#[cfg(any(feature = "vulkan", feature = "opengl"))]
 use std::sync::{Mutex, OnceLock};
 
 use super::commands::ValidatedSubmissionBatch;
@@ -18,12 +21,13 @@ use super::frame::{
 };
 use super::handles::{Handle, HandleKind};
 use super::resources::{
-    BackendCapabilities, BackendFeatureFlags, BackendLimits, BufferDesc,
-    CombinedTextureSamplerDesc, ComputePipelineDesc, FrameTargetDesc, GlslDialect, GpuProfileTag,
-    GraphicsPipelineDesc, PipelineLayoutDesc, RenderPassDesc, RenderTargetDesc, ResourceLayoutDesc,
-    ResourceSetDesc, SamplerDesc, ShaderConventions, ShaderModuleDesc, TextureDesc,
-    TextureViewDesc, GPU_PROFILE_SCOPE_COUNT,
+    BackendCapabilities, BufferDesc, CombinedTextureSamplerDesc, ComputePipelineDesc,
+    FrameTargetDesc, GpuProfileTag, GraphicsPipelineDesc, PipelineLayoutDesc, RenderPassDesc,
+    RenderTargetDesc, ResourceLayoutDesc, ResourceSetDesc, SamplerDesc, ShaderModuleDesc,
+    TextureDesc, TextureViewDesc, GPU_PROFILE_SCOPE_COUNT,
 };
+#[cfg(any(feature = "vulkan", feature = "opengl", test))]
+use super::resources::{BackendFeatureFlags, BackendLimits, GlslDialect, ShaderConventions};
 use super::sync::SubmissionId;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -135,22 +139,37 @@ pub struct BackendRuntimeMetrics {
 }
 
 /// Requests GPU frame timestamps from every backend that records them.
+#[cfg(feature = "vulkan")]
 pub(crate) fn set_gpu_timestamps_requested(requested: bool) {
     vulkan::set_gpu_timestamps_requested(requested);
 }
 
+#[cfg(any(feature = "vulkan", feature = "opengl"))]
 pub(super) fn graphics_backend_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
 pub(crate) fn create_backend(choice: BackendChoice, label: &str) -> GalResult<Box<dyn Backend>> {
+    #[cfg(not(any(feature = "vulkan", feature = "opengl")))]
+    let _ = label;
     match choice {
+        #[cfg(feature = "vulkan")]
         BackendChoice::Vulkan => Ok(Box::new(vulkan::VulkanBackend::new(label)?)),
+        #[cfg(not(feature = "vulkan"))]
+        BackendChoice::Vulkan => Err(GalError::unsupported_feature(
+            "Vulkan backend support is disabled in this build",
+        )),
+        #[cfg(feature = "opengl")]
         BackendChoice::OpenGl => Ok(Box::new(opengl::OpenGlBackend::new(label)?)),
+        #[cfg(not(feature = "opengl"))]
+        BackendChoice::OpenGl => Err(GalError::unsupported_feature(
+            "OpenGL backend support is disabled in this build",
+        )),
     }
 }
 
+#[cfg(feature = "opengl")]
 pub(crate) fn create_borrowed_opengl_backend(
     label: &str,
     stable_window_id: u64,
@@ -161,6 +180,7 @@ pub(crate) fn create_borrowed_opengl_backend(
     )?))
 }
 
+#[cfg(feature = "vulkan")]
 pub(crate) fn create_native_windowed_vulkan_backend(
     label: &str,
     platform: u32,
@@ -260,6 +280,7 @@ pub(super) trait Backend {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
+#[cfg(any(feature = "vulkan", test))]
 pub(super) fn vulkan_capabilities() -> BackendCapabilities {
     BackendCapabilities {
         shader_conventions: ShaderConventions {
@@ -314,6 +335,7 @@ pub(super) fn vulkan_capabilities() -> BackendCapabilities {
     }
 }
 
+#[cfg(any(feature = "vulkan", feature = "opengl", test))]
 pub(super) fn presentation_capabilities(
     mut capabilities: BackendCapabilities,
 ) -> BackendCapabilities {
@@ -321,6 +343,7 @@ pub(super) fn presentation_capabilities(
     capabilities
 }
 
+#[cfg(any(feature = "opengl", test))]
 pub(super) fn opengl_capabilities() -> BackendCapabilities {
     BackendCapabilities {
         shader_conventions: ShaderConventions {
@@ -379,6 +402,7 @@ pub(super) fn opengl_capabilities() -> BackendCapabilities {
     }
 }
 
+#[cfg(feature = "vulkan")]
 pub(crate) fn create_owned_windowed_vulkan_backend<
     W: raw_window_handle::HasDisplayHandle + raw_window_handle::HasWindowHandle + 'static,
 >(

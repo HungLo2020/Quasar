@@ -33,6 +33,7 @@ pub(crate) use self::buffers_textures::*;
 pub(crate) use self::hazards::*;
 pub(crate) use self::normalization::*;
 use self::profiling::*;
+#[cfg(feature = "vulkan")]
 pub(crate) use self::submission::per_frame_validation;
 use self::submission::*;
 

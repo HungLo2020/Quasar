@@ -261,6 +261,7 @@ mod tests {
             assert_eq!(expected_proof, proven, "host write case {case}");
         }
     }
+    #[cfg(feature = "vulkan")]
     #[test]
     #[ignore = "requires Vulkan; run cargo test --workspace -- --include-ignored"]
     fn vulkan_capture_tracks_accepted_uploads_across_submissions_and_invalidates_gpu_writes() {

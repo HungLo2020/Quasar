@@ -40,6 +40,22 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo clippy -p quasar-audio --all-targets --all-features --locked -- -D warnings
+      - name: Check backend feature separation
+        run: |
+          cargo check --locked -p vulkanic-gal --no-default-features
+          cargo check --locked -p vulkanic-gal --no-default-features --features vulkan
+          cargo check --locked -p vulkanic-gal --no-default-features --features opengl
+          cargo check --locked -p quasar-frame --no-default-features
+          cargo check --locked -p quasar-render-2d --no-default-features --features gpu
+          cargo check --locked -p quasar-render-2d --no-default-features --features gpu,vulkan
+          cargo check --locked -p quasar-render-2d --no-default-features --features gpu,opengl
+          cargo check --locked -p quasar-render-3d --no-default-features --features vulkan
+          cargo check --locked -p quasar-render-3d --no-default-features --features opengl
+          cargo clippy --locked -p vulkanic-gal --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked -p vulkanic-gal --all-targets --no-default-features --features opengl -- -D warnings
+          cargo clippy --locked -p quasar-render-2d --all-targets --no-default-features --features gpu -- -D warnings
+          cargo clippy --locked -p quasar-render-2d --all-targets --no-default-features --features gpu,opengl -- -D warnings
+          cargo clippy --locked -p quasar-render-3d --all-targets --no-default-features --features opengl -- -D warnings
       - run: RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
   gpu-composition:
     runs-on: ubuntu-latest
@@ -50,6 +66,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libxkbcommon-dev libxkbcommon-x11-0 libasound2-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev mesa-vulkan-drivers xvfb
       - name: Run GPU lifetime and pixel tests
         run: xvfb-run -a cargo test --locked -p quasar-composition -p quasar-render-2d -p tilequest -p vulkanic-gal -p pong --lib -- --include-ignored --test-threads=1
+
+      - name: Run OpenGL backend and cross-backend conformance tests
+        run: xvfb-run -a cargo test --locked -p vulkanic-gal --no-default-features --features vulkan,opengl --lib -- --include-ignored --test-threads=1
       - name: Exercise native resize and failed-frame recovery
         run: xvfb-run -a cargo run --locked -p quasar-composition -- --frames 40 --exercise-window
       - name: Exercise native Pong window recovery

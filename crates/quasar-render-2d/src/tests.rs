@@ -275,7 +275,7 @@ fn dynamic_and_static_textures_compose_in_one_draw_list() {
     );
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", feature = "vulkan"))]
 #[test]
 #[ignore = "requires Vulkan; run cargo test -p quasar-render-2d -- --include-ignored"]
 fn out_of_order_prepared_dynamic_frames_keep_their_own_pixels() {
@@ -371,6 +371,7 @@ fn out_of_order_prepared_dynamic_frames_keep_their_own_pixels() {
 }
 
 #[cfg(feature = "gpu")]
+#[cfg(feature = "vulkan")]
 fn test_target(
     gal: &mut vulkanic_gal::VulkanicGal,
     size: u32,
@@ -428,6 +429,7 @@ fn test_target(
 }
 
 #[cfg(feature = "gpu")]
+#[cfg(feature = "vulkan")]
 fn append_readback(
     list: &mut vulkanic_gal::CommandList,
     texture: vulkanic_gal::Handle,

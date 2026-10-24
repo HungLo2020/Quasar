@@ -66,13 +66,14 @@ pub use resources::{
 };
 pub use sync::{SubmissionId, SyncToken};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vulkan"))]
 mod tests;
 
 mod diagnostics {
     pub(crate) fn stderr(args: std::fmt::Arguments<'_>) {
         eprintln!("{args}");
     }
+    #[cfg(feature = "vulkan")]
     pub(crate) fn stdout(args: std::fmt::Arguments<'_>) {
         println!("{args}");
     }

@@ -1,10 +1,10 @@
 use crate::{Canvas, DisplayOptions, Filter, Rect, Sprite, TextureId, Textures, Viewport};
 use quasar_frame::{CompletionPolicy, FrameSurface};
+#[cfg(feature = "vulkan")]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "vulkan")]
+use std::sync::Arc;
 use vulkanic_gal::{commands::SubmissionUsage, metrics::BackendRuntimeMetrics, resources::*, *};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +72,15 @@ struct WindowSurface {
     frame: FrameSurface,
     options: DisplayOptions,
 }
+fn window_surface_desc(size: (u32, u32)) -> FrameSurfaceDesc {
+    FrameSurfaceDesc {
+        label: "2d-surface".into(),
+        extent: extent(size),
+        color_format: TextureFormat::Bgra8Unorm,
+        present_mode: PresentMode::AutoVsync,
+        max_frames_in_flight: 3,
+    }
+}
 struct Batch {
     texture: TextureId,
     filter: Filter,
@@ -86,11 +95,30 @@ pub struct Renderer2D {
     frame_overlap: bool,
 }
 impl Renderer2D {
+    /// Creates a headless renderer with the crate's default backend.
+    ///
+    /// Vulkan is selected when the `vulkan` feature is enabled (the default),
+    /// otherwise OpenGL when the `opengl` feature is enabled.
     pub fn headless() -> GalResult<Self> {
-        Self::from_gal(VulkanicGal::create(
-            BackendChoice::Vulkan,
-            "Quasar 2D offscreen",
-        )?)
+        #[cfg(not(any(feature = "vulkan", feature = "opengl")))]
+        {
+            Err(GalError::unsupported_feature(
+                "no graphics backend feature is enabled for quasar-render-2d",
+            ))
+        }
+        #[cfg(any(feature = "vulkan", feature = "opengl"))]
+        {
+            let backend = if cfg!(feature = "vulkan") {
+                BackendChoice::Vulkan
+            } else {
+                BackendChoice::OpenGl
+            };
+            Self::headless_with(backend)
+        }
+    }
+    /// Creates a headless renderer on an explicitly requested backend.
+    pub fn headless_with(backend: BackendChoice) -> GalResult<Self> {
+        Self::from_gal(VulkanicGal::create(backend, "Quasar 2D offscreen")?)
     }
     pub fn from_gal(mut gal: VulkanicGal) -> GalResult<Self> {
         let state = RenderState2D::new(&mut gal)?;
@@ -107,23 +135,36 @@ impl Renderer2D {
     pub fn set_frame_overlap(&mut self, enabled: bool) {
         self.frame_overlap = enabled;
     }
+    /// Wraps a caller-created, already-windowed GAL with a 2D surface.
+    ///
+    /// This is the backend-neutral windowed constructor. The caller owns
+    /// context creation and presentation (including OpenGL buffer swaps).
+    pub fn from_windowed_gal(
+        mut gal: VulkanicGal,
+        size: (u32, u32),
+        options: DisplayOptions,
+    ) -> GalResult<Self> {
+        options.validate().map_err(GalError::invalid_argument)?;
+        gal.configure_frame_surface(window_surface_desc(size))?;
+        Self::with_window_surface(gal, size, options)
+    }
+    /// Creates a renderer on a Vulkan-backed window.
+    #[cfg(feature = "vulkan")]
     pub fn for_window<W: HasDisplayHandle + HasWindowHandle + 'static>(
         window: Arc<W>,
         size: (u32, u32),
         options: DisplayOptions,
     ) -> GalResult<Self> {
         options.validate().map_err(GalError::invalid_argument)?;
-        let gal = VulkanicGal::create_windowed_vulkan(
-            "Quasar 2D",
-            window,
-            FrameSurfaceDesc {
-                label: "2d-surface".into(),
-                extent: extent(size),
-                color_format: TextureFormat::Bgra8Unorm,
-                present_mode: PresentMode::AutoVsync,
-                max_frames_in_flight: 3,
-            },
-        )?;
+        let gal =
+            VulkanicGal::create_windowed_vulkan("Quasar 2D", window, window_surface_desc(size))?;
+        Self::with_window_surface(gal, size, options)
+    }
+    fn with_window_surface(
+        gal: VulkanicGal,
+        size: (u32, u32),
+        options: DisplayOptions,
+    ) -> GalResult<Self> {
         let mut renderer = Self::from_gal(gal)?;
         renderer.surface = Some(WindowSurface {
             frame: FrameSurface::new(size.0, size.1),
@@ -369,6 +410,8 @@ pub struct FramebufferPresenter {
     canvas: Canvas,
 }
 impl FramebufferPresenter {
+    /// Creates a Vulkan-backed presenter for a native window.
+    #[cfg(feature = "vulkan")]
     pub fn new<W: HasDisplayHandle + HasWindowHandle + 'static>(
         window: Arc<W>,
         window_size: (u32, u32),
@@ -376,7 +419,12 @@ impl FramebufferPresenter {
         options: DisplayOptions,
     ) -> GalResult<Self> {
         validate_framebuffer_size(source)?;
-        let mut renderer = Renderer2D::for_window(window, window_size, options)?;
+        let renderer = Renderer2D::for_window(window, window_size, options)?;
+        Self::from_renderer(renderer, source)
+    }
+    /// Wraps a caller-created windowed renderer, regardless of backend.
+    pub fn from_renderer(mut renderer: Renderer2D, source: (u32, u32)) -> GalResult<Self> {
+        validate_framebuffer_size(source)?;
         let mut textures = Textures::default();
         let dynamic = renderer.state.create_dynamic_texture(
             &mut renderer.gal,

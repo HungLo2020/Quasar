@@ -19,7 +19,10 @@ let rgba = renderer.render_to_image(&canvas, &textures)?;
 
 For a desktop surface, construct `Renderer2D::for_window` with an owned window
 `Arc`, physical surface dimensions, and `DisplayOptions`, then call
-`present(&canvas, &textures)`. Forward physical size changes to `resize`.
+`present(&canvas, &textures)`. `for_window` is the Vulkan convenience path; it
+is available with the `vulkan` feature. Backend-neutral callers create a
+windowed `VulkanicGal` themselves and use
+`Renderer2D::from_windowed_gal(gal, size, options)`. Forward physical size changes to `resize`.
 Zero-sized surfaces defer presentation. Fit, integer scaling, aspect overrides,
 and nearest/linear texture sampling share viewport math with the framebuffer
 presenter.
@@ -42,12 +45,17 @@ quad/batch counts and upload bytes. The bitmap font
 covers uppercase ASCII, digits, and simple punctuation; custom fonts can use
 sprite atlases. No scene graph or font shaping is included.
 
-The default `gpu` feature currently requires explicit-binding GLSL conventions
-and uses Vulkan. Three bounded transient slots track prepared command references
-and GPU completion. Native presentation retains synchronous retirement by default;
-`set_frame_overlap(true)` opts into completion polling. Readback explicitly waits.
-`from_gal` accepts an owned compatible GAL; the GAL currently permits one live instance per
-process. Only Linux Vulkan has been verified.
+The default features are `gpu` and `vulkan`; `headless()` therefore uses the
+Vulkan implementation by default. `headless_with(BackendChoice)` requests a
+specific compiled backend. `opengl` is available as an alternative Cargo
+feature, but this crate does not create an OpenGL window or context and does not
+swap OpenGL buffers; use `from_windowed_gal` with a caller-owned context and
+presentation path. Three bounded transient slots track prepared command
+references and GPU completion. Native presentation retains synchronous
+retirement by default; `set_frame_overlap(true)` opts into completion polling.
+Readback explicitly waits. `from_gal` accepts an owned compatible GAL; the GAL
+currently permits one live instance per process. Only Linux Vulkan has been
+verified.
 
 With `default-features = false`, drawing and `reference::rasterize` compile
 without windowing or Vulkan. This CPU reference path supports headless snapshots
@@ -60,6 +68,7 @@ Run the driver-dependent checks explicitly:
 ```sh
 cargo test -p quasar-render-2d -- --include-ignored
 cargo test -p quasar-render-2d --no-default-features
+cargo check -p quasar-render-2d --no-default-features --features gpu,opengl
 ```
 
 ## Caller-owned composition (Git tag `2.1`)
@@ -89,7 +98,9 @@ reference renderer returns an error for GPU-only images.
 ## Software framebuffers and dynamic textures
 
 `FramebufferPresenter::new(window, window_size, source, options)` is the
-drop-in windowed path for a CPU-rendered RGBA8 framebuffer. Call
+Vulkan-backed windowed path for a CPU-rendered RGBA8 framebuffer.
+`FramebufferPresenter::from_renderer(renderer, source)` wraps a caller-created
+windowed renderer instead. Call
 `present(&pixels)` with tightly packed, top-to-bottom pixels; scaling,
 filtering, letterboxing, resize, deferred surfaces and completion polling use
 the same code as `Renderer2D`. `render_to_image` returns the source-resolution

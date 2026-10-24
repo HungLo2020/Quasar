@@ -7,13 +7,13 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-ash = { version = "0.38", default-features = false, features = ["loaded", "std"] }
-ash-window = "0.13"
-raw-window-handle.workspace = true
-glow = "0.18"
-libloading = "0.8"
-libc = "0.2"
-shaderc = { version = "0.10.1", features = ["build-from-source"] }
+ash = { version = "0.38", default-features = false, features = ["loaded", "std"], optional = true }
+ash-window = { version = "0.13", optional = true }
+raw-window-handle = { workspace = true, optional = true }
+glow = { version = "0.18", optional = true }
+libloading = { version = "0.8", optional = true }
+libc = { version = "0.2", optional = true }
+shaderc = { version = "0.10.1", features = ["build-from-source"], optional = true }
 smallvec = "1.15.2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 tracy-client = { version = "0.18.4", default-features = false, features = ["enable", "manual-lifetime", "only-localhost"], optional = true }
@@ -22,4 +22,14 @@ tracy-client = { version = "0.18.4", default-features = false, features = ["enab
 winit.workspace = true
 
 [features]
+default = ["vulkan"]
+vulkan = [
+    "dep:ash",
+    "dep:ash-window",
+    "dep:raw-window-handle",
+    "dep:libloading",
+    "dep:libc",
+    "dep:shaderc",
+]
+opengl = ["dep:glow", "dep:libloading", "dep:libc"]
 tracy = ["dep:tracy-client"]

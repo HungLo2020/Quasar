@@ -54,7 +54,7 @@ and an editor are future additions. Audio is provided by `quasar-audio`; see
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.3`, with workspace package versions set to `0.2.3`.
+release is `v0.2.4`, with workspace package versions set to `0.2.4`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.
@@ -73,6 +73,29 @@ GPU tests and reproducible synchronous/overlap measurements. Renderer crates
 consume VulkanicGAL's public API. The windowed 2D presenter uses
 `quasar-frame` for surface lifecycle; `RenderState2D` composition remains
 usable directly on a caller-owned GAL.
+
+### Graphics backend features
+
+VulkanicGAL's backends are Cargo features. `vulkan` is the default and retains
+the existing Vulkan implementation. `opengl` is an optional backend for an
+existing OpenGL context; this repository does not yet create an OpenGL window,
+context or buffer swap. `quasar-render-2d` and `quasar-render-3d` default to
+Vulkan and forward `vulkan`/`opengl` to the GAL.
+
+```toml
+# Vulkan, the default.
+quasar-render-2d = { path = "crates/quasar-render-2d" }
+
+# OpenGL-only build with no ash/shaderc dependency.
+quasar-render-2d = { path = "crates/quasar-render-2d", default-features = false, features = ["gpu", "opengl"] }
+quasar-render-3d = { path = "crates/quasar-render-3d", default-features = false, features = ["opengl"] }
+```
+
+`Renderer2D::headless_with(BackendChoice)` and
+`Renderer2D::from_windowed_gal(...)` request a renderer rather than a Vulkan
+renderer. `for_window` remains the Vulkan window convenience path. Build without
+a backend to use the GAL frontend with a caller-provided backend or for
+diagnostics; backend creation then returns an explicit unsupported error.
 
 ## Software framebuffer presentation
 

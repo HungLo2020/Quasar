@@ -7,9 +7,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-vulkanic-gal.workspace = true
+vulkanic-gal = { workspace = true, features = ["vulkan"] }
 quasar-frame.workspace = true
-quasar-render-2d = { workspace = true, features = ["gpu"] }
+quasar-render-2d = { workspace = true, features = ["gpu", "vulkan"] }
 quasar-render-3d = { path = "../../crates/quasar-render-3d" }
 quasar-window.workspace = true
 png.workspace = true

@@ -60,12 +60,25 @@ Cursor locking falls back to confinement if the platform does not support a lock
 
 ## Presentation and lifetime
 
-The presenter creates an owned VulkanicGAL surface through ash-window. The
-backend retains an Arc to the native window until its Vulkan resources have
-been destroyed. The legacy raw-integer native-window constructor is unsafe:
-its caller must guarantee native handle validity and lifetime. Framebuffer
-pixels are uploaded into a persistent RGBA8 texture; a fullscreen quad uses the
-same viewport math as other 2D draws.
+VulkanicGAL's `vulkan` and `opengl` backends are independent Cargo features;
+`vulkan` is the default. Vulkan-only dependencies (`ash`, `ash-window`,
+`shaderc`) and OpenGL-only dependencies (`glow`) are not compiled unless their
+feature is selected. `BackendChoice` remains available in both configurations;
+requesting a backend that was compiled out returns an explicit unsupported
+error. A future Direct3D, Metal or software backend can follow the same feature
+and frontend pattern without changing the renderer API.
+
+`Renderer2D::headless_with(BackendChoice)` and
+`Renderer2D::from_windowed_gal(...)` are backend-neutral creation paths.
+`Renderer2D::headless()` and `for_window()` retain the Vulkan default. The
+presenter creates an owned Vulkan surface through ash-window. The backend
+retains an Arc to the native window until its Vulkan resources have been
+destroyed. The legacy raw-integer native-window constructor is unsafe: its
+caller must guarantee native handle validity and lifetime. OpenGL keeps its
+existing borrowed/isolated-context behavior; Quasar does not create an OpenGL
+window, context or buffer swap. Framebuffer pixels are uploaded into a
+persistent RGBA8 texture; a fullscreen quad uses the same viewport math as
+other 2D draws.
 
 A framebuffer is tightly packed RGBA8, top row first. Source dimensions stay
 fixed for one presenter. A persistent sampled GPU texture and a fullscreen quad
