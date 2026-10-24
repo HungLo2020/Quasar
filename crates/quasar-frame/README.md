@@ -3,8 +3,8 @@
 Small optional frame helpers extracted after the explicit cube/HUD composition
 worked. This crate depends only on VulkanicGAL. Renderers remain usable without
 it. It owns no GAL, window, game loop, scene, renderer registry or render graph.
-These APIs were introduced in Git tag `2.1`. The current release is `v0.2.5`,
-with Cargo package versions set to `0.2.5`. This crate does not select a backend
+These APIs were introduced in Git tag `2.1`. The current release is `v0.2.6`,
+with Cargo package versions set to `0.2.6`. This crate does not select a backend
 by default; enable its `vulkan` or `opengl` forwarding feature when the same
 dependency needs a backend, or select one through the renderer crate.
 
@@ -16,6 +16,9 @@ Creation/destruction deltas cover preparation through scope closure. It does
 not implement another resource lifetime system. Use renderer-provided lifetime
 receipts when retaining prepared commands. Explicitly destroyed custom resources
 must not escape the transaction through retained command copies.
+
+The optional `diagnostics` feature lets an explicit `quasar_diagnostics` handle
+receive resize/presentation lifecycle records; it is absent from default builds.
 
 `FrameSurface` tracks an already configured GAL presentation surface. It caches
 frame-target wrappers by acquired-image identity and retires them on resize or

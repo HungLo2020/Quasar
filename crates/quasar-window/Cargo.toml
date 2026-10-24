@@ -11,10 +11,12 @@ default = ["x11"]
 # Enables the X11-native property backend. `x11rb` is optional; the
 # target-specific dependencies are not compiled on Windows or macOS.
 x11 = ["dep:x11rb"]
+diagnostics = ["dep:quasar-diagnostics"]
 
 [dependencies]
 quasar-input.workspace = true
 winit.workspace = true
+quasar-diagnostics = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 raw-window-handle.workspace = true

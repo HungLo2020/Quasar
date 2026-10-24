@@ -6,8 +6,21 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Optional native gamepad backend. The core gamepad types and event routing
+# remain available without this feature.
+gilrs = ["dep:gilrs"]
+diagnostics = ["dep:quasar-diagnostics"]
+
 [dependencies]
 serde.workspace = true
+gilrs = { version = "0.11.2", optional = true }
+quasar-diagnostics = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[[example]]
+name = "gamepad_probe"
+required-features = ["gilrs"]

@@ -8,6 +8,8 @@
 //! create/close windows sequentially, which also exercises window recreation.
 #![cfg(all(target_os = "linux", feature = "x11"))]
 
+#[cfg(feature = "diagnostics")]
+use quasar_diagnostics::{Diagnostics, DiagnosticsConfig, Level, MemorySink};
 use quasar_window::{
     DesktopConfig, GameWindow, WindowConfig, X11Identity,
     winit::{
@@ -286,6 +288,24 @@ fn native_x11_metadata() {
             desktop,
         )
         .expect("create MissileCommand-equivalent window");
+    #[cfg(feature = "diagnostics")]
+    let diagnostics_sink = {
+        use std::sync::Arc;
+        let sink = Arc::new(MemorySink::new(32));
+        harness
+            .app
+            .window
+            .as_mut()
+            .expect("window")
+            .set_diagnostics(Some(Diagnostics::with_config(
+                sink.clone(),
+                DiagnosticsConfig {
+                    min_level: Level::Debug,
+                    ..DiagnosticsConfig::default()
+                },
+            )));
+        sink
+    };
     harness.assert_class("missile-command", "MissileCommand");
     harness.assert_pid();
     harness.assert_normal_window();
@@ -310,6 +330,16 @@ fn native_x11_metadata() {
         assert_eq!(
             harness.property_u32("_NET_WM_OPAQUE_REGION"),
             Some(vec![0, 0, width, height])
+        );
+    }
+    #[cfg(feature = "diagnostics")]
+    {
+        assert!(
+            diagnostics_sink
+                .records()
+                .iter()
+                .any(|record| record.name == "resized"),
+            "window diagnostics did not receive resize events"
         );
     }
     harness.close();

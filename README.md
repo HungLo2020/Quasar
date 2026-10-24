@@ -19,10 +19,12 @@ Losing focus releases held input and pauses an active human-controlled match.
 
 | Crate | Responsibility | Depends on other Quasar crates |
 |---|---|---|
-| `quasar-input` | Portable keyboard/mouse state, named actions, axes, chords, serializable bindings | None |
+| `quasar-input` | Portable keyboard/mouse/gamepad state, player routing, hotplug, deadzones/calibration, named actions, axes, chords, serializable bindings | None |
 | `quasar-window` | Native windows, desktop identity, fullscreen, DPI, cursor capture, native input adapter | quasar-input |
 | `quasar-core` | Fixed-step timing and shared viewport/scaling math | None |
 | `quasar-storage` | Basalt v1 paths and atomic JSON persistence | None |
+| `quasar-assets` | Validated virtual paths, mounts, typed loaders, dependency graphs, schema checks, bounded cache, async worker and hot reload | Optional quasar-storage (Basalt mounts), diagnostics and notify |
+| `quasar-diagnostics` | Explicit structured logs, spans, counters, bounded failure diagnostics and optional CPU frame timing | None |
 | `quasar-audio` | WAV/Ogg decode, deterministic mixing, buses, spatial audio, scheduling, streaming Ogg, offline WAV and CPAL output | Optional quasar-storage (settings) |
 | `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
 | `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, camera/transforms, clipping, GPU readback, persistent software-framebuffer presentation | VulkanicGAL, quasar-core, quasar-frame |
@@ -33,6 +35,16 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `examples/framebuffer` | CPU-rendered RGBA8 framebuffer presented through `quasar-render-2d`, with headless screenshots, window exercises and benchmarks | quasar-render-2d |
 | `examples/audio` | Music, overlapping/spatial effects, buses, voice groups, procedural audio, offline WAV output and audio benchmarks | quasar-audio |
 | `examples/pong` | Game rules, 2D draw lists, desktop application, headless CLI and replay | Selected crates |
+
+Controller support lives in `quasar-input`: pure gamepad types, hotplug/player
+routing, deadzones, calibration and combined keyboard/gamepad actions, plus an
+optional `gilrs` adapter. See
+[the input guide](crates/quasar-input/README.md). Generic asset paths, mounts,
+typed loaders, dependency graphs and bounded caches live in
+[`quasar-assets`](crates/quasar-assets/README.md); neither crate requires a
+runner, editor or build tool. Optional observability uses the explicit,
+feature-gated [`quasar-diagnostics`](docs/diagnostics.md) layer; async loading and
+hot reload are documented in [async assets](docs/async-assets.md).
 
 ### Desktop window identity
 
@@ -57,8 +69,9 @@ verified architecture; arm64 and riscv64 remain unverified targets.
 
 There is no editor yet. The working interpretation of [requirements](REQUIREMENTS.md)
 is that a future optional editor uses Qt/KDE frameworks; standalone game windows
-use Rust/winit. Controller/analog backends, advanced 3D rendering,
-and an editor are future additions. Audio is provided by `quasar-audio`; see
+use Rust/winit. Controller support is available through `quasar-input`'s optional
+`gilrs` backend and pure event API; advanced 3D rendering and an editor remain
+future additions. Audio is provided by `quasar-audio`; see
 [the audio audit and feature matrix](docs/audio-audit.md) and
 [the implementation report](docs/audio-implementation-report.md).
 
@@ -66,7 +79,7 @@ and an editor are future additions. Audio is provided by `quasar-audio`; see
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.5`, with workspace package versions set to `0.2.5`.
+release is `v0.2.6`, with workspace package versions set to `0.2.6`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.

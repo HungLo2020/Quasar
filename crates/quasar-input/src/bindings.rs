@@ -1,13 +1,13 @@
-use crate::{Button, Key};
+use crate::{Button, GamepadAxis, GamepadButton, Key};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     error::Error,
     fmt,
 };
 
-/// One source for a named action. Multiple sources are summed and clamped to [-1,1].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One source for a named action. Multiple sources are summed and clamped to \[-1,1\].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Binding {
     /// A digital button contributes +1 while held.
@@ -16,6 +16,9 @@ pub enum Binding {
     Axis { negative: Button, positive: Button },
     /// All buttons must be held; pressing the last activates the action.
     Chord { buttons: Vec<Button> },
+    /// A processed analog axis, multiplied by `scale` (use -1 to invert).
+    /// Sticks are in \[-1,1\] and triggers are in \[0,1\] after configuration.
+    GamepadAxis { axis: GamepadAxis, scale: f32 },
 }
 impl Binding {
     pub fn key(key: Key) -> Self {
@@ -34,7 +37,18 @@ impl Binding {
             buttons: keys.into_iter().map(Button::Key).collect(),
         }
     }
-    pub(crate) fn value(&self, held: &HashSet<Button>) -> f32 {
+    pub fn gamepad_button(button: GamepadButton) -> Self {
+        Self::Button {
+            button: Button::Gamepad(button),
+        }
+    }
+    pub fn gamepad_axis(axis: GamepadAxis) -> Self {
+        Self::GamepadAxis { axis, scale: 1.0 }
+    }
+    pub fn gamepad_axis_scaled(axis: GamepadAxis, scale: f32) -> Self {
+        Self::GamepadAxis { axis, scale }
+    }
+    pub(crate) fn value(&self, held: &HashSet<Button>, axes: &HashMap<GamepadAxis, f32>) -> f32 {
         match self {
             Self::Button { button } => u8::from(held.contains(button)) as f32,
             Self::Axis { negative, positive } => {
@@ -43,13 +57,14 @@ impl Binding {
             Self::Chord { buttons } => {
                 u8::from(buttons.iter().all(|button| held.contains(button))) as f32
             }
+            Self::GamepadAxis { axis, scale } => axes.get(axis).copied().unwrap_or(0.0) * scale,
         }
     }
 }
 
 /// Serializable named actions. An empty list deliberately disables an action.
 /// This is configuration only: no OS, file I/O, or game-specific actions.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Bindings {
     pub actions: BTreeMap<String, Vec<Binding>>,
@@ -71,22 +86,27 @@ impl Bindings {
                         buttons.is_empty()
                             || buttons.iter().collect::<HashSet<_>>().len() != buttons.len()
                     }
+                    Binding::GamepadAxis { scale, .. } => !scale.is_finite(),
                     Binding::Button { .. } => false,
                 };
                 if invalid {
                     return Err(BindingError(format!(
-                        "action '{action}' has an empty/duplicate chord or identical axis buttons"
+                        "action '{action}' has an empty/duplicate chord, identical axis buttons, or a non-finite gamepad scale"
                     )));
                 }
             }
         }
         Ok(())
     }
-    pub(crate) fn values(&self, held: &HashSet<Button>) -> impl Iterator<Item = (&str, f32)> {
-        self.actions.iter().map(|(name, bindings)| {
+    pub(crate) fn values<'a>(
+        &'a self,
+        held: &'a HashSet<Button>,
+        axes: &'a HashMap<GamepadAxis, f32>,
+    ) -> impl Iterator<Item = (&'a str, f32)> + 'a {
+        self.actions.iter().map(move |(name, bindings)| {
             let value = bindings
                 .iter()
-                .map(|b| b.value(held))
+                .map(|b| b.value(held, axes))
                 .sum::<f32>()
                 .clamp(-1.0, 1.0);
             (name.as_str(), value)

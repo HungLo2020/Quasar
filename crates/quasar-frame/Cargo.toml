@@ -10,6 +10,8 @@ publish.workspace = true
 default = []
 vulkan = ["vulkanic-gal/vulkan"]
 opengl = ["vulkanic-gal/opengl"]
+diagnostics = ["dep:quasar-diagnostics"]
 
 [dependencies]
 vulkanic-gal = { workspace = true }
+quasar-diagnostics = { workspace = true, optional = true }

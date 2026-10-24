@@ -1,5 +1,7 @@
 //! Optional caller-owned frame transactions, extracted from the explicit
 //! composition example. No renderer, window, scene graph, runtime or scheduler.
+#[cfg(feature = "diagnostics")]
+use quasar_diagnostics::{Diagnostics, Field, Level};
 use std::{
     collections::{BTreeMap, VecDeque},
     time::{Duration, Instant},
@@ -93,6 +95,8 @@ pub struct FrameSurface {
     completed: VecDeque<(SubmissionId, u64)>,
     frame_completed: VecDeque<(SubmissionId, u64)>,
     last_present_status: Option<FramePresentStatus>,
+    #[cfg(feature = "diagnostics")]
+    diagnostics: Option<Diagnostics>,
 }
 impl FrameSurface {
     pub fn new(width: u32, height: u32) -> Self {
@@ -105,11 +109,34 @@ impl FrameSurface {
             completed: VecDeque::new(),
             frame_completed: VecDeque::new(),
             last_present_status: None,
+            #[cfg(feature = "diagnostics")]
+            diagnostics: None,
         }
+    }
+    /// Attaches an explicit diagnostics handle for frame lifecycle events.
+    #[cfg(feature = "diagnostics")]
+    pub fn set_diagnostics(&mut self, diagnostics: Option<Diagnostics>) {
+        self.diagnostics = diagnostics;
+    }
+    #[cfg(feature = "diagnostics")]
+    pub fn diagnostics(&self) -> Option<&Diagnostics> {
+        self.diagnostics.as_ref()
     }
     pub fn resize(&mut self, width: u32, height: u32) {
         self.size = (width, height);
         self.dirty = true;
+        #[cfg(feature = "diagnostics")]
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.event_with(
+                Level::Debug,
+                "quasar.frame",
+                "resize",
+                [
+                    Field::new("width", u64::from(width)),
+                    Field::new("height", u64::from(height)),
+                ],
+            );
+        }
     }
     /// Current logical surface size.
     pub fn size(&self) -> (u32, u32) {
@@ -197,6 +224,20 @@ impl FrameSurface {
             wait_for: token.submission,
         })?;
         self.last_present_status = Some(presented.status);
+        #[cfg(feature = "diagnostics")]
+        if let Some(diagnostics) = &self.diagnostics
+            && diagnostics.is_enabled(Level::Trace)
+        {
+            diagnostics.event_with(
+                Level::Trace,
+                "quasar.frame",
+                "present",
+                [
+                    Field::new("submission", token.submission.0),
+                    Field::new("status", format!("{:?}", presented.status)),
+                ],
+            );
+        }
         if frame.acquired.status == FrameAcquireStatus::Suboptimal
             || matches!(
                 presented.status,

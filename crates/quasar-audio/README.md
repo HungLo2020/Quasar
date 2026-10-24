@@ -166,6 +166,11 @@ from its authoritative simulation state.
 
 ## Diagnostics
 
+The optional `diagnostics` feature adds an explicit `quasar-diagnostics` handle
+for startup, command/queue and device failure records (`open_with_diagnostics`);
+it is not enabled by default. The existing counter snapshots below remain
+independent of that hook.
+
 `MixerDiagnostics` reports active/scheduled voices, starts, finishes, explicit
 stops, steals, late starts, streaming underruns, decode errors, clipped frames,
 the current mixer frame and peak. `EngineDiagnostics` adds queue occupancy and

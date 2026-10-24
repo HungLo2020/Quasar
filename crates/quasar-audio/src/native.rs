@@ -14,6 +14,8 @@ use crate::spatial::{Listener, SpatialConfig};
 use crate::stream::StreamSource;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
+#[cfg(feature = "diagnostics")]
+use quasar_diagnostics::{Diagnostics, Field};
 use std::{
     collections::BTreeSet,
     sync::{
@@ -217,6 +219,8 @@ pub struct AudioEngine {
     buses: Mutex<BTreeSet<BusId>>,
     shutdown: Option<Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    #[cfg(feature = "diagnostics")]
+    diagnostics: Option<Diagnostics>,
 }
 impl AudioEngine {
     /// Lists output devices for the default host.
@@ -246,6 +250,30 @@ impl AudioEngine {
     /// fails, the error is returned from this call and no engine is produced.
     pub fn open(device_name: Option<&str>, config: EngineConfig) -> AudioResult<Self> {
         validate_engine_config(&config)?;
+        Self::open_internal(device_name, config)
+    }
+    /// Opens a device and attaches an explicit diagnostics handle, capturing both
+    /// startup failures and subsequent command/device failure paths.
+    #[cfg(feature = "diagnostics")]
+    pub fn open_with_diagnostics(
+        device_name: Option<&str>,
+        config: EngineConfig,
+        diagnostics: Option<Diagnostics>,
+    ) -> AudioResult<Self> {
+        match Self::open(device_name, config) {
+            Ok(mut engine) => {
+                engine.set_diagnostics(diagnostics);
+                Ok(engine)
+            }
+            Err(error) => {
+                if let Some(diagnostics) = diagnostics {
+                    diagnostics.failure("quasar.audio", "open", &error);
+                }
+                Err(error)
+            }
+        }
+    }
+    fn open_internal(device_name: Option<&str>, config: EngineConfig) -> AudioResult<Self> {
         let (sender, receiver) = crossbeam_channel::bounded(config.command_capacity);
         let (startup_sender, startup_receiver) = crossbeam_channel::bounded(1);
         let (shutdown_sender, shutdown_receiver) = crossbeam_channel::bounded(1);
@@ -301,7 +329,19 @@ impl AudioEngine {
             buses: Mutex::new(BTreeSet::from([BusId::MASTER])),
             shutdown: Some(shutdown_sender),
             thread: Some(thread),
+            #[cfg(feature = "diagnostics")]
+            diagnostics: None,
         })
+    }
+    /// Attaches an explicit diagnostics handle for queue/device failures.
+    #[cfg(feature = "diagnostics")]
+    pub fn set_diagnostics(&mut self, diagnostics: Option<Diagnostics>) {
+        self.diagnostics = diagnostics;
+    }
+    /// Explicit diagnostics handle attached with [`Self::set_diagnostics`].
+    #[cfg(feature = "diagnostics")]
+    pub fn diagnostics_handle(&self) -> Option<&Diagnostics> {
+        self.diagnostics.as_ref()
     }
     /// Opens the default device, returning `None` when no device is available.
     pub fn try_open(config: EngineConfig) -> Option<Self> {
@@ -533,13 +573,28 @@ impl AudioEngine {
         Self::open(name.as_deref(), config)
     }
     fn send(&self, command: Command) -> AudioResult<()> {
-        match self.commands.try_send(command) {
+        let result = match self.commands.try_send(command) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(AudioError::QueueFull),
             Err(TrySendError::Disconnected(_)) => {
                 Err(AudioError::DeviceLost("audio callback has stopped".into()))
             }
+        };
+        #[cfg(feature = "diagnostics")]
+        if let Err(error) = &result
+            && let Some(diagnostics) = &self.diagnostics
+        {
+            diagnostics.failure_with_fields(
+                "quasar.audio",
+                "command",
+                error,
+                [Field::new(
+                    "device",
+                    self.device_name.as_deref().unwrap_or(""),
+                )],
+            );
         }
+        result
     }
 }
 impl Drop for AudioEngine {

@@ -11,6 +11,7 @@ description = "Independent Quasar audio mixing, decoding, scheduling and device 
 default = ["native"]
 native = ["dep:cpal"]
 settings = ["dep:serde", "dep:quasar-storage"]
+diagnostics = ["dep:quasar-diagnostics"]
 
 [dependencies]
 crossbeam-channel = "0.5"
@@ -19,6 +20,7 @@ lewton = "0.10"
 cpal = { version = "0.15.3", optional = true }
 serde = { workspace = true, optional = true }
 quasar-storage = { workspace = true, optional = true }
+quasar-diagnostics = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

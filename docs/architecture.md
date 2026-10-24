@@ -43,23 +43,59 @@ affecting Wayland or non-Linux builds. See
 [desktop window identity](window-identity.md) for the reference-game audit,
 property contract, migration examples and validation procedure.
 
-`quasar-input` owns backend-independent physical key/mouse identifiers, device
-state, named action values, and accumulated press/release edges. It depends only
-on serde. `quasar-window::input` translates native winit events; `GameWindow`
-automatically feeds its public `InputState` through that adapter.
+`quasar-diagnostics` is an explicit, independently usable observability layer.
+It has no global logger or runtime; callers own a `Diagnostics` handle and a
+`Sink`. Records are bounded structured data with optional spans, counters,
+failure chains and CPU frame timing behind a `timing` feature. Window, input,
+audio, frame and asset hooks are optional Cargo features and accept an explicit
+handle, so default builds do not compile the diagnostics crate or format records.
+See [diagnostics](diagnostics.md).
+
+`quasar-input` owns backend-independent physical key/mouse/gamepad identifiers,
+device state, named action values, and accumulated press/release edges. It
+depends only on serde by default. Controller types, `GamepadHub` player routing
+and `GamepadEvent` ingestion are pure Rust; the optional `gilrs` feature adds the
+native adapter without changing the core dependency graph. One `PlayerInput` per
+player combines keyboard, mouse and assigned-gamepad bindings; deadzones,
+calibration, reconnect preferences and multiple local players stay in the input
+layer rather than a renderer or runner. `quasar-window::input` translates native
+winit events; `GameWindow` automatically feeds its public `InputState` through
+that adapter. See [controller input](controller-input.md) for hotplug, player
+routing, calibration and platform notes.
 
 Games install serializable `Bindings` and define their own action names. Digital
 buttons, opposing-button axes, and chords can feed an action; alternatives sum
 and clamp to [-1,1]. Actions update on each device change, preserving short taps
 and correct release behavior when alternate bindings overlap. Empty action lists
 are deliberate unbindings. Wheel units and relative mouse motion remain raw data;
-controller/analog backends are not implemented yet.
+controller buttons and analog axes use the gamepad types described above.
 
 Call `consume_edges` after the first consuming simulation tick, not per render
 or native event. Held values survive catch-up ticks. OS repeats do not create
-new physical press edges. Text remains separate from physical key state. Focus
-loss releases devices and clears stale action presses, motion and text. The
+new physical press edges. Text remains separate from physical key state.
+
+Focus loss releases devices and clears stale action presses, motion and text. The
 window layer releases/shows the cursor; pausing simulation remains game policy.
+
+## Asset loading and caching
+
+`quasar-assets` is a headless, synchronous layer between filesystems/archives and
+games. `AssetPath` is validated and portable; `AssetServer` resolves the longest
+matching mount prefix, gives the source a relative path, and invokes an explicitly
+registered typed `AssetLoader`. Loaders never guess a decoder from a file
+extension. `Handle<T>` owns an `Arc<T>`, so cache eviction cannot invalidate
+values still in use. `Asset::dependencies` records graph edges used for
+`load_order`, `dependents` and unload safety; loader/asset schema versions and
+`LoadContext::require_schema_version` make incompatible data an explicit error.
+`FileSource` canonicalizes and confines reads to its root (including symlinks),
+while `MemorySource` covers embedded/generated content and tests. Budgets limit
+entries and bytes and evict only unreferenced, non-dependency values. The core
+has no required dependencies; optional features add serde paths/IDs and Basalt
+path helpers. Asset files need not be in Git and no editor or build tool is
+involved. Optional `async`/`hot-reload` features add a bounded serial worker and
+`notify` watcher; typed reloads are explicit, cache revisions expose conflicts,
+and old `Handle` values remain valid. See [asset management](asset-management.md)
+and [async assets](async-assets.md) for the API, cache and lifecycle rules.
 
 Pong consumes named paddle/serve/pause/restart actions. Desktop commands such as
 fullscreen/filter/scale/quit also use named bindings, consuming their own edges

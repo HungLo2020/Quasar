@@ -29,6 +29,8 @@
 //! audit, property contract, migration examples and native X11/KWin validation
 //! procedure.
 pub mod input;
+#[cfg(feature = "diagnostics")]
+use quasar_diagnostics::{Diagnostics, Field, Level};
 pub use quasar_input::InputState;
 use std::{error::Error, fmt, sync::Arc};
 pub use winit;
@@ -496,6 +498,8 @@ pub struct GameWindow {
     desktop: DesktopManager,
     desktop_size: Option<(u32, u32)>,
     desktop_error: Option<String>,
+    #[cfg(feature = "diagnostics")]
+    diagnostics: Option<Diagnostics>,
 }
 
 impl GameWindow {
@@ -597,7 +601,34 @@ impl GameWindow {
             desktop: desktop_manager,
             desktop_size,
             desktop_error: None,
+            #[cfg(feature = "diagnostics")]
+            diagnostics: None,
         })
+    }
+
+    /// Attaches an explicit diagnostics handle. No global logger is required;
+    /// pass `None` to disable window instrumentation.
+    #[cfg(feature = "diagnostics")]
+    pub fn set_diagnostics(&mut self, diagnostics: Option<Diagnostics>) {
+        self.diagnostics = diagnostics;
+        if let Some(diagnostics) = &self.diagnostics
+            && diagnostics.is_enabled(Level::Info)
+        {
+            let size = self.window.inner_size();
+            diagnostics.event_with(
+                Level::Info,
+                "quasar.window",
+                "diagnostics_attached",
+                [
+                    Field::new("width", u64::from(size.width)),
+                    Field::new("height", u64::from(size.height)),
+                ],
+            );
+        }
+    }
+    #[cfg(feature = "diagnostics")]
+    pub fn diagnostics(&self) -> Option<&Diagnostics> {
+        self.diagnostics.as_ref()
     }
 
     pub fn native(&self) -> &Window {
@@ -656,7 +687,21 @@ impl GameWindow {
                 self.desktop_size = Some((size.width, size.height));
                 self.desktop_error = None;
             }
-            Err(error) => self.desktop_error = Some(error.to_string()),
+            Err(error) => {
+                self.desktop_error = Some(error.to_string());
+                #[cfg(feature = "diagnostics")]
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics.event_with(
+                        Level::Error,
+                        "quasar.window",
+                        "desktop_sync_failed",
+                        [Field::new(
+                            "error",
+                            self.desktop_error.as_deref().unwrap_or(""),
+                        )],
+                    );
+                }
+            }
         }
     }
 
@@ -694,6 +739,33 @@ impl GameWindow {
             _ => {}
         }
         self.reconcile_desktop();
+        #[cfg(feature = "diagnostics")]
+        if let Some(diagnostics) = &self.diagnostics
+            && diagnostics.is_enabled(Level::Debug)
+        {
+            if let Some(size) = update.resized {
+                diagnostics.event_with(
+                    Level::Debug,
+                    "quasar.window",
+                    "resized",
+                    [
+                        Field::new("width", u64::from(size.width)),
+                        Field::new("height", u64::from(size.height)),
+                    ],
+                );
+            }
+            if let Some(focused) = update.focus_changed {
+                diagnostics.event_with(
+                    Level::Debug,
+                    "quasar.window",
+                    "focus_changed",
+                    [Field::new("focused", focused)],
+                );
+            }
+            if update.close_requested {
+                diagnostics.event(Level::Debug, "quasar.window", "close_requested");
+            }
+        }
         update
     }
 

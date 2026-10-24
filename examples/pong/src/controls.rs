@@ -4,7 +4,7 @@ use crate::Result;
 use quasar_input::InputState;
 use quasar_input::{Binding, Bindings, Key};
 #[cfg(feature = "desktop")]
-use quasar_input::{Button, MouseButton};
+use quasar_input::{Button, GamepadButton, MouseButton};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -124,6 +124,16 @@ fn binding_label(binding: &Binding) -> String {
             .map(|button| button_label(*button))
             .collect::<Vec<_>>()
             .join("+"),
+        Binding::GamepadAxis { axis, scale } => {
+            let label = format!("{axis:?}")
+                .to_uppercase()
+                .replace("STICK", "STICK ");
+            if (*scale - 1.0).abs() < f32::EPSILON {
+                label
+            } else {
+                format!("{label}*{scale}")
+            }
+        }
     }
 }
 #[cfg(feature = "desktop")]
@@ -151,6 +161,33 @@ fn button_label(button: Button) -> String {
         Button::Mouse(MouseButton::Right) => "MOUSE2".into(),
         Button::Mouse(MouseButton::Middle) => "MOUSE3".into(),
         Button::Mouse(other) => format!("MOUSE {other:?}").to_uppercase(),
+        Button::Gamepad(button) => gamepad_button_label(button),
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn gamepad_button_label(button: GamepadButton) -> String {
+    match button {
+        GamepadButton::South => "PAD SOUTH".into(),
+        GamepadButton::East => "PAD EAST".into(),
+        GamepadButton::North => "PAD NORTH".into(),
+        GamepadButton::West => "PAD WEST".into(),
+        GamepadButton::LeftBumper => "LB".into(),
+        GamepadButton::RightBumper => "RB".into(),
+        GamepadButton::LeftTrigger => "LT".into(),
+        GamepadButton::RightTrigger => "RT".into(),
+        GamepadButton::LeftStick => "LS".into(),
+        GamepadButton::RightStick => "RS".into(),
+        GamepadButton::DPadUp => "DPAD UP".into(),
+        GamepadButton::DPadDown => "DPAD DOWN".into(),
+        GamepadButton::DPadLeft => "DPAD LEFT".into(),
+        GamepadButton::DPadRight => "DPAD RIGHT".into(),
+        GamepadButton::Select => "SELECT".into(),
+        GamepadButton::Start => "START".into(),
+        GamepadButton::Mode => "MODE".into(),
+        GamepadButton::C => "C".into(),
+        GamepadButton::Z => "Z".into(),
+        GamepadButton::Unknown => "PAD ?".into(),
     }
 }
 

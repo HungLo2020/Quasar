@@ -1,0 +1,20 @@
+[package]
+name = "quasar-diagnostics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# CPU frame timing uses process-local clocks only. Enabled explicitly so
+# disabled builds do not call the clock from frame loops.
+timing = []
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
