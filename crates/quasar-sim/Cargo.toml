@@ -1,0 +1,29 @@
+[package]
+name = "quasar-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+serde = ["dep:serde"]
+jobs = ["dep:quasar-jobs"]
+
+[dependencies]
+quasar-core.workspace = true
+quasar-jobs = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = "1"
+serde_json = "1"
+
+[[example]]
+name = "replay"
+path = "examples/replay.rs"
+
+[[example]]
+name = "sim_benchmark"
+path = "examples/sim_benchmark.rs"

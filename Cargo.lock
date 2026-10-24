@@ -139,7 +139,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio-example"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "hound",
  "quasar-audio",
@@ -171,6 +171,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "bit-set"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56d87354e4229f54a44f7bf2435906a4656dba36026ab6eaca629a2c436a691c"
+dependencies = [
+ "bit-vec",
+]
+
+[[package]]
+name = "bit-vec"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5727b15fa97d4f4fee0a3b7c3d550ed0269f54329207b86388de918604e31269"
+dependencies = [
+ "borsh",
+ "serde",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -195,6 +214,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c132eebf10f5cad5289222520a4a058514204aed6d791f1cf4fe8088b82d15f"
 dependencies = [
  "objc2",
+]
+
+[[package]]
+name = "borsh"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "553c5d846a6ba5150c65e3b1b8ec073bcf1abc20f9b7220de384a4443ea4e20a"
+dependencies = [
+ "borsh-derive",
+ "bytes",
+ "cfg_aliases",
+]
+
+[[package]]
+name = "borsh-derive"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12cdfe656708a01f89b451a7d36466e6fe6c414de0aa18fc54f864f6f9ca9f56"
+dependencies = [
+ "once_cell",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -285,6 +328,17 @@ name = "cfg_aliases"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
+
+[[package]]
+name = "chacha20"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "rand_core",
+]
 
 [[package]]
 name = "clang-sys"
@@ -396,6 +450,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "core_detect"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
+
+[[package]]
 name = "coreaudio-rs"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -436,6 +496,15 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows",
+]
+
+[[package]]
+name = "cpufeatures"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -590,7 +659,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "framebuffer"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "quasar-render-2d",
  "quasar-window",
@@ -677,6 +746,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi 6.0.0",
+ "rand_core",
 ]
 
 [[package]]
@@ -1599,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "pong"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "png",
  "quasar-core",
@@ -1630,8 +1700,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "proptest"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8530004ccb15eae51c7e40009fbe317f341f804db54dc033eec1c50be28cfa0"
+dependencies = [
+ "bit-set",
+ "bit-vec",
+ "bitflags 2.13.2",
+ "chacha20",
+ "core_detect",
+ "num-traits",
+ "rand",
+ "rand_xorshift",
+ "regex-syntax",
+ "rusty-fork",
+ "tempfile",
+ "unarray",
+]
+
+[[package]]
 name = "quasar-app"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "quasar-core",
  "quasar-window",
@@ -1639,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-assets"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "notify",
  "quasar-diagnostics",
@@ -1651,7 +1741,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-audio"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "cpal",
  "crossbeam-channel",
@@ -1665,7 +1755,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-composition"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "png",
  "quasar-frame",
@@ -1678,11 +1768,11 @@ dependencies = [
 
 [[package]]
 name = "quasar-core"
-version = "0.2.7"
+version = "0.2.8"
 
 [[package]]
 name = "quasar-diagnostics"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "serde",
  "serde_json",
@@ -1690,7 +1780,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-frame"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "quasar-diagnostics",
  "vulkanic-gal",
@@ -1698,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-input"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "gilrs",
  "quasar-diagnostics",
@@ -1707,8 +1797,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quasar-jobs"
+version = "0.2.8"
+dependencies = [
+ "proptest",
+ "quasar-diagnostics",
+]
+
+[[package]]
 name = "quasar-render-2d"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "png",
  "quasar-core",
@@ -1720,14 +1818,25 @@ dependencies = [
 
 [[package]]
 name = "quasar-render-3d"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "vulkanic-gal",
 ]
 
 [[package]]
+name = "quasar-sim"
+version = "0.2.8"
+dependencies = [
+ "proptest",
+ "quasar-core",
+ "quasar-jobs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quasar-storage"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "serde",
  "serde_json",
@@ -1736,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-tilemap"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "png",
  "quasar-render-2d",
@@ -1747,7 +1856,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-window"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "quasar-diagnostics",
  "quasar-input",
@@ -1755,6 +1864,12 @@ dependencies = [
  "winit",
  "x11rb",
 ]
+
+[[package]]
+name = "quick-error"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quick-xml"
@@ -1785,6 +1900,31 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "rand"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+dependencies = [
+ "getrandom 0.4.3",
+ "rand_core",
+]
+
+[[package]]
+name = "rand_core"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_xorshift"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60aa6af80be32871323012e02e6e65f8a7cc7890931ae421d217ad8fe0df2ccf"
+dependencies = [
+ "rand_core",
+]
 
 [[package]]
 name = "raw-window-handle"
@@ -1903,6 +2043,18 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "rusty-fork"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
+dependencies = [
+ "fnv",
+ "quick-error",
+ "tempfile",
+ "wait-timeout",
+]
 
 [[package]]
 name = "same-file"
@@ -2194,7 +2346,7 @@ dependencies = [
 
 [[package]]
 name = "tilequest"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "png",
  "quasar-core",
@@ -2356,6 +2508,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
+name = "unarray"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2397,7 +2555,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vulkanic-gal"
-version = "0.2.7"
+version = "0.2.8"
 dependencies = [
  "ash",
  "ash-window",
@@ -2410,6 +2568,15 @@ dependencies = [
  "tracy-client",
  "winit",
  "xxhash-rust",
+]
+
+[[package]]
+name = "wait-timeout"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

@@ -43,6 +43,18 @@ affecting Wayland or non-Linux builds. See
 [desktop window identity](window-identity.md) for the reference-game audit,
 property contract, migration examples and validation procedure.
 
+`quasar-sim` is an optional deterministic simulation layer built on generic
+game-owned state. It reuses `quasar-core::FixedStep` for scheduling, records
+validated input/hash journals, verifies replay divergence, and supports
+caller-owned snapshots and state hashes. It imposes no ECS, state layout,
+renderer or network. See [simulation](simulation.md).
+
+`quasar-jobs` is an optional bounded worker pool for caller-owned CPU/file work.
+It has no global scheduler, async runtime, window or ECS dependency. Queued
+cancellation, cooperative running cancellation, dependencies, priorities,
+manual deterministic execution, metrics and optional diagnostics are described
+in [jobs](jobs.md). It is not required by asset loading, rendering or games.
+
 `quasar-app` is an optional lifecycle composition layer, not a required runner.
 Its `Application` trait supports headless tick loops; the default `desktop`
 feature adds one `GameWindow`, winit event forwarding, fixed/frame scheduling,

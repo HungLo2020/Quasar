@@ -26,6 +26,8 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `quasar-assets` | Validated virtual paths, mounts, typed loaders, dependency graphs, schema checks, bounded cache, async worker and hot reload | Optional quasar-storage (Basalt mounts), diagnostics and notify |
 | `quasar-diagnostics` | Explicit structured logs, spans, counters, bounded failure diagnostics and optional CPU frame timing | None |
 | `quasar-app` | Optional Cargo-native winit/headless lifecycle runner with fixed or per-frame scheduling and application hooks | quasar-core, optional quasar-window |
+| `quasar-jobs` | Optional bounded worker pool with cancellation, dependencies, priorities, manual deterministic mode and metrics | None |
+| `quasar-sim` | Optional fixed-step coordination, deterministic journals, snapshots, replay verification and divergence reports | quasar-core, optional quasar-jobs |
 | `quasar-audio` | WAV/Ogg decode, deterministic mixing, buses, spatial audio, scheduling, streaming Ogg, offline WAV and CPAL output | Optional quasar-storage (settings) |
 | `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
 | `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, camera/transforms, clipping, GPU readback, persistent software-framebuffer presentation | VulkanicGAL, quasar-core, quasar-frame |
@@ -47,7 +49,8 @@ runner, editor or build tool. Optional observability uses the explicit,
 feature-gated [`quasar-diagnostics`](docs/diagnostics.md) layer; async loading and
 hot reload are documented in [async assets](docs/async-assets.md), timing policy
 in [timing](docs/timing.md), the optional runner in [app runner](docs/app-runner.md)
-and [adoption analysis](docs/app-adoption.md), and edge/focus behavior in
+and [adoption analysis](docs/app-adoption.md), background work in [jobs](docs/jobs.md), deterministic replay in
+[simulation](docs/simulation.md), and edge/focus behavior in
 [input hardening](docs/input-hardening.md).
 
 ### Desktop window identity
@@ -83,7 +86,7 @@ future additions. Audio is provided by `quasar-audio`; see
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.7`, with workspace package versions set to `0.2.7`.
+release is `v0.2.8`, with workspace package versions set to `0.2.8`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.
