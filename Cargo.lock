@@ -139,7 +139,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio-example"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "hound",
  "quasar-audio",
@@ -590,7 +590,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "framebuffer"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "quasar-render-2d",
  "quasar-window",
@@ -1599,7 +1599,7 @@ dependencies = [
 
 [[package]]
 name = "pong"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "png",
  "quasar-core",
@@ -1630,8 +1630,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quasar-app"
+version = "0.2.7"
+dependencies = [
+ "quasar-core",
+ "quasar-window",
+]
+
+[[package]]
 name = "quasar-assets"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "notify",
  "quasar-diagnostics",
@@ -1643,7 +1651,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-audio"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "cpal",
  "crossbeam-channel",
@@ -1657,7 +1665,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-composition"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "png",
  "quasar-frame",
@@ -1670,11 +1678,11 @@ dependencies = [
 
 [[package]]
 name = "quasar-core"
-version = "0.2.6"
+version = "0.2.7"
 
 [[package]]
 name = "quasar-diagnostics"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -1682,7 +1690,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-frame"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "quasar-diagnostics",
  "vulkanic-gal",
@@ -1690,7 +1698,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-input"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "gilrs",
  "quasar-diagnostics",
@@ -1700,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-render-2d"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "png",
  "quasar-core",
@@ -1712,14 +1720,14 @@ dependencies = [
 
 [[package]]
 name = "quasar-render-3d"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "vulkanic-gal",
 ]
 
 [[package]]
 name = "quasar-storage"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -1728,7 +1736,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-tilemap"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "png",
  "quasar-render-2d",
@@ -1739,7 +1747,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-window"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "quasar-diagnostics",
  "quasar-input",
@@ -2186,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "tilequest"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "png",
  "quasar-core",
@@ -2389,7 +2397,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vulkanic-gal"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "ash",
  "ash-window",

@@ -1,0 +1,24 @@
+[package]
+name = "quasar-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["desktop"]
+desktop = ["dep:quasar-window"]
+
+[dependencies]
+quasar-core.workspace = true
+quasar-window = { workspace = true, optional = true }
+
+[[example]]
+name = "headless"
+path = "examples/headless.rs"
+
+[[example]]
+name = "desktop"
+path = "examples/desktop.rs"
+required-features = ["desktop"]

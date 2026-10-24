@@ -15,6 +15,8 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libudev-dev
       - run: cargo check --locked -p quasar-window --all-targets
+      - run: cargo check --locked -p quasar-app --all-targets
+      - run: cargo check --locked -p quasar-app --no-default-features --all-targets
       - run: cargo check --locked -p quasar-input --features gilrs
       - run: cargo check --locked -p quasar-assets --features serde,storage
       - run: cargo check --locked -p quasar-assets --features async,hot-reload
@@ -52,12 +54,16 @@ jobs:
           cargo test --locked -p quasar-assets --features serde,storage,diagnostics
           cargo test --locked -p quasar-assets --features async,hot-reload,serde,storage,diagnostics
           cargo test --locked -p quasar-diagnostics --features timing,serde
+          cargo test --locked -p quasar-app
+          cargo test --locked -p quasar-app --no-default-features
           cargo check --locked -p quasar-window --features diagnostics
           cargo check --locked -p quasar-audio --features diagnostics
           cargo check --locked -p quasar-frame --features diagnostics
           cargo clippy --locked -p quasar-input --all-targets --features gilrs,diagnostics -- -D warnings
           cargo clippy --locked -p quasar-assets --all-targets --features async,hot-reload,serde,storage,diagnostics -- -D warnings
           cargo clippy --locked -p quasar-diagnostics --all-targets --features timing,serde -- -D warnings
+          cargo clippy --locked -p quasar-app --all-targets -- -D warnings
+          cargo clippy --locked -p quasar-app --all-targets --no-default-features -- -D warnings
       - name: Run native X11 identity and resize tests
         run: |
           xvfb-run -a sh -c 'QUASAR_X11_TESTS=1 cargo test --locked -p quasar-window --test x11_native -- --test-threads=1'
@@ -88,7 +94,9 @@ jobs:
           cargo check --locked -p quasar-input --no-default-features
           cargo check --locked -p quasar-assets --no-default-features
           cargo check --locked -p quasar-diagnostics --no-default-features
+          cargo check --locked -p quasar-app --no-default-features
           cargo clippy --locked -p quasar-window --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked -p quasar-app --all-targets --no-default-features -- -D warnings
           cargo clippy --locked -p quasar-assets --all-targets --no-default-features -- -D warnings
           cargo clippy --locked -p quasar-diagnostics --all-targets --no-default-features -- -D warnings
           cargo clippy --locked -p vulkanic-gal --all-targets --no-default-features -- -D warnings
@@ -116,6 +124,12 @@ jobs:
 
       - name: Exercise native tilemap window recovery
         run: xvfb-run -a cargo run --locked -p tilequest -- --autoplay --smoke-frames 40 --exercise-window
+
+      - name: Exercise native quasar-app lifecycle
+        run: xvfb-run -a cargo run --locked -p quasar-app --example desktop
+
+      - name: Exercise quasar-app headless lifecycle
+        run: cargo run --locked -p quasar-app --example desktop -- --headless
 
       - name: Exercise native software-framebuffer presentation
         run: xvfb-run -a cargo run --locked -p framebuffer -- --frames 30 --exercise-window

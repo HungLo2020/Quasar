@@ -93,6 +93,10 @@ impl InputState {
                 )
             })
             .collect();
+        // A rebind is a configuration boundary: stale raw edges from the old
+        // binding set must not surface through raw button queries later.
+        self.pressed.clear();
+        self.released.clear();
         self.bindings = bindings;
         Ok(())
     }

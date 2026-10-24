@@ -114,6 +114,10 @@ Actions are evaluated on each actual button change. `pressed`/`released` track
 transitions into/out of a nonzero value and accumulate until `consume_edges`.
 A complete press/release between ticks therefore survives. Auto-repeat and an
 additional alternate binding do not repeat an already-active action's press.
+The native window adapter suppresses repeated key edges but still forwards
+repeated printable text to `InputState::text` for chat/console/UI entry. Use
+`PlayerInput::release_all`/`GamepadHub::release_all` on focus loss to clear
+keyboard and controller state while retaining device assignments.
 
 Consume once after a simulation tick, retaining held values for catch-up ticks.
 Immediate commands can use `take_pressed(name)` to consume only their own edge.

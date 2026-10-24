@@ -608,6 +608,12 @@ impl PlayerInput {
         self.refresh_axes();
         Ok(())
     }
+    /// Clears keyboard, mouse and gamepad state for this player. Use on focus
+    /// loss so stale held buttons cannot survive a focus transition.
+    pub fn release_all(&mut self) {
+        self.input.release_all();
+        self.state.release_all();
+    }
     fn refresh_axes(&mut self) {
         let (left_x, left_y) = self.state.left_stick();
         let (right_x, right_y) = self.state.right_stick();
@@ -854,6 +860,13 @@ impl GamepadHub {
     }
     pub fn device(&self, id: GamepadId) -> Option<&GamepadInfo> {
         self.devices.get(id)
+    }
+    /// Releases input for every player while preserving device assignments and
+    /// reconnect preferences. Intended for window focus loss.
+    pub fn release_all(&mut self) {
+        for player in self.players.values_mut() {
+            player.release_all();
+        }
     }
     pub fn assignment(&self, player: PlayerId) -> Option<GamepadId> {
         self.assignments.active.get(&player).copied()

@@ -1,7 +1,7 @@
 //! Native event adapter; state and action mapping belong to quasar-input.
 use quasar_input::{InputState, Key, MouseButton};
 use winit::{
-    event::{DeviceEvent, ElementState, MouseScrollDelta, WindowEvent},
+    event::{DeviceEvent, ElementState, Ime, MouseScrollDelta, WindowEvent},
     keyboard::{KeyCode, PhysicalKey},
 };
 
@@ -12,21 +12,19 @@ pub fn process_window_event(input: &mut InputState, event: &WindowEvent) {
             event,
             is_synthetic: false,
             ..
-        } => {
-            if let PhysicalKey::Code(code) = event.physical_key
-                && let Some(key) = physical_key(code)
-            {
-                input.key(key, event.state == ElementState::Pressed);
-            }
-            if event.state == ElementState::Pressed
-                && let Some(text) = &event.text
-            {
-                input.text.push_str(text);
-            }
-        }
+        } => process_key_event(
+            input,
+            event.physical_key,
+            event.state,
+            event.repeat,
+            event.text.as_deref(),
+        ),
         WindowEvent::MouseInput { state, button, .. } => {
             input.mouse_button(mouse_button(*button), state.is_pressed())
         }
+        // IME commits are the authoritative text entry path on Wayland and
+        // composed-input platforms. Preedit is intentionally not committed.
+        WindowEvent::Ime(Ime::Commit(text)) => input.text.push_str(text),
         WindowEvent::CursorMoved { position, .. } => {
             input.cursor_physical = Some((position.x, position.y))
         }
@@ -43,6 +41,33 @@ pub fn process_window_event(input: &mut InputState, event: &WindowEvent) {
         },
         WindowEvent::Focused(false) => input.release_all(),
         _ => {}
+    }
+}
+
+/// Applies a native key event.
+///
+/// OS auto-repeat never creates a physical or action press edge: a held key
+/// remains held until its real release. Repeated printable text is still
+/// appended to [`InputState::text`] so chat, console and UI text fields retain
+/// normal key-repeat editing behavior. `text` is separate from bindings and is
+/// cleared with the other edges by [`InputState::consume_edges`].
+pub fn process_key_event(
+    input: &mut InputState,
+    physical: PhysicalKey,
+    state: ElementState,
+    repeat: bool,
+    text: Option<&str>,
+) {
+    if !repeat
+        && let PhysicalKey::Code(code) = physical
+        && let Some(key) = physical_key(code)
+    {
+        input.key(key, state == ElementState::Pressed);
+    }
+    if state == ElementState::Pressed
+        && let Some(text) = text
+    {
+        input.text.push_str(text);
     }
 }
 
@@ -270,6 +295,60 @@ pub fn physical_key(code: KeyCode) -> Option<Key> {
 mod tests {
     use super::*;
     use quasar_input::{Binding, Bindings};
+    #[test]
+    fn keyboard_auto_repeat_preserves_text_but_not_gameplay_edges() {
+        let mut input = InputState::default();
+        let mut bindings = Bindings::default();
+        bindings.bind("fire", Binding::key(Key::KeyW));
+        input.set_bindings(bindings).unwrap();
+        process_key_event(
+            &mut input,
+            PhysicalKey::Code(KeyCode::KeyW),
+            ElementState::Pressed,
+            false,
+            Some("w"),
+        );
+        assert!(input.action("fire").pressed);
+        assert_eq!(input.text, "w");
+        input.consume_edges();
+        for _ in 0..3 {
+            process_key_event(
+                &mut input,
+                PhysicalKey::Code(KeyCode::KeyW),
+                ElementState::Pressed,
+                true,
+                Some("w"),
+            );
+        }
+        // Repeat text reaches chat/console fields, but the physical press and
+        // action edge remain consumed while the key is held.
+        assert_eq!(input.text, "www");
+        assert!(input.action("fire").held());
+        assert!(!input.action("fire").pressed);
+        assert!(!input.pressed(Key::KeyW));
+        process_key_event(
+            &mut input,
+            PhysicalKey::Code(KeyCode::KeyW),
+            ElementState::Released,
+            false,
+            Some("ignored"),
+        );
+        assert!(!input.action("fire").held());
+        assert!(input.action("fire").released);
+        assert_eq!(input.text, "www");
+        input.consume_edges();
+        assert!(input.text.is_empty());
+    }
+
+    #[test]
+    fn ime_commit_updates_text_without_creating_a_key_edge() {
+        let mut input = InputState::default();
+        process_window_event(&mut input, &WindowEvent::Ime(Ime::Commit("chat".into())));
+        assert_eq!(input.text, "chat");
+        input.consume_edges();
+        assert!(input.text.is_empty());
+    }
+
     #[test]
     fn adapter_preserves_focus_release_and_separates_wheel_units() {
         let mut input = InputState::default();

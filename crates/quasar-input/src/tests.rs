@@ -59,7 +59,9 @@ fn axes_cancel_opposing_keys_and_focus_loss_cancels_pending_commands() {
     assert_eq!(input.action("move").value, 0.0);
     input.key(Key::KeyW, false);
     assert_eq!(input.action("move").value, 1.0);
+    input.text.push_str("unsent chat");
     input.release_all();
+    assert!(input.text.is_empty());
     assert_eq!(
         input.action("move"),
         ActionState {
@@ -72,6 +74,11 @@ fn axes_cancel_opposing_keys_and_focus_loss_cancels_pending_commands() {
     assert!(input.released(Key::KeyS));
     input.consume_edges();
     assert_eq!(input.action("move"), ActionState::default());
+    // A key pressed after focus returns must produce a fresh edge, not inherit
+    // stale state cleared by release_all.
+    input.key(Key::KeyS, true);
+    assert!(input.action("move").pressed);
+    assert!(input.action("move").held());
 }
 #[test]
 fn chord_edges_are_immediate_and_consumed_without_affecting_other_actions() {
@@ -99,6 +106,7 @@ fn rebinding_has_no_spurious_press_and_invalid_replacement_keeps_old_bindings() 
     input.set_bindings(bindings.clone()).unwrap();
     assert!(input.action("fire").held());
     assert!(!input.action("fire").pressed);
+    assert!(!input.button_pressed(Button::Key(Key::KeyW)));
     let mut invalid = bindings.clone();
     invalid.bind("bad", Binding::chord([]));
     assert!(input.set_bindings(invalid).is_err());
@@ -106,6 +114,80 @@ fn rebinding_has_no_spurious_press_and_invalid_replacement_keeps_old_bindings() 
     input.key(Key::KeyW, false);
     assert!(input.action("fire").released);
 }
+#[test]
+fn duplicate_keyboard_and_gamepad_events_create_no_duplicate_edges() {
+    let mut bindings = Bindings::default();
+    bindings
+        .bind("fire", Binding::key(Key::Space))
+        .bind("fire", Binding::gamepad_button(GamepadButton::South));
+    let mut input = input_with(bindings);
+    input.key(Key::Space, true);
+    input.key(Key::Space, true);
+    assert!(input.action("fire").pressed);
+    input.consume_edges();
+    input.key(Key::Space, true);
+    assert!(!input.action("fire").pressed);
+    input.key(Key::Space, false);
+    assert!(input.action("fire").released);
+    input.consume_edges();
+    input.key(Key::Space, false);
+    assert!(!input.action("fire").released);
+
+    input.gamepad_button(GamepadButton::South, true);
+    input.gamepad_button(GamepadButton::South, true);
+    assert!(input.action("fire").pressed);
+    input.consume_edges();
+    input.gamepad_button(GamepadButton::South, false);
+    input.gamepad_button(GamepadButton::South, false);
+    assert!(input.action("fire").released);
+}
+
+#[test]
+fn simultaneous_keyboard_and_gamepad_sources_release_only_at_zero() {
+    let mut bindings = Bindings::default();
+    bindings
+        .bind("right", Binding::key(Key::ArrowRight))
+        .bind("right", Binding::gamepad_axis(GamepadAxis::LeftStickX));
+    let mut input = input_with(bindings);
+    input.key(Key::ArrowRight, true);
+    input.gamepad_axis(GamepadAxis::LeftStickX, 0.6);
+    assert_eq!(input.action("right").value, 1.0);
+    input.key(Key::ArrowRight, false);
+    assert!(input.action("right").held());
+    assert!(!input.action("right").released);
+    input.gamepad_axis(GamepadAxis::LeftStickX, 0.0);
+    assert!(!input.action("right").held());
+    assert!(input.action("right").released);
+}
+
+#[test]
+fn hub_release_all_clears_inputs_but_keeps_assignments() {
+    let mut bindings = Bindings::default();
+    bindings
+        .bind("fire", Binding::gamepad_button(GamepadButton::South))
+        .bind("walk", Binding::key(Key::KeyW));
+    let mut hub = GamepadHub::new();
+    hub.add_player(PlayerId::new(0)).unwrap();
+    hub.player_mut(PlayerId::new(0))
+        .unwrap()
+        .input
+        .set_bindings(bindings)
+        .unwrap();
+    let device = hub.connect(GamepadFingerprint::new("Focus Pad"));
+    hub.assign(PlayerId::new(0), device).unwrap();
+    hub.button(device, GamepadButton::South, true);
+    hub.player_mut(PlayerId::new(0))
+        .unwrap()
+        .input
+        .key(Key::KeyW, true);
+    hub.release_all();
+    let player = hub.player(PlayerId::new(0)).unwrap();
+    assert!(!player.input.action("fire").held());
+    assert!(!player.input.action("walk").held());
+    assert!(player.input.action("fire").released);
+    assert_eq!(hub.assignment(PlayerId::new(0)), Some(device));
+}
+
 #[test]
 fn gamepad_buttons_axes_and_keyboard_combine_into_named_actions() {
     let mut bindings = Bindings::default();
@@ -259,6 +341,14 @@ fn hub_routes_multiple_players_and_restores_preferences_after_reconnect() {
             .input
             .action("fire")
             .released
+    );
+    // The other player's controller is untouched by the first disconnect.
+    assert!(
+        hub.player(PlayerId::new(1))
+            .unwrap()
+            .input
+            .action("fire")
+            .held()
     );
     let preferences = hub.preferences();
     let encoded = serde_json::to_string(&preferences).unwrap();

@@ -1,4 +1,4 @@
-Quasar Pong 0.2.6
+Quasar Pong 0.2.7
 
 Run app/bin/pong directly. No launcher, terminal input, network, or asset
 extraction is needed. Q closes the game; --help lists controls and CLI options.

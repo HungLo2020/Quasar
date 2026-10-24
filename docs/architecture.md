@@ -43,6 +43,13 @@ affecting Wayland or non-Linux builds. See
 [desktop window identity](window-identity.md) for the reference-game audit,
 property contract, migration examples and validation procedure.
 
+`quasar-app` is an optional lifecycle composition layer, not a required runner.
+Its `Application` trait supports headless tick loops; the default `desktop`
+feature adds one `GameWindow`, winit event forwarding, fixed/frame scheduling,
+resize handling and ordered suspended/shutdown hooks. Applications own their GAL,
+renderer, audio and assets, and can bypass the runner entirely. See
+[app runner](app-runner.md) for the MissileCommand/MicroMages audit and limits.
+
 `quasar-diagnostics` is an explicit, independently usable observability layer.
 It has no global logger or runtime; callers own a `Diagnostics` handle and a
 `Sink`. Records are bounded structured data with optional spans, counters,
@@ -69,6 +76,10 @@ and clamp to [-1,1]. Actions update on each device change, preserving short taps
 and correct release behavior when alternate bindings overlap. Empty action lists
 are deliberate unbindings. Wheel units and relative mouse motion remain raw data;
 controller buttons and analog axes use the gamepad types described above.
+Native auto-repeat never creates a physical/action press edge; repeated printable
+text still reaches `InputState::text` for chat, console and UI editing. Focus loss
+releases held devices; gamepad routing adds `PlayerInput`/`GamepadHub` release
+helpers that preserve assignments. See [input hardening](input-hardening.md).
 
 Call `consume_edges` after the first consuming simulation tick, not per render
 or native event. Held values survive catch-up ticks. OS repeats do not create
@@ -157,8 +168,13 @@ currently supported by this layer.
 
 `FixedStep` accepts a game-selected frequency, including fractional rates. It
 bounds catch-up work and exposes the next deadline and interpolation fraction.
-The application supplies elapsed time; there is no global clock or compulsory
-loop. Pong uses 120 Hz. Native rendering does not advance simulation.
+`FixedStepConfig` adds an optional per-advance elapsed clamp, a per-advance
+catch-up budget, drop/preserve backlog policy, exact-step construction and
+advance accounting while `FixedStep::new` keeps its historical defaults. The
+application supplies elapsed time; there is no global clock or compulsory loop.
+Pong uses 120 Hz. Native rendering does not advance simulation. See
+[timing](timing.md) for the MicroMages deadline comparison and issue #41
+boundary.
 
 Pong records action inputs at the simulation boundary. Focus-loss pausing is
 recorded as a pause input, so it replays without needing OS focus events.
