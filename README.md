@@ -34,6 +34,18 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `examples/audio` | Music, overlapping/spatial effects, buses, voice groups, procedural audio, offline WAV output and audio benchmarks | quasar-audio |
 | `examples/pong` | Game rules, 2D draw lists, desktop application, headless CLI and replay | Selected crates |
 
+### Desktop window identity
+
+`quasar-window` owns native identity and compositor hints so games do not need
+private Xlib/XCB code. `GameWindow::create` keeps the existing `WindowConfig`
+contract; `create_with_desktop` adds distinct X11 instance/class names and an
+explicit opaque or transparent policy. X11 metadata is applied before graphics
+initialization, and `GameWindow::process` keeps the physical-size opaque region
+in sync with resize, DPI and fullscreen changes. Wayland uses the winit
+application id; Windows and macOS do not acquire X11 dependencies. See
+[desktop window identity](docs/window-identity.md) for the MissileCommand,
+Jackal, BlackOps and MicroMages audit and migration matrix.
+
 The desktop example submits a 640×400 logical canvas to `quasar-render-2d`,
 which draws GPU quads and font atlas sprites through VulkanicGAL. It uses
 native X11/Wayland on Linux; window/surface integration also has Win32 and macOS
@@ -54,7 +66,7 @@ and an editor are future additions. Audio is provided by `quasar-audio`; see
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.4`, with workspace package versions set to `0.2.4`.
+release is `v0.2.5`, with workspace package versions set to `0.2.5`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.

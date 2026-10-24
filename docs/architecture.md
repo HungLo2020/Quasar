@@ -28,6 +28,21 @@ Create windows inside `ApplicationHandler::resumed`. Feed matching window events
 to `GameWindow::process`, and feed device events to `process_device`. Close,
 resize, DPI, focus and redraw events remain visible to the application.
 
+`GameWindow::create` keeps the existing `WindowConfig` contract and applies a
+default `DesktopConfig` derived from `application_id`. Games that need distinct
+X11 instance/class names, an explicitly transparent surface, or a different
+opaque-region policy call `create_with_desktop`. X11 identity, `_NET_WM_PID`,
+normal-window type, full opacity and the physical-size `_NET_WM_OPAQUE_REGION`
+are applied before the call returns, so slow VulkanicGAL initialization cannot
+delay them. `process` reconciles the opaque region after resize, DPI and
+fullscreen events; `sync_desktop` is available after caller-owned graphics
+initialization. Wayland uses winit's application id, Windows a Win32 class name,
+and macOS bundle identity; unsupported X11 properties are never fabricated. The
+`x11` Cargo feature is default-on Linux only and can be disabled without
+affecting Wayland or non-Linux builds. See
+[desktop window identity](window-identity.md) for the reference-game audit,
+property contract, migration examples and validation procedure.
+
 `quasar-input` owns backend-independent physical key/mouse identifiers, device
 state, named action values, and accumulated press/release edges. It depends only
 on serde. `quasar-window::input` translates native winit events; `GameWindow`
