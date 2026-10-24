@@ -8,6 +8,214 @@ use std::{
 };
 use vulkanic_gal::{metrics::SubmitProfile, resources::FrameTargetDesc, *};
 
+/// Reusable windowless color+depth target with RGBA readback.
+///
+/// This wraps GAL allocation and the texture-to-buffer readback sequence for
+/// headless renderer tests and screenshots. The caller owns the GAL and release.
+pub struct OffscreenTarget {
+    color: Handle,
+    color_view: Handle,
+    depth: Handle,
+    depth_view: Handle,
+    target: Handle,
+    readback: Handle,
+    size: vulkanic_gal::resources::Extent3d,
+    initialized: bool,
+}
+/// Result of one offscreen render and readback.
+pub struct OffscreenReport {
+    pub rgba: Vec<u8>,
+    pub profile: SubmitProfile,
+    pub cpu_nanos: u64,
+}
+impl OffscreenTarget {
+    pub fn new(gal: &mut VulkanicGal, width: u32, height: u32) -> GalResult<Self> {
+        if width == 0 || height == 0 || width > 16_384 || height > 16_384 {
+            return Err(GalError::invalid_argument(
+                "offscreen dimensions must be 1..=16384",
+            ));
+        }
+        let size = vulkanic_gal::resources::Extent3d {
+            width,
+            height,
+            depth: 1,
+        };
+        let color = gal.create_texture(TextureDesc {
+            label: "offscreen-color".into(),
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            extent: size,
+            mip_levels: 1,
+            array_layers: 1,
+            usages: vec![
+                TextureUsage::ColorAttachment,
+                TextureUsage::TransferSrc,
+                TextureUsage::Sampled,
+            ],
+        })?;
+        let mut created = vec![color];
+        let result = (|| {
+            let color_view = gal.create_texture_view(TextureViewDesc {
+                label: "offscreen-color-view".into(),
+                texture: color,
+                format: TextureFormat::Rgba8Unorm,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+            })?;
+            created.push(color_view);
+            let depth = gal.create_texture(TextureDesc {
+                label: "offscreen-depth".into(),
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Depth32Float,
+                extent: size,
+                mip_levels: 1,
+                array_layers: 1,
+                usages: vec![TextureUsage::DepthStencilAttachment],
+            })?;
+            created.push(depth);
+            let depth_view = gal.create_texture_view(TextureViewDesc {
+                label: "offscreen-depth-view".into(),
+                texture: depth,
+                format: TextureFormat::Depth32Float,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+            })?;
+            created.push(depth_view);
+            let target = gal.create_render_target(RenderTargetDesc {
+                label: "offscreen-target".into(),
+                color_views: vec![color_view],
+                depth_stencil_view: Some(depth_view),
+                extent: size,
+            })?;
+            created.push(target);
+            let readback = gal.create_buffer(BufferDesc {
+                label: "offscreen-readback".into(),
+                size: u64::from(width) * u64::from(height) * 4,
+                memory: MemoryDomain::Readback,
+                usages: vec![BufferUsage::TransferDst, BufferUsage::HostRead],
+            })?;
+            created.push(readback);
+            Ok(Self {
+                color,
+                color_view,
+                depth,
+                depth_view,
+                target,
+                readback,
+                size,
+                initialized: false,
+            })
+        })();
+        if result.is_err() {
+            for handle in created.into_iter().rev() {
+                let _ = gal.retire(handle);
+            }
+        }
+        result
+    }
+    pub fn target(&self) -> Handle {
+        self.target
+    }
+    pub fn size(&self) -> (u32, u32) {
+        (self.size.width, self.size.height)
+    }
+    /// Records caller commands after a color-attachment transition, then copies
+    /// the result to a host-readable buffer. Exactly one submission is used.
+    pub fn render(
+        &mut self,
+        gal: &mut VulkanicGal,
+        prepare: impl FnOnce(&mut VulkanicGal, Handle) -> GalResult<Vec<CommandList>>,
+    ) -> GalResult<OffscreenReport> {
+        let started = Instant::now();
+        let (token, profile) = record_and_submit(gal, |gal| {
+            let mut commands = vec![CommandList::from(CommandListDesc {
+                label: "offscreen-begin".into(),
+                operations: vec![CommandOp::Barrier(ResourceBarrier {
+                    resource: self.color,
+                    subresources: None,
+                    before: if self.initialized {
+                        TextureUsageState::TransferSrc
+                    } else {
+                        TextureUsageState::Undefined
+                    },
+                    after: TextureUsageState::ColorAttachment,
+                    src_queue: QueueClass::Graphics,
+                    dst_queue: QueueClass::Graphics,
+                })],
+            })];
+            commands.extend(prepare(gal, self.target)?);
+            commands.push(CommandList::from(CommandListDesc {
+                label: "offscreen-readback".into(),
+                operations: vec![
+                    CommandOp::Barrier(ResourceBarrier {
+                        resource: self.color,
+                        subresources: None,
+                        before: TextureUsageState::ColorAttachment,
+                        after: TextureUsageState::TransferSrc,
+                        src_queue: QueueClass::Graphics,
+                        dst_queue: QueueClass::Graphics,
+                    }),
+                    CommandOp::CopyTextureToBuffer(BufferImageCopyRegion {
+                        buffer: self.readback,
+                        buffer_offset: 0,
+                        bytes_per_row: self.size.width * 4,
+                        rows_per_image: self.size.height,
+                        texture: self.color,
+                        texture_mip: 0,
+                        texture_layer: 0,
+                        texture_origin: TextureOrigin3d { x: 0, y: 0, z: 0 },
+                        extent: self.size,
+                    }),
+                    CommandOp::Barrier(ResourceBarrier {
+                        resource: self.readback,
+                        subresources: None,
+                        before: TextureUsageState::TransferDst,
+                        after: TextureUsageState::TransferSrc,
+                        src_queue: QueueClass::Graphics,
+                        dst_queue: QueueClass::Graphics,
+                    }),
+                    CommandOp::HostReadBuffer {
+                        buffer: self.readback,
+                        offset: 0,
+                        size: u64::from(self.size.width) * u64::from(self.size.height) * 4,
+                    },
+                ],
+            }));
+            Ok(commands)
+        })?;
+        gal.retire_through(token.submission)?;
+        self.initialized = true;
+        let rgba = gal
+            .completed_host_reads()
+            .into_iter()
+            .find(|read| read.buffer == self.readback && read.submission == token.submission)
+            .map(|read| read.bytes)
+            .ok_or_else(|| GalError::backend("offscreen readback missing"))?;
+        Ok(OffscreenReport {
+            rgba,
+            profile,
+            cpu_nanos: nanos(started.elapsed()),
+        })
+    }
+    pub fn release(self, gal: &mut VulkanicGal) -> GalResult<()> {
+        for handle in [
+            self.target,
+            self.color_view,
+            self.color,
+            self.depth_view,
+            self.depth,
+            self.readback,
+        ] {
+            gal.retire(handle)?;
+        }
+        Ok(())
+    }
+}
+
 /// RAII boundary over GAL's existing nestable recording scopes. Error and
 /// panic unwinding close the scope; it does not implement another lifetime system.
 struct RecordingScope<'a> {

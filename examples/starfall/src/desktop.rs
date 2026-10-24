@@ -1,0 +1,414 @@
+//! Native window, GAL and audio lifecycle.
+
+use quasar_app::{
+    AppConfig, AppContext, Application, DesktopApplication, Flow, RenderPolicy, TimingConfig,
+    run as run_app,
+};
+use quasar_audio::{AudioEngine, EngineConfig, PlaybackConfig};
+use quasar_core::FixedStepConfig;
+use quasar_diagnostics::{Diagnostics, Field, Level as LogLevel};
+use quasar_frame::{CompletionPolicy, FrameSurface};
+use quasar_profile::{FrameProfiler, FrameSample};
+use quasar_window::{DesktopConfig, WindowConfig, winit::event::WindowEvent};
+use starfall::{
+    content::SoundBank,
+    load_content_blocking,
+    render::Graphics,
+    session::{GameSession, StepResult},
+    settings::GameSettings,
+    world::{GameError, GameEvent, GameInput},
+};
+use std::time::Duration;
+use vulkanic_gal::{
+    FrameSurfaceDesc, PresentMode, TextureFormat, VulkanicGal,
+    resources::{Extent3d, GpuProfileClassifier, GpuProfileTag, GpuProfiledObject},
+    set_gpu_timestamps_requested,
+};
+
+pub fn run(settings: GameSettings, diagnostics: Diagnostics) -> Result<(), GameError> {
+    let config = AppConfig {
+        window: WindowConfig {
+            title: settings.window_title.clone(),
+            application_id: "starfall".into(),
+            size: (settings.window_width, settings.window_height),
+            minimum_size: (640, 360),
+            fullscreen: settings.fullscreen,
+            resizable: true,
+        },
+        desktop: DesktopConfig::for_application("starfall"),
+        timing: TimingConfig::Fixed(FixedStepConfig::for_rate(60.0, 8)),
+        render: RenderPolicy::EveryFrame,
+        max_frame_wait: Duration::from_millis(16),
+    };
+    run_app(StarfallApp::new(settings, diagnostics), config)
+        .map_err(|error| GameError::invalid(error.to_string()))
+}
+
+struct StarfallApp {
+    settings: GameSettings,
+    diagnostics: Diagnostics,
+    session: Option<GameSession>,
+    graphics: Option<Graphics>,
+    surface: Option<FrameSurface>,
+    gal: Option<VulkanicGal>,
+    audio: Option<AudioEngine>,
+    sounds: Option<SoundBank>,
+    texture: Option<starfall::content::TextureData>,
+    profiler: FrameProfiler,
+    frames: u64,
+    samples: u64,
+    exit_after_render: bool,
+    recorded_written: bool,
+}
+impl StarfallApp {
+    fn new(settings: GameSettings, diagnostics: Diagnostics) -> Self {
+        let profiler = FrameProfiler::new(settings.profile_capacity);
+        Self {
+            settings,
+            diagnostics,
+            session: None,
+            graphics: None,
+            surface: None,
+            gal: None,
+            audio: None,
+            sounds: None,
+            texture: None,
+            profiler,
+            frames: 0,
+            samples: 0,
+            exit_after_render: false,
+            recorded_written: false,
+        }
+    }
+    fn initialize(&mut self, context: &mut AppContext<'_>) -> Result<(), GameError> {
+        if self.session.is_none() {
+            let content = load_content_blocking(&self.settings, &self.diagnostics)?;
+            let world = starfall::world_from_content(&content, &self.settings)?;
+            let session = if let Some(path) = &self.settings.replay {
+                GameSession::from_file(world, path, &self.settings)?
+            } else {
+                GameSession::live(world, &self.settings)
+            };
+            self.session = Some(session);
+            self.texture = Some(content.texture.clone());
+            self.sounds = Some(content.sounds.clone());
+        }
+        let expected_bindings = self.settings.controls.bindings()?;
+        if let Some(window) = context.window
+            && window.input.bindings() != &expected_bindings
+        {
+            return Err(GameError::invalid(
+                "configure_window did not install the configured controls",
+            ));
+        }
+        if self.graphics.is_some() {
+            return Ok(());
+        }
+        let window = context
+            .window
+            .ok_or_else(|| GameError::invalid("desktop runner did not provide a window"))?;
+        let size = window.native().inner_size();
+        set_gpu_timestamps_requested(self.settings.benchmark);
+        let mut gal = VulkanicGal::create_windowed_vulkan(
+            "Starfall",
+            window.shared_native(),
+            FrameSurfaceDesc {
+                label: "starfall-surface".into(),
+                extent: Extent3d {
+                    width: size.width.max(1),
+                    height: size.height.max(1),
+                    depth: 1,
+                },
+                color_format: TextureFormat::Bgra8Unorm,
+                present_mode: if self.settings.benchmark {
+                    PresentMode::AutoNoVsync
+                } else {
+                    PresentMode::AutoVsync
+                },
+                max_frames_in_flight: 3,
+            },
+        )
+        .map_err(|error| GameError::invalid(format!("create GAL: {error}")))?;
+        gal.install_gpu_profile_classifier(GpuProfileClassifier {
+            classify: |kind, label| {
+                if matches!(kind, GpuProfiledObject::RenderPass) {
+                    GpuProfileTag {
+                        timing_scope: if label.starts_with("3d") {
+                            Some(0)
+                        } else if label.starts_with("2d") {
+                            Some(1)
+                        } else {
+                            None
+                        },
+                        ..GpuProfileTag::default()
+                    }
+                } else {
+                    GpuProfileTag::default()
+                }
+            },
+            statistics_scope_name: |index| if index == 0 { "world_3d" } else { "hud_2d" },
+        });
+        let texture = self
+            .texture
+            .as_ref()
+            .ok_or_else(|| GameError::invalid("content texture missing"))?;
+        let graphics = Graphics::new(&mut gal, texture)
+            .map_err(|error| GameError::invalid(format!("create renderers: {error}")))?;
+        self.surface = Some(FrameSurface::new(size.width.max(1), size.height.max(1)));
+        self.graphics = Some(graphics);
+        self.gal = Some(gal);
+        if self.settings.audio_enabled && self.audio.is_none() {
+            match AudioEngine::open(
+                self.settings.audio_device.as_deref(),
+                EngineConfig::default(),
+            ) {
+                Ok(mut engine) => {
+                    engine.set_diagnostics(Some(self.diagnostics.clone()));
+                    let _ = engine.set_master_volume(self.settings.audio_volume);
+                    self.audio = Some(engine);
+                    self.diagnostics.event_with(
+                        LogLevel::Info,
+                        "starfall.audio",
+                        "ready",
+                        [Field::new("volume", f64::from(self.settings.audio_volume))],
+                    );
+                }
+                Err(error) => {
+                    self.diagnostics.event_with(
+                        LogLevel::Warn,
+                        "starfall.audio",
+                        "unavailable",
+                        [Field::new("error", error.to_string())],
+                    );
+                }
+            }
+        }
+        self.diagnostics.event_with(
+            LogLevel::Info,
+            "starfall.app",
+            "initialized",
+            [
+                Field::new("width", u64::from(size.width)),
+                Field::new("height", u64::from(size.height)),
+                Field::new(
+                    "replay",
+                    self.session.as_ref().is_some_and(GameSession::is_replay),
+                ),
+            ],
+        );
+        Ok(())
+    }
+    fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow, GameError> {
+        if self.exit_after_render {
+            return Ok(Flow::Exit);
+        }
+        let Some(session) = &mut self.session else {
+            return Ok(Flow::Continue);
+        };
+        if session.is_replay() {
+            if session.step(GameInput::default())? == StepResult::Exhausted {
+                self.diagnostics
+                    .event(LogLevel::Info, "starfall.replay", "complete");
+                return Ok(Flow::Exit);
+            }
+        } else {
+            let window = context
+                .window
+                .ok_or_else(|| GameError::invalid("window missing during tick"))?;
+            if self.settings.controls.quit_requested(&window.input) {
+                return Ok(Flow::Exit);
+            }
+            let input = if self.settings.autoplay {
+                starfall::world::autoplay_input(session.world())
+            } else {
+                self.settings.input(&window.input)
+            };
+            session.step(input)?;
+        }
+        let events = session.world().events.clone();
+        self.play_events(&events);
+        Ok(Flow::Continue)
+    }
+    fn play_events(&mut self, events: &[GameEvent]) {
+        for event in events {
+            if matches!(event, GameEvent::Won | GameEvent::Lost) {
+                self.diagnostics
+                    .event(LogLevel::Info, "starfall.game", "run_finished");
+            }
+            let (Some(audio), Some(sounds)) = (&self.audio, &self.sounds) else {
+                continue;
+            };
+            if let Some(clip) = sounds.for_event(*event) {
+                let _ = audio.play(
+                    clip.clone(),
+                    PlaybackConfig {
+                        volume: 0.65,
+                        ..PlaybackConfig::default()
+                    },
+                );
+            }
+        }
+    }
+    fn render(&mut self, _context: &mut AppContext<'_>) -> Result<(), GameError> {
+        if self.exit_after_render {
+            return Ok(());
+        }
+        let Some(session) = &self.session else {
+            return Ok(());
+        };
+        let (Some(surface), Some(graphics), Some(gal)) = (
+            self.surface.as_mut(),
+            self.graphics.as_mut(),
+            self.gal.as_mut(),
+        ) else {
+            return Ok(());
+        };
+        let report = surface
+            .render(gal, CompletionPolicy::Poll, |gal, target| {
+                graphics.commands(gal, target, session.world())
+            })
+            .map_err(|error| GameError::invalid(format!("render: {error}")))?;
+        if let Some(report) = report {
+            self.frames += 1;
+            if self.settings.benchmark && self.frames > 8 {
+                let mut sample = FrameSample::from_frame_report(self.frames, &report);
+                sample.with_renderer_stats(graphics.last_stats());
+                self.profiler.record(sample);
+                self.samples += 1;
+                if self.samples >= self.settings.benchmark_frames {
+                    self.exit_after_render = true;
+                }
+            }
+        }
+        Ok(())
+    }
+    fn release_graphics(&mut self) -> Result<(), GameError> {
+        if let Some(mut gal) = self.gal.take() {
+            if let Some(mut surface) = self.surface.take() {
+                let _ = surface.finish(&mut gal);
+                let _ = surface.release_targets(&mut gal);
+            }
+            if let Some(mut graphics) = self.graphics.take() {
+                let _ = graphics.release_targets(&mut gal);
+                graphics
+                    .release(&mut gal)
+                    .map_err(|error| GameError::invalid(format!("release graphics: {error}")))?;
+            }
+            let _ = gal.shutdown_frame_surface();
+            let _ = gal.retire_through(gal.latest_submission_id());
+            let metrics = gal.metrics();
+            self.diagnostics.event_with(
+                if metrics.resource_creates == metrics.resource_destroys {
+                    LogLevel::Info
+                } else {
+                    LogLevel::Warn
+                },
+                "starfall.resources",
+                "teardown",
+                [
+                    Field::new("created", metrics.resource_creates),
+                    Field::new("destroyed", metrics.resource_destroys),
+                ],
+            );
+        }
+        self.audio.take();
+        Ok(())
+    }
+    fn write_outputs(&mut self) {
+        if let Some(session) = &self.session
+            && let Some(path) = &self.settings.record
+        {
+            if let Err(error) = session.write_record(path) {
+                self.diagnostics.event_with(
+                    LogLevel::Error,
+                    "starfall.record",
+                    "write_failed",
+                    [Field::new("error", error.to_string())],
+                );
+            } else if !self.recorded_written {
+                self.recorded_written = true;
+                self.diagnostics.event_with(
+                    LogLevel::Info,
+                    "starfall.record",
+                    "written",
+                    [Field::new("path", path.display().to_string())],
+                );
+            }
+        }
+        if self.settings.benchmark
+            && let Some(path) = &self.settings.benchmark_file
+            && let Err(error) = self.profiler.write_json(path)
+        {
+            self.diagnostics.event_with(
+                LogLevel::Error,
+                "starfall.benchmark",
+                "write_failed",
+                [Field::new("error", error.to_string())],
+            );
+        }
+    }
+}
+impl Application for StarfallApp {
+    type Error = GameError;
+    fn setup(&mut self, context: &mut AppContext<'_>) -> Result<(), Self::Error> {
+        self.initialize(context)
+    }
+    fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
+        self.tick(context)
+    }
+    fn render(&mut self, context: &mut AppContext<'_>) -> Result<(), Self::Error> {
+        self.render(context)
+    }
+    fn suspended(&mut self, _: &mut AppContext<'_>) -> Result<(), Self::Error> {
+        self.release_graphics()
+    }
+    fn shutdown(&mut self, _: &mut AppContext<'_>) -> Result<(), Self::Error> {
+        self.write_outputs();
+        self.release_graphics()
+    }
+}
+impl DesktopApplication for StarfallApp {
+    fn configure_window(
+        &mut self,
+        window: &mut quasar_window::GameWindow,
+    ) -> Result<(), Self::Error> {
+        let bindings = self.settings.controls.bindings()?;
+        window
+            .input
+            .set_bindings(bindings)
+            .map_err(|error| GameError::invalid(format!("install controls: {error}")))?;
+        if let Err(error) = window.capture_cursor(true) {
+            self.diagnostics.event_with(
+                LogLevel::Warn,
+                "starfall.input",
+                "mouse_capture_unavailable",
+                [Field::new("error", error.to_string())],
+            );
+        }
+        Ok(())
+    }
+    fn window_event(
+        &mut self,
+        context: &mut AppContext<'_>,
+        event: &WindowEvent,
+    ) -> Result<(), Self::Error> {
+        if matches!(
+            event,
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
+        ) {
+            let size = context
+                .window
+                .map(|window| window.native().inner_size())
+                .unwrap_or(quasar_window::winit::dpi::PhysicalSize::new(1, 1));
+            if let Some(surface) = &mut self.surface
+                && let Some(graphics) = &mut self.graphics
+                && let Some(gal) = &mut self.gal
+            {
+                let _ = surface.finish(gal);
+                let _ = graphics.release_targets(gal);
+                surface.resize(size.width, size.height);
+            }
+        }
+        Ok(())
+    }
+}

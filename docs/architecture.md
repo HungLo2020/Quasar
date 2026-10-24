@@ -43,6 +43,14 @@ affecting Wayland or non-Linux builds. See
 [desktop window identity](window-identity.md) for the reference-game audit,
 property contract, migration examples and validation procedure.
 
+`quasar-config` is an optional typed settings/CLI foundation; it owns no global
+configuration and writes no user files. See [configuration](configuration.md).
+`quasar-profile` standardizes bounded CPU/GPU frame, upload, resource and
+synchronization measurements; it owns no GAL or renderer. See
+[profiling](profiling.md). The [Starfall reference game](../examples/starfall/README.md)
+combines these layers with the existing window, input, jobs, assets, audio and
+renderers.
+
 `quasar-sim` is an optional deterministic simulation layer built on generic
 game-owned state. It reuses `quasar-core::FixedStep` for scheduling, records
 validated input/hash journals, verifies replay divergence, and supports

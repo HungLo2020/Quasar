@@ -13,6 +13,34 @@ impl Mat4 {
         m.0[3] = [x, y, z, 1.];
         m
     }
+    pub fn scale(x: f32, y: f32, z: f32) -> Self {
+        Self([
+            [x, 0., 0., 0.],
+            [0., y, 0., 0.],
+            [0., 0., z, 0.],
+            [0., 0., 0., 1.],
+        ])
+    }
+    /// Right-handed view matrix looking from `eye` toward `target`.
+    pub fn look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> Option<Self> {
+        if !eye
+            .iter()
+            .chain(&target)
+            .chain(&up)
+            .all(|value| value.is_finite())
+        {
+            return None;
+        }
+        let forward = normalize(sub(target, eye))?;
+        let right = normalize(cross(forward, up))?;
+        let up = cross(right, forward);
+        Some(Self([
+            [right[0], up[0], -forward[0], 0.],
+            [right[1], up[1], -forward[1], 0.],
+            [right[2], up[2], -forward[2], 0.],
+            [-dot(right, eye), -dot(up, eye), dot(forward, eye), 1.],
+        ]))
+    }
     pub fn rotation_y(angle: f32) -> Self {
         let (s, c) = angle.sin_cos();
         Self([
@@ -57,6 +85,23 @@ impl Mat4 {
         self.0.iter().flatten().all(|v| v.is_finite())
     }
 }
+fn sub(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
+}
+fn cross(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
+}
+fn dot(left: [f32; 3], right: [f32; 3]) -> f32 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+}
+fn normalize(value: [f32; 3]) -> Option<[f32; 3]> {
+    let length = dot(value, value).sqrt();
+    (length > 1e-6).then(|| [value[0] / length, value[1] / length, value[2] / length])
+}
 impl std::ops::Mul for Mat4 {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
@@ -75,6 +120,19 @@ mod tests {
         }
         assert!(Mat4::perspective(1., 0., 0.1, 10.).is_none());
     }
+    #[test]
+    fn scale_and_view_matrices_are_right_handed() {
+        assert_eq!(
+            Mat4::scale(2., 3., 4.).transform([1., 1., 1., 1.]),
+            [2., 3., 4., 1.]
+        );
+        let view = Mat4::look_at([0., 0., 5.], [0., 0., 0.], [0., 1., 0.]).unwrap();
+        let origin = view.transform([0., 0., 0., 1.]);
+        assert!((origin[0]).abs() < 1e-6 && (origin[1]).abs() < 1e-6);
+        assert!((origin[2] + 5.).abs() < 1e-6);
+        assert!(Mat4::look_at([0.; 3], [0.; 3], [0., 1., 0.]).is_none());
+    }
+
     #[test]
     fn multiplication_applies_right_operand_first() {
         assert_eq!(

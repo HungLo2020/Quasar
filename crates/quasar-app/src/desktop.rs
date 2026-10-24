@@ -122,7 +122,7 @@ impl<A: DesktopApplication> ApplicationHandler for Runner<A> {
         if self.window.is_some() {
             return;
         }
-        let window = match GameWindow::create_with_desktop(
+        let mut window = match GameWindow::create_with_desktop(
             event_loop,
             &self.config.window,
             &self.config.desktop,
@@ -133,6 +133,10 @@ impl<A: DesktopApplication> ApplicationHandler for Runner<A> {
                 return;
             }
         };
+        if let Err(error) = self.application.configure_window(&mut window) {
+            self.fail_application(event_loop, error);
+            return;
+        }
         let mut context = AppContext {
             window: Some(&window),
             size: {

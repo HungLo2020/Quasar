@@ -1,0 +1,43 @@
+# Starfall is configured with TOML by default. JSON files remain supported when
+# selected explicitly with --config or a STARFALL_CONFIG path.
+version = 1
+
+[window]
+title = "Starfall"
+width = 1280
+height = 720
+fullscreen = false
+
+[game]
+seed = 24301
+time_limit = 90.0
+player_speed = 5.0
+turn_speed = 1.8
+camera_distance = 9.0
+camera_height = 5.2
+mouse_sensitivity = 0.0026
+
+[audio]
+enabled = true
+volume = 0.6
+device = ""
+
+[logging]
+level = "info"
+
+[profile]
+capacity = 240
+
+[assets]
+level = "level.json"
+
+[controls]
+forward = "KeyW"
+back = "KeyS"
+left = "KeyA"
+right = "KeyD"
+turn_left = "KeyQ"
+turn_right = "KeyE"
+shoot = "Space"
+restart = "KeyR"
+quit = "Escape"

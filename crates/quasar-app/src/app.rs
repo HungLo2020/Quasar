@@ -111,6 +111,16 @@ pub trait Application {
 /// Desktop-only hooks layered on [`Application`].
 #[cfg(feature = "desktop")]
 pub trait DesktopApplication: Application {
+    /// Called immediately after the runner creates or recreates the window and
+    /// before [`Application::setup`]. Install serializable input bindings,
+    /// cursor capture, or other window/input policy here. This is the supported
+    /// mutable-window hook; later contexts expose a read-only window.
+    fn configure_window(
+        &mut self,
+        _window: &mut quasar_window::GameWindow,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
     fn window_event(
         &mut self,
         _context: &mut AppContext<'_>,

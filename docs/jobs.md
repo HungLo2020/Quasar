@@ -129,8 +129,8 @@ measurement.
 - Metrics and optional diagnostics.
 - No global mandatory thread pool, audio-callback work or async runtime.
 - Tests for cancellation, failures, deadlocks/shutdown, dependency order, bounds,
-  concurrent submission, threaded dependency chains, self-join avoidance,
-  stress and property-based ordering.
+  concurrent submission, threaded dependency chains, nested submission/wait
+  rejection, self-join avoidance, stress and property-based ordering.
 - Benchmarks documenting throughput, scaling and queue latency.
 
 ## Limitations
@@ -141,8 +141,8 @@ measurement.
   cycle validation.
 - One queue per pool; callers choose worker counts and must avoid accidental
   oversubscription.
-- Do not block every worker waiting on the same pool's capacity; that is a
-  classic bounded-pool deadlock. Spawn sub-work without waiting, or use a
-  separate pool.
+- Nested blocking submission, same-pool handle waits and worker self-shutdown
+  are detected and rejected. A task that blocks on unrelated synchronization
+  still requires caller care.
 - Not intended for async I/O; use an async runtime for non-blocking network/file
   protocols.

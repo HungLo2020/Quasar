@@ -3,8 +3,8 @@
 Small optional frame helpers extracted after the explicit cube/HUD composition
 worked. This crate depends only on VulkanicGAL. Renderers remain usable without
 it. It owns no GAL, window, game loop, scene, renderer registry or render graph.
-These APIs were introduced in Git tag `2.1`. The current release is `v0.2.8`,
-with Cargo package versions set to `0.2.8`. This crate does not select a backend
+These APIs were introduced in Git tag `2.1`. The current release is `v0.2.9`,
+with Cargo package versions set to `0.2.9`. This crate does not select a backend
 by default; enable its `vulkan` or `opengl` forwarding feature when the same
 dependency needs a backend, or select one through the renderer crate.
 
@@ -47,3 +47,10 @@ samples. `take_frame_completion_latencies` includes the engine path from
 acquire entry through observed GPU completion. Poll cadence influences both. They exclude input, compositor and display
 latency. Uncollected completed samples retain only the newest 256 entries.
 See [the example and measurements](../../examples/composition/README.md).
+
+## Headless targets
+
+`OffscreenTarget` owns a color+depth render target and RGBA readback buffer for
+windowless renderer tests and screenshots. It uses the same one-submission
+`record_and_submit` path as `FrameSurface`, so renderer command lists and
+profiles stay representative of native frames without creating a window.

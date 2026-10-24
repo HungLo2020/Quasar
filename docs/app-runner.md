@@ -29,8 +29,11 @@ reference repository was modified.
 ## Architecture
 
 `Application` is the common, headless-capable trait: `setup`, `tick`, `render`,
-`suspended`, `shutdown`. `DesktopApplication` adds window/device event hooks and
-`resumed`. The runner consumes `GameWindow` input edges after each successful
+`suspended`, `shutdown`. `DesktopApplication` adds window/device event hooks,
+`configure_window` and `resumed`. `configure_window` is the mutable-window hook
+called immediately after creation/recreation, before `setup`; use it to install
+input bindings or cursor/window policy that cannot be expressed through the
+read-only `AppContext`. The runner consumes `GameWindow` input edges after each successful
 tick, so applications inspect `context.window.input` during `tick` and no longer
 need their own per-frame `consume_edges` workaround.
 

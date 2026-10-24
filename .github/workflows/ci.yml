@@ -24,6 +24,13 @@ jobs:
       - run: cargo check --locked -p quasar-sim --all-targets --features serde,jobs
       - run: cargo check --locked -p quasar-sim --all-targets --features serde
       - run: cargo check --locked -p quasar-sim --all-targets --features jobs
+      - run: cargo check --locked -p quasar-config --all-targets
+      - run: cargo check --locked -p quasar-config --no-default-features --all-targets
+      - run: cargo check --locked -p quasar-config --no-default-features --all-targets --features toml
+      - run: cargo check --locked -p quasar-config --no-default-features --all-targets --features json
+      - run: cargo check --locked -p quasar-config --all-targets --features storage
+      - run: cargo check --locked -p quasar-profile --all-targets
+      - run: cargo check --locked -p quasar-profile --no-default-features --all-targets
       - run: cargo check --locked -p quasar-input --features gilrs
       - run: cargo check --locked -p quasar-assets --features serde,storage
       - run: cargo check --locked -p quasar-assets --features async,hot-reload
@@ -67,6 +74,15 @@ jobs:
           cargo test --locked -p quasar-jobs --features diagnostics
           cargo test --locked -p quasar-sim
           cargo test --locked -p quasar-sim --features serde,jobs
+          cargo test --locked -p quasar-config
+          cargo test --locked -p quasar-config --no-default-features
+          cargo test --locked -p quasar-config --features storage
+          cargo test --locked -p quasar-config --no-default-features --features toml
+          cargo test --locked -p quasar-config --no-default-features --features json
+          cargo test --locked -p quasar-profile
+          cargo test --locked -p quasar-profile --no-default-features
+          cargo test --locked -p starfall
+          cargo test --locked -p starfall --no-default-features
           cargo check --locked -p quasar-window --features diagnostics
           cargo check --locked -p quasar-audio --features diagnostics
           cargo check --locked -p quasar-frame --features diagnostics
@@ -79,6 +95,15 @@ jobs:
           cargo clippy --locked -p quasar-jobs --all-targets --features diagnostics -- -D warnings
           cargo clippy --locked -p quasar-sim --all-targets -- -D warnings
           cargo clippy --locked -p quasar-sim --all-targets --features serde,jobs -- -D warnings
+          cargo clippy --locked -p quasar-config --all-targets -- -D warnings
+          cargo clippy --locked -p quasar-config --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked -p quasar-config --all-targets --features storage -- -D warnings
+          cargo clippy --locked -p quasar-config --all-targets --no-default-features --features toml -- -D warnings
+          cargo clippy --locked -p quasar-config --all-targets --no-default-features --features json -- -D warnings
+          cargo clippy --locked -p quasar-profile --all-targets -- -D warnings
+          cargo clippy --locked -p quasar-profile --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked -p starfall --all-targets -- -D warnings
+          cargo clippy --locked -p starfall --all-targets --no-default-features -- -D warnings
       - name: Run native X11 identity and resize tests
         run: |
           xvfb-run -a sh -c 'QUASAR_X11_TESTS=1 cargo test --locked -p quasar-window --test x11_native -- --test-threads=1'
@@ -112,6 +137,9 @@ jobs:
           cargo check --locked -p quasar-app --no-default-features
           cargo check --locked -p quasar-jobs --no-default-features
           cargo check --locked -p quasar-sim --no-default-features
+          cargo check --locked -p quasar-config --no-default-features
+          cargo check --locked -p quasar-profile --no-default-features
+          cargo check --locked -p starfall --no-default-features
           cargo clippy --locked -p quasar-window --all-targets --no-default-features -- -D warnings
           cargo clippy --locked -p quasar-sim --all-targets --no-default-features -- -D warnings
           cargo clippy --locked -p quasar-jobs --all-targets --no-default-features -- -D warnings
@@ -152,6 +180,18 @@ jobs:
 
       - name: Exercise deterministic simulation replay
         run: cargo run --locked -p quasar-sim --example replay
+
+      - name: Exercise Starfall headless replay and screenshot
+        run: |
+          cargo run --locked -p starfall -- --headless --ticks 120 --record /tmp/starfall.json
+          cargo run --locked -p starfall -- --headless --replay /tmp/starfall.json
+          cargo run --locked -p starfall -- --headless --ticks 30 --screenshot /tmp/starfall.png
+
+      - name: Test shared 3D+2D Starfall rendering
+        run: xvfb-run -a cargo test --locked -p starfall --test render -- --ignored --test-threads=1
+
+      - name: Exercise Starfall benchmark
+        run: xvfb-run -a cargo run --locked -p starfall -- --benchmark --benchmark-frames 30 --benchmark-file /tmp/starfall-profile.json
 
       - name: Exercise native software-framebuffer presentation
         run: xvfb-run -a cargo run --locked -p framebuffer -- --frames 30 --exercise-window

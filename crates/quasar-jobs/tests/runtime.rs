@@ -98,6 +98,85 @@ fn queue_is_bounded_and_spawn_wait_is_manual_safe() {
 }
 
 #[test]
+fn nested_spawn_wait_on_the_same_full_pool_fails_instead_of_deadlocking() {
+    let pool = Arc::new(JobPool::new(JobPoolConfig::new(1, 1)).unwrap());
+    let task_pool = Arc::clone(&pool);
+    let handle = pool
+        .spawn(move |_| {
+            let error = task_pool
+                .spawn_wait(|_| Ok::<_, std::convert::Infallible>(()))
+                .unwrap_err();
+            assert_eq!(error.kind(), JobErrorKind::NestedBlocking);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap();
+    handle
+        .wait_timeout(Duration::from_secs(5))
+        .expect("nested submission must return instead of deadlocking")
+        .unwrap();
+    pool.shutdown().unwrap();
+}
+
+#[test]
+fn nested_spawn_wait_succeeds_when_capacity_is_available() {
+    let pool = Arc::new(JobPool::new(JobPoolConfig::new(2, 2)).unwrap());
+    let task_pool = Arc::clone(&pool);
+    let handle = pool
+        .spawn(move |_| {
+            let child = task_pool
+                .spawn_wait(|_| Ok::<_, std::convert::Infallible>(42_u32))
+                .unwrap();
+            Ok::<_, std::convert::Infallible>(child)
+        })
+        .unwrap();
+    let child = handle
+        .wait_timeout(Duration::from_secs(5))
+        .expect("nested submission with capacity must complete")
+        .unwrap();
+    assert_eq!(child.wait().unwrap(), 42);
+    pool.shutdown().unwrap();
+}
+
+#[test]
+fn nested_child_wait_from_a_worker_is_rejected_instead_of_deadlocking() {
+    let pool = Arc::new(JobPool::new(JobPoolConfig::new(1, 4)).unwrap());
+    let task_pool = Arc::clone(&pool);
+    let handle = pool
+        .spawn(move |_| {
+            let child = task_pool
+                .spawn_wait(|_| Ok::<_, std::convert::Infallible>(7_u32))
+                .unwrap();
+            let error = child.wait().unwrap_err();
+            assert_eq!(error.kind(), JobErrorKind::NestedBlocking);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap();
+    handle
+        .wait_timeout(Duration::from_secs(5))
+        .expect("nested wait must return instead of deadlocking")
+        .unwrap();
+    pool.shutdown().unwrap();
+}
+
+#[test]
+fn shutdown_from_a_worker_is_rejected_instead_of_self_joining() {
+    let pool = Arc::new(JobPool::new(JobPoolConfig::new(1, 4)).unwrap());
+    let task_pool = Arc::clone(&pool);
+    let handle = pool
+        .spawn(move |_| {
+            let error = task_pool.shutdown().unwrap_err();
+            assert_eq!(error.kind(), JobErrorKind::NestedBlocking);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap();
+    handle
+        .wait_timeout(Duration::from_secs(5))
+        .expect("worker shutdown attempt must return")
+        .unwrap();
+    pool.shutdown().unwrap();
+}
+
+#[test]
 fn spawn_wait_blocks_until_capacity_is_available() {
     let pool = Arc::new(JobPool::new(JobPoolConfig::new(1, 1)).unwrap());
     let (started_sender, started_receiver) = mpsc::channel();

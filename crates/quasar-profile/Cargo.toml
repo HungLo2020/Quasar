@@ -1,0 +1,21 @@
+[package]
+name = "quasar-profile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["json", "frame"]
+json = ["dep:serde", "dep:serde_json"]
+frame = ["dep:quasar-frame"]
+
+[dependencies]
+quasar-frame = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+vulkanic-gal.workspace = true

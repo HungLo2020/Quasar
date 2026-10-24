@@ -139,7 +139,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio-example"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "hound",
  "quasar-audio",
@@ -659,7 +659,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "framebuffer"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "quasar-render-2d",
  "quasar-window",
@@ -1669,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "pong"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "png",
  "quasar-core",
@@ -1721,7 +1721,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-app"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "quasar-core",
  "quasar-window",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-assets"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "notify",
  "quasar-diagnostics",
@@ -1741,7 +1741,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-audio"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "cpal",
  "crossbeam-channel",
@@ -1755,7 +1755,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-composition"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "png",
  "quasar-frame",
@@ -1767,12 +1767,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "quasar-config"
+version = "0.2.9"
+dependencies = [
+ "quasar-storage",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "quasar-core"
-version = "0.2.8"
+version = "0.2.9"
 
 [[package]]
 name = "quasar-diagnostics"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -1780,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-frame"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "quasar-diagnostics",
  "vulkanic-gal",
@@ -1788,7 +1799,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-input"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "gilrs",
  "quasar-diagnostics",
@@ -1798,15 +1809,26 @@ dependencies = [
 
 [[package]]
 name = "quasar-jobs"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "proptest",
  "quasar-diagnostics",
 ]
 
 [[package]]
+name = "quasar-profile"
+version = "0.2.9"
+dependencies = [
+ "quasar-frame",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "vulkanic-gal",
+]
+
+[[package]]
 name = "quasar-render-2d"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "png",
  "quasar-core",
@@ -1818,14 +1840,14 @@ dependencies = [
 
 [[package]]
 name = "quasar-render-3d"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "vulkanic-gal",
 ]
 
 [[package]]
 name = "quasar-sim"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "proptest",
  "quasar-core",
@@ -1836,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-storage"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -1845,7 +1867,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-tilemap"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "png",
  "quasar-render-2d",
@@ -1856,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-window"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "quasar-diagnostics",
  "quasar-input",
@@ -2134,6 +2156,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "shaderc"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2255,6 +2286,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "starfall"
+version = "0.2.9"
+dependencies = [
+ "png",
+ "quasar-app",
+ "quasar-assets",
+ "quasar-audio",
+ "quasar-config",
+ "quasar-core",
+ "quasar-diagnostics",
+ "quasar-frame",
+ "quasar-input",
+ "quasar-jobs",
+ "quasar-profile",
+ "quasar-render-2d",
+ "quasar-render-3d",
+ "quasar-sim",
+ "quasar-window",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "vulkanic-gal",
+]
+
+[[package]]
 name = "strict-num"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2346,7 +2402,7 @@ dependencies = [
 
 [[package]]
 name = "tilequest"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "png",
  "quasar-core",
@@ -2402,6 +2458,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "0.9.12+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "0.7.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2417,9 +2497,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3641d5bbb5349a79e1020a242d251efbc546ad8048d133958323ce9c40a9c9c"
 dependencies = [
  "indexmap",
- "toml_datetime",
+ "toml_datetime 1.1.2+spec-1.1.0",
  "toml_parser",
- "winnow",
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -2428,8 +2508,14 @@ version = "1.1.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
 dependencies = [
- "winnow",
+ "winnow 1.0.4",
 ]
+
+[[package]]
+name = "toml_writer"
+version = "1.1.3+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "tracing"
@@ -2555,7 +2641,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vulkanic-gal"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "ash",
  "ash-window",
@@ -3124,6 +3210,12 @@ dependencies = [
  "x11rb",
  "xkbcommon-dl",
 ]
+
+[[package]]
+name = "winnow"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 
 [[package]]
 name = "winnow"

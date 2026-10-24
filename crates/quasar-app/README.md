@@ -59,6 +59,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   the runner requests redraws every frame, after a tick, or never.
 - `suspended` is called before the window is dropped; release GPU resources here.
 - `shutdown` is called once at final teardown.
+- `configure_window` runs immediately after window creation/recreation and
+  before `setup`; use it for serializable input bindings, cursor capture or
+  other mutable window policy.
 - `resumed` is a desktop hook run after `setup`; both run again after a
   suspend/resume window recreation.
 - `frame`/`tick` are monotonic 1-based counters and stay monotonic across

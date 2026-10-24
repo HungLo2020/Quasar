@@ -40,6 +40,7 @@
 
 use std::{
     any::Any,
+    cell::Cell,
     cmp::Ordering,
     collections::{BinaryHeap, HashMap, VecDeque},
     error::Error,
@@ -47,7 +48,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
-        atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering as AtomicOrdering},
         mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, sync_channel},
     },
     thread::{self, JoinHandle},
@@ -125,6 +126,7 @@ pub enum JobErrorKind {
     Panicked,
     Task,
     InvalidConfig,
+    NestedBlocking,
     Internal,
 }
 
@@ -176,6 +178,9 @@ impl JobError {
     }
     pub fn invalid_config(message: impl Into<String>) -> Self {
         Self::new(JobErrorKind::InvalidConfig, message)
+    }
+    pub fn nested_blocking(message: impl Into<String>) -> Self {
+        Self::new(JobErrorKind::NestedBlocking, message)
     }
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(JobErrorKind::Internal, message)
@@ -321,7 +326,19 @@ impl<T> JobHandle<T> {
 }
 impl<T: Send + 'static> JobHandle<T> {
     /// Waits for completion and returns the value or failure.
+    ///
+    /// A worker of the owning pool cannot block on a job in that same pool;
+    /// it receives [`JobErrorKind::NestedBlocking`] after trying an already
+    /// completed result. Use another pool or return the handle to the caller.
     pub fn wait(&self) -> Result<T, JobError> {
+        if self.inner.is_worker_thread() {
+            if let Some(result) = self.try_take() {
+                return result;
+            }
+            return Err(JobError::nested_blocking(
+                "a worker cannot block waiting for a job in its own pool",
+            ));
+        }
         if self.taken.load(AtomicOrdering::Acquire) {
             return Err(JobError::internal("job result has already been taken"));
         }
@@ -333,7 +350,16 @@ impl<T: Send + 'static> JobHandle<T> {
         decode::<T>(outcome)
     }
     /// Waits at most `timeout`. `None` means the job is still running.
+    /// Same-pool workers receive an immediate `NestedBlocking` error rather
+    /// than blocking.
     pub fn wait_timeout(&self, timeout: Duration) -> Option<Result<T, JobError>> {
+        if self.inner.is_worker_thread() {
+            return Some(self.try_take().unwrap_or_else(|| {
+                Err(JobError::nested_blocking(
+                    "a worker cannot block waiting for a job in its own pool",
+                ))
+            }));
+        }
         if self.taken.load(AtomicOrdering::Acquire) {
             return None;
         }
@@ -441,6 +467,7 @@ impl JobPool {
             ));
         }
         let inner = Arc::new(Inner {
+            id: NEXT_POOL_ID.fetch_add(1, AtomicOrdering::Relaxed),
             config,
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
@@ -523,6 +550,10 @@ impl JobPool {
     }
     /// Like [`Self::spawn`], but waits for outstanding capacity instead of
     /// returning [`JobErrorKind::QueueFull`].
+    ///
+    /// If a worker of this same pool calls this while the pool is full, it
+    /// returns [`JobErrorKind::NestedBlocking`] rather than consuming the
+    /// worker while waiting for work that only that worker could run.
     pub fn spawn_wait<T, E, F>(&self, task: F) -> Result<JobHandle<T>, JobError>
     where
         T: Send + 'static,
@@ -559,6 +590,11 @@ impl JobPool {
             }
             if state.jobs.len() < self.inner.config.max_outstanding {
                 break;
+            }
+            if self.inner.is_worker_thread() {
+                return Err(JobError::nested_blocking(
+                    "a worker cannot block waiting for capacity in its own job pool",
+                ));
             }
             if !wait || self.is_manual() {
                 return Err(JobError::queue_full(self.inner.config.max_outstanding));
@@ -668,7 +704,13 @@ impl JobPool {
     }
     /// Stops accepting work and waits for queued/running jobs to finish.
     /// Manual pools cancel queued work because no worker can execute it.
+    /// A worker of this pool receives `NestedBlocking` instead of joining itself.
     pub fn shutdown(&self) -> Result<(), JobError> {
+        if self.inner.is_worker_thread() {
+            return Err(JobError::nested_blocking(
+                "a worker cannot join its own job pool during shutdown",
+            ));
+        }
         let manual = self.is_manual();
         self.inner.begin_shutdown(manual);
         let workers = {
@@ -706,6 +748,7 @@ impl Drop for JobPool {
 }
 
 struct Inner {
+    id: u64,
     config: JobPoolConfig,
     state: Mutex<State>,
     wake: Condvar,
@@ -713,6 +756,9 @@ struct Inner {
     diagnostics: Option<Diagnostics>,
 }
 impl Inner {
+    fn is_worker_thread(&self) -> bool {
+        WORKER_POOL.with(|current| current.get() == Some(self.id))
+    }
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state
             .lock()
@@ -949,10 +995,19 @@ impl Inner {
 }
 
 fn worker_loop(inner: Arc<Inner>) {
+    WORKER_POOL.with(|current| current.set(Some(inner.id)));
     while let Some((id, task, cancel)) = inner.take_ready(true) {
         inner.execute(id, task, cancel);
     }
+    WORKER_POOL.with(|current| current.set(None));
 }
+
+thread_local! {
+    /// Distinguishes a pool's own workers from unrelated worker/caller threads.
+    static WORKER_POOL: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+static NEXT_POOL_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Default)]
 struct State {

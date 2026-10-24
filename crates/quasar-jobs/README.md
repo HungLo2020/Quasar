@@ -30,6 +30,8 @@ pool.shutdown()?;
   jobs on the caller thread in priority/submission order.
 - `max_outstanding` bounds queued + running jobs. `spawn` returns
   `QueueFull`; `spawn_wait` waits for capacity (except on manual pools).
+  Same-pool nested blocking submission, nested handle waits and worker
+  self-shutdown return `NestedBlocking` instead of deadlocking.
 - Higher `JobPriority` values run first; equal priorities preserve submission
   order.
 - Dependencies may be attached while outstanding. Completed-success
@@ -68,8 +70,8 @@ cargo run --release -p quasar-jobs --example job_benchmark
 Tests cover dependency order, priority/FIFO order, queue bounds, blocking
 submission, queued/running cancellation, panic and error propagation,
 graceful/cancelling shutdown, cross-pool dependency rejection, concurrent and
-chained submission, self-join avoidance, stress, result-taking, metrics and a
-property test over priority ordering. The benchmark reports
+chained submission, nested wait/submission rejection, self-join avoidance,
+stress, result-taking, metrics and a property test over priority ordering. The benchmark reports
 throughput and submission-to-start queue latency.
 
 ## Limitations
@@ -85,5 +87,5 @@ throughput and submission-to-start queue latency.
 - There is no work stealing or cross-pool scheduling. Priority is meaningful
   within a pool, not across independent pools.
 - No thread-affinity or NUMA policy is imposed.
-- Do not block all workers waiting for more capacity in the same pool; use a
-  separate pool or submit sub-work without waiting.
+- Same-pool nested waits/submission/shutdown are rejected. Blocking on unrelated
+  synchronization while workers are occupied still requires caller care.

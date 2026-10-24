@@ -22,11 +22,13 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `quasar-input` | Portable keyboard/mouse/gamepad state, player routing, hotplug, deadzones/calibration, named actions, axes, chords, serializable bindings | None |
 | `quasar-window` | Native windows, desktop identity, fullscreen, DPI, cursor capture, native input adapter | quasar-input |
 | `quasar-core` | Fixed-step timing and shared viewport/scaling math | None |
+| `quasar-config` | Typed TOML/JSON settings, env/CLI precedence, validation, migrations and common arguments | Optional quasar-storage |
 | `quasar-storage` | Basalt v1 paths and atomic JSON persistence | None |
 | `quasar-assets` | Validated virtual paths, mounts, typed loaders, dependency graphs, schema checks, bounded cache, async worker and hot reload | Optional quasar-storage (Basalt mounts), diagnostics and notify |
 | `quasar-diagnostics` | Explicit structured logs, spans, counters, bounded failure diagnostics and optional CPU frame timing | None |
 | `quasar-app` | Optional Cargo-native winit/headless lifecycle runner with fixed or per-frame scheduling and application hooks | quasar-core, optional quasar-window |
 | `quasar-jobs` | Optional bounded worker pool with cancellation, dependencies, priorities, manual deterministic mode and metrics | None |
+| `quasar-profile` | Bounded CPU/GPU frame, upload, resource, synchronization and renderer profiling with p99 summaries | Optional quasar-frame |
 | `quasar-sim` | Optional fixed-step coordination, deterministic journals, snapshots, replay verification and divergence reports | quasar-core, optional quasar-jobs |
 | `quasar-audio` | WAV/Ogg decode, deterministic mixing, buses, spatial audio, scheduling, streaming Ogg, offline WAV and CPAL output | Optional quasar-storage (settings) |
 | `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
@@ -38,6 +40,7 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `examples/framebuffer` | CPU-rendered RGBA8 framebuffer presented through `quasar-render-2d`, with headless screenshots, window exercises and benchmarks | quasar-render-2d |
 | `examples/audio` | Music, overlapping/spatial effects, buses, voice groups, procedural audio, offline WAV output and audio benchmarks | quasar-audio |
 | `examples/pong` | Game rules, 2D draw lists, desktop application, headless CLI and replay | Selected crates |
+| `examples/starfall` | Playable 3D reference game: shared 3D+2D frame, jobs/assets/audio, deterministic replay, config and profiling | quasar-app, input, sim, jobs, assets, diagnostics, audio, render-2d/3d, config, profile |
 
 Controller support lives in `quasar-input`: pure gamepad types, hotplug/player
 routing, deadzones, calibration and combined keyboard/gamepad actions, plus an
@@ -50,8 +53,11 @@ feature-gated [`quasar-diagnostics`](docs/diagnostics.md) layer; async loading a
 hot reload are documented in [async assets](docs/async-assets.md), timing policy
 in [timing](docs/timing.md), the optional runner in [app runner](docs/app-runner.md)
 and [adoption analysis](docs/app-adoption.md), background work in [jobs](docs/jobs.md), deterministic replay in
-[simulation](docs/simulation.md), and edge/focus behavior in
-[input hardening](docs/input-hardening.md).
+[simulation](docs/simulation.md), configuration in [configuration](docs/configuration.md),
+graphics measurements in [profiling](docs/profiling.md), and edge/focus behavior
+in [input hardening](docs/input-hardening.md). New human-editable configuration
+defaults to TOML with JSON compatibility; the [Starfall](examples/starfall/README.md)
+reference game demonstrates the combined stack.
 
 ### Desktop window identity
 
@@ -86,7 +92,7 @@ future additions. Audio is provided by `quasar-audio`; see
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.8`, with workspace package versions set to `0.2.8`.
+release is `v0.2.9`, with workspace package versions set to `0.2.9`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.
