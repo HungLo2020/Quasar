@@ -51,7 +51,9 @@ impl AssetLoader for TextureLoader {
         let rgba = match info.color_type {
             png::ColorType::Rgba => buffer,
             png::ColorType::Rgb => buffer
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
                 .collect(),
             png::ColorType::Grayscale => buffer
@@ -59,7 +61,9 @@ impl AssetLoader for TextureLoader {
                 .flat_map(|value| [value, value, value, 255])
                 .collect(),
             png::ColorType::GrayscaleAlpha => buffer
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .flat_map(|pixel| [pixel[0], pixel[0], pixel[0], pixel[1]])
                 .collect(),
             other => {

@@ -27,11 +27,8 @@ fn world_and_hud_render_to_a_non_uniform_offscreen_frame() {
         })
         .unwrap();
     assert_eq!(report.rgba.len(), 320 * 180 * 4);
-    let colors: std::collections::BTreeSet<_> = report
-        .rgba
-        .chunks_exact(4)
-        .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
-        .collect();
+    let colors: std::collections::BTreeSet<_> =
+        report.rgba.as_chunks::<4>().0.iter().copied().collect();
     assert!(colors.len() > 16, "offscreen frame is unexpectedly uniform");
     assert!(graphics.last_stats().draws > 10);
     target.release(&mut gal).unwrap();
