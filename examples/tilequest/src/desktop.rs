@@ -1,25 +1,80 @@
 use super::*;
-use quasar_core::{DisplayOptions, Filter, FixedStep, Scaling};
-use quasar_frame::{CompletionPolicy, FrameSurface};
-use quasar_render_2d::{Canvas, LoadOp, RenderState2D, Textures};
-use quasar_window::{
-    GameWindow, WindowConfig,
-    winit::{
-        application::ApplicationHandler,
-        event::WindowEvent,
-        event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-        window::WindowId,
-    },
+use quasar_app::{
+    AppConfig, AppContext, Application, DesktopApplication, Flow, RenderPolicy, TimingConfig,
+    run as run_app,
 };
+use quasar_core::{DisplayOptions, Filter, FixedStepConfig, Scaling};
+use quasar_frame::{CompletionPolicy, FrameSurface};
+use quasar_input::BindingError;
+use quasar_render_2d::{Canvas, LoadOp, RenderState2D, Textures};
+use quasar_window::{DesktopConfig, WindowConfig};
 use std::time::{Duration, Instant};
 use vulkanic_gal::{resources::*, *};
+
+#[derive(Debug)]
+struct AppError(Box<dyn std::error::Error>);
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::error::Error for AppError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+impl From<Box<dyn std::error::Error>> for AppError {
+    fn from(error: Box<dyn std::error::Error>) -> Self {
+        Self(error)
+    }
+}
+impl From<&str> for AppError {
+    fn from(error: &str) -> Self {
+        Self(Box::new(std::io::Error::other(error.to_owned())))
+    }
+}
+impl From<String> for AppError {
+    fn from(error: String) -> Self {
+        Self(Box::new(std::io::Error::other(error)))
+    }
+}
+impl From<BindingError> for AppError {
+    fn from(error: BindingError) -> Self {
+        Self(Box::new(error))
+    }
+}
+impl From<quasar_render_2d::Error> for AppError {
+    fn from(error: quasar_render_2d::Error) -> Self {
+        Self(Box::new(error))
+    }
+}
+impl From<GalError> for AppError {
+    fn from(error: GalError) -> Self {
+        Self(Box::new(error))
+    }
+}
+type AppResult<T> = std::result::Result<T, AppError>;
+
 pub fn run(options: Options, session: Session, controls: tilequest::controls::Controls) -> Result {
     set_gpu_timestamps_requested(options.benchmark.is_some());
-    let mut app = App {
+    let config = AppConfig {
+        window: WindowConfig {
+            title: "Tilequest / Quasar".into(),
+            application_id: "quasar-tilequest".into(),
+            size: (960, 640),
+            minimum_size: (480, 320),
+            ..Default::default()
+        },
+        desktop: DesktopConfig::for_application("quasar-tilequest"),
+        timing: TimingConfig::Fixed(FixedStepConfig::for_rate(tilequest::HZ, 8)),
+        render: RenderPolicy::EveryFrame,
+        max_frame_wait: Duration::from_millis(16),
+        frame_interval: None,
+    };
+    let app = App {
         options,
         session,
         controls,
-        window: None,
         gal: None,
         renderer: None,
         surface: FrameSurface::new(960, 640),
@@ -27,58 +82,46 @@ pub fn run(options: Options, session: Session, controls: tilequest::controls::Co
             scaling: Scaling::Integer,
             ..Default::default()
         },
-        clock: FixedStep::new(tilequest::HZ, 8)?,
-        previous: Instant::now(),
-        started: Instant::now(),
+        size: (960, 640),
         frames: 0,
         stage: 0,
-        error: None,
+        started: Instant::now(),
         samples: Vec::new(),
         draw_stats: quasar_tilemap::render::DrawStats::default(),
         baseline: None,
         gpu: Vec::new(),
         last_gpu: 0,
+        pause_pending: false,
     };
-    EventLoop::new()?.run_app(&mut app)?;
-    if let Some(e) = app.error {
-        return Err(e.into());
-    }
+    run_app(app, config)?;
     Ok(())
 }
+
 struct App {
     options: Options,
     session: Session,
     controls: tilequest::controls::Controls,
-    window: Option<GameWindow>,
     gal: Option<VulkanicGal>,
     renderer: Option<RenderState2D>,
     surface: FrameSurface,
     display: DisplayOptions,
-    clock: FixedStep,
-    previous: Instant,
-    started: Instant,
+    size: (u32, u32),
     frames: u64,
     stage: u8,
-    error: Option<String>,
+    started: Instant,
     samples: Vec<u64>,
     draw_stats: quasar_tilemap::render::DrawStats,
     baseline: Option<(u64, u64, u64, u64)>,
     gpu: Vec<u64>,
     last_gpu: u64,
+    pause_pending: bool,
 }
+
 impl App {
-    fn initialize(&mut self, events: &ActiveEventLoop) -> Result {
-        let mut window = GameWindow::create(
-            events,
-            &WindowConfig {
-                title: "Tilequest / Quasar".into(),
-                application_id: "quasar-tilequest".into(),
-                size: (960, 640),
-                minimum_size: (480, 320),
-                ..Default::default()
-            },
-        )?;
-        window.input.set_bindings(self.controls.bindings.clone())?;
+    fn initialize(&mut self, context: &mut AppContext<'_>) -> Result {
+        let window = context
+            .window
+            .ok_or("desktop runner did not provide a window")?;
         let size = window.native().inner_size();
         let mut gal = VulkanicGal::create_windowed_vulkan(
             "Tilequest",
@@ -109,21 +152,14 @@ impl App {
         self.renderer = Some(RenderState2D::new(&mut gal)?);
         self.surface = FrameSurface::new(size.width, size.height);
         self.gal = Some(gal);
-        self.window = Some(window);
-        self.clock.reset();
-        self.previous = Instant::now();
+        self.size = (size.width, size.height);
+        self.started = Instant::now();
         Ok(())
     }
-    fn fail(&mut self, error: impl std::fmt::Display, events: &ActiveEventLoop) {
-        self.error = Some(error.to_string());
-        events.exit();
-    }
-    fn redraw(&mut self, events: &ActiveEventLoop) -> Result {
-        if self.options.benchmark.is_some() {
-            self.session.step(Input::default(), self.options.autoplay)?;
-        }
-        let gal = self.gal.as_mut().unwrap();
-        let renderer = self.renderer.as_mut().unwrap();
+
+    fn redraw(&mut self, context: &mut AppContext<'_>) -> Result<Flow> {
+        let gal = self.gal.as_mut().ok_or("missing GAL")?;
+        let renderer = self.renderer.as_mut().ok_or("missing renderer")?;
         let session = &self.session;
         let mut draw_stats = quasar_tilemap::render::DrawStats::default();
         let report = self
@@ -147,49 +183,53 @@ impl App {
                 )?;
                 Ok(vec![prepared.commands])
             })?;
-        if let Some(report) = report {
-            self.frames += 1;
-            self.draw_stats = draw_stats;
-            if self.frames == 64 {
-                let m = gal.backend_runtime_metrics();
-                self.baseline = Some((
-                    gal.metrics().resource_creates,
-                    gal.metrics().resource_destroys,
-                    m.native_wait_count,
-                    m.native_device_wait_idle_count,
-                ));
-            }
-            if self.options.benchmark.is_some() && self.frames > 64 {
-                self.samples.push(report.cpu_frame_nanos);
-                let metrics = gal.backend_runtime_metrics();
-                if metrics.gpu_timestamp_status > self.last_gpu {
-                    self.gpu.push(metrics.gpu_frame_total_nanos);
-                    self.last_gpu = metrics.gpu_timestamp_status;
-                }
-            }
-            if self.options.exercise {
-                self.exercise()?;
-            }
-            if self.options.frames.is_some_and(|n| self.frames >= n) {
-                if self.options.exercise && self.stage != 4 {
-                    return Err("native exercise did not finish".into());
-                }
-                println!(
-                    "presented_frames={} window_exercise_stages={} visited_cells={} emitted_tiles={} stored_cells={} render_stats={:?}",
-                    self.frames,
-                    self.stage,
-                    self.draw_stats.visited_cells,
-                    self.draw_stats.emitted_tiles,
-                    self.session.world.runtime.stored_cells(),
-                    self.renderer.as_ref().unwrap().stats()
-                );
-                events.exit();
+        let Some(report) = report else {
+            return Ok(Flow::Continue);
+        };
+        self.frames += 1;
+        self.draw_stats = draw_stats;
+        if self.frames == 64 {
+            let m = gal.backend_runtime_metrics();
+            self.baseline = Some((
+                gal.metrics().resource_creates,
+                gal.metrics().resource_destroys,
+                m.native_wait_count,
+                m.native_device_wait_idle_count,
+            ));
+        }
+        if self.options.benchmark.is_some() && self.frames > 64 {
+            self.samples.push(report.cpu_frame_nanos);
+            let metrics = gal.backend_runtime_metrics();
+            if metrics.gpu_timestamp_status > self.last_gpu {
+                self.gpu.push(metrics.gpu_frame_total_nanos);
+                self.last_gpu = metrics.gpu_timestamp_status;
             }
         }
-        Ok(())
+        if self.options.exercise {
+            self.exercise(context)?;
+        }
+        if self.options.frames.is_some_and(|n| self.frames >= n) {
+            if self.options.exercise && self.stage != 4 {
+                return Err("native exercise did not finish".into());
+            }
+            println!(
+                "presented_frames={} window_exercise_stages={} visited_cells={} emitted_tiles={} stored_cells={} render_stats={:?}",
+                self.frames,
+                self.stage,
+                self.draw_stats.visited_cells,
+                self.draw_stats.emitted_tiles,
+                self.session.world.runtime.stored_cells(),
+                self.renderer.as_ref().unwrap().stats()
+            );
+            return Ok(Flow::Exit);
+        }
+        Ok(Flow::Continue)
     }
-    fn exercise(&mut self) -> Result {
-        let window = self.window.as_ref().unwrap();
+
+    fn exercise(&mut self, context: &AppContext<'_>) -> Result {
+        let window = context
+            .window
+            .ok_or("desktop runner did not provide a window")?;
         match self.stage {
             0 if self.frames >= 2 => {
                 let _ = window
@@ -221,6 +261,7 @@ impl App {
         }
         Ok(())
     }
+
     fn teardown(&mut self, outputs: bool) -> Result {
         if let Some(mut gal) = self.gal.take() {
             self.surface.finish(&mut gal)?;
@@ -270,131 +311,106 @@ impl App {
                 return Err("resource imbalance after native teardown".into());
             }
         }
-        self.window.take();
         Ok(())
     }
 }
-impl ApplicationHandler for App {
-    fn resumed(&mut self, events: &ActiveEventLoop) {
-        if self.window.is_none()
-            && let Err(e) = self.initialize(events)
-        {
-            self.fail(e, events);
-        }
+
+impl Application for App {
+    type Error = AppError;
+
+    fn setup(&mut self, context: &mut AppContext<'_>) -> AppResult<()> {
+        self.initialize(context).map_err(AppError::from)
     }
-    fn suspended(&mut self, events: &ActiveEventLoop) {
-        if let Err(e) = self.teardown(false) {
-            self.fail(e, events);
+
+    fn frame_update(&mut self, context: &mut AppContext<'_>) -> AppResult<Flow> {
+        if self.options.frames.is_some() && self.started.elapsed() > Duration::from_secs(60) {
+            return Err("native smoke run timed out".into());
         }
-    }
-    fn window_event(&mut self, events: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        let Some(window) = &mut self.window else {
-            return;
-        };
-        if window.native().id() != id {
-            return;
-        }
-        let update = window.process(&event);
-        if update.close_requested || window.input.take_pressed("quit") {
-            events.exit();
-            return;
-        }
-        if let Some(s) = update.resized {
-            if let (Some(renderer), Some(gal)) = (&mut self.renderer, &mut self.gal)
-                && let Err(e) = renderer.release_targets(gal)
-            {
-                self.fail(e, events);
-                return;
+        if self.size != context.size {
+            if let (Some(renderer), Some(gal)) = (&mut self.renderer, &mut self.gal) {
+                let _ = renderer.release_targets(gal);
             }
-            self.surface.resize(s.width, s.height);
+            self.surface.resize(context.size.0, context.size.1);
+            self.size = context.size;
         }
-        if update.focus_changed == Some(false)
-            && !self.options.autoplay
-            && self.session.replay.is_none()
-        {
-            if self.session.state.phase == tilequest::Phase::Playing {
-                let _ = self.session.step(
-                    Input {
-                        pause: true,
-                        ..Default::default()
-                    },
-                    false,
-                );
+        if context.focus_changed == Some(false) {
+            self.pause_pending = true;
+        }
+        if context.input.action("quit").pressed {
+            context.input.consume_action("quit");
+            return Ok(Flow::Exit);
+        }
+        if context.input.action("fullscreen").pressed {
+            context.input.consume_action("fullscreen");
+            if let Some(window) = context.window {
+                window.toggle_fullscreen();
             }
-            self.clock.reset();
         }
-        let window = self.window.as_mut().unwrap();
-        if window.input.take_pressed("fullscreen") {
-            window.toggle_fullscreen();
-        }
-        if window.input.take_pressed("filter") {
+        if context.input.action("filter").pressed {
+            context.input.consume_action("filter");
             self.display.filter = if self.display.filter == Filter::Nearest {
                 Filter::Linear
             } else {
                 Filter::Nearest
             };
         }
-        if window.input.take_pressed("scale") {
+        if context.input.action("scale").pressed {
+            context.input.consume_action("scale");
             self.display.scaling = if self.display.scaling == Scaling::Integer {
                 Scaling::Fit
             } else {
                 Scaling::Integer
             };
         }
-        if update.redraw_requested
-            && let Err(e) = self.redraw(events)
-        {
-            self.fail(e, events);
-        }
+        Ok(Flow::Continue)
     }
-    fn about_to_wait(&mut self, events: &ActiveEventLoop) {
-        if self.options.frames.is_some() && self.started.elapsed() > Duration::from_secs(60) {
-            self.fail("native smoke run timed out", events);
-            return;
+
+    fn tick(&mut self, context: &mut AppContext<'_>) -> AppResult<Flow> {
+        let mut input = self.controls.input(context.input);
+        if self.pause_pending {
+            input.pause = true;
+            self.pause_pending = false;
         }
-        let Some(window) = &mut self.window else {
-            return;
-        };
-        let now = Instant::now();
-        if self.options.benchmark.is_none()
-            && (window.focused() || self.options.autoplay || self.session.replay.is_some())
+        if !self
+            .session
+            .step(input, self.options.autoplay)
+            .map_err(AppError::from)?
         {
-            self.clock.advance(now - self.previous);
+            return Ok(Flow::Exit);
         }
-        self.previous = now;
-        while self.clock.take_tick() {
-            let input = self.controls.input(&window.input);
-            let result = self.session.step(input, self.options.autoplay);
-            window.input.consume_edges();
-            match result {
-                Ok(true) => {}
-                Ok(false) => {
-                    events.exit();
-                    return;
-                }
-                Err(e) => {
-                    self.fail(e, events);
-                    return;
-                }
-            }
-            if self.session.done(&self.options) {
-                events.exit();
-                return;
-            }
+        if self.session.done(&self.options) {
+            return Ok(Flow::Exit);
         }
-        if window.drawable() {
-            window.native().request_redraw();
-        }
-        events.set_control_flow(ControlFlow::WaitUntil(
-            now + self.clock.until_next_tick().min(Duration::from_millis(16)),
-        ));
+        Ok(Flow::Continue)
     }
-    fn exiting(&mut self, _: &ActiveEventLoop) {
-        if let Err(e) = self.teardown(true) {
-            self.error = Some(e.to_string());
-        }
+
+    fn render(&mut self, context: &mut AppContext<'_>) -> AppResult<Flow> {
+        self.redraw(context).map_err(AppError::from)
+    }
+
+    fn suspended(&mut self, _: &mut AppContext<'_>) -> AppResult<()> {
+        self.teardown(false).map_err(AppError::from)
+    }
+
+    fn shutdown(&mut self, _: &mut AppContext<'_>) -> AppResult<()> {
+        self.teardown(true).map_err(AppError::from)
     }
 }
+
+impl DesktopApplication for App {
+    fn resumed(&mut self, context: &mut AppContext<'_>) -> AppResult<()> {
+        if self.gal.is_none() {
+            self.initialize(context).map_err(AppError::from)?;
+        }
+        Ok(())
+    }
+
+    fn configure_window(&mut self, window: &mut quasar_window::GameWindow) -> AppResult<()> {
+        window.input.set_bindings(self.controls.bindings.clone())?;
+        Ok(())
+    }
+}
+
 fn extent(w: u32, h: u32) -> Extent3d {
     Extent3d {
         width: w,

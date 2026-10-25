@@ -4,7 +4,7 @@ use crate::world::{GameError, GameRules};
 use quasar_config::{CommonArgs, Config, ConfigError, ConfigValue};
 use quasar_diagnostics::Level as LogLevel;
 use quasar_input::{
-    Binding, Bindings, Button, GamepadAxis, GamepadButton, InputState, Key, MouseButton,
+    Binding, Bindings, Button, GamepadAxis, GamepadButton, InputRead, Key, MouseButton,
 };
 use quasar_sim::SimulationConfig;
 use serde::Deserialize;
@@ -119,7 +119,7 @@ impl ControlKeys {
             .map_err(|error| GameError::invalid(error.to_string()))?;
         Ok(bindings)
     }
-    pub fn input(self, input: &InputState) -> crate::world::GameInput {
+    pub fn input(self, input: &impl InputRead) -> crate::world::GameInput {
         crate::world::GameInput {
             forward: input.action("forward").value,
             strafe: input.action("strafe").value,
@@ -130,13 +130,17 @@ impl ControlKeys {
         }
     }
     /// Adds captured mouse yaw to the keyboard/gamepad action state.
-    pub fn input_with_mouse(self, input: &InputState, sensitivity: f32) -> crate::world::GameInput {
+    pub fn input_with_mouse(
+        self,
+        input: &impl InputRead,
+        sensitivity: f32,
+    ) -> crate::world::GameInput {
         let mut result = self.input(input);
         // Screen-right mouse motion decreases the yaw used by forward=(sin,cos).
-        result.look = -(input.relative_motion.0 as f32) * sensitivity;
+        result.look = -(input.relative_motion().0 as f32) * sensitivity;
         result
     }
-    pub fn quit_requested(self, input: &InputState) -> bool {
+    pub fn quit_requested(self, input: &impl InputRead) -> bool {
         input.action("quit").pressed
     }
 }
@@ -220,7 +224,7 @@ pub struct GameSettings {
     pub config_path: Option<PathBuf>,
 }
 impl GameSettings {
-    pub fn input(&self, input: &InputState) -> crate::world::GameInput {
+    pub fn input(&self, input: &impl InputRead) -> crate::world::GameInput {
         self.controls
             .input_with_mouse(input, self.mouse_sensitivity)
     }

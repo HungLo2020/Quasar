@@ -1,7 +1,12 @@
 # Framebuffer
 
 A software-rendered 640x400 RGBA8 framebuffer presented through
-`quasar-render-2d`'s `FramebufferPresenter`. It exercises persistent dynamic
+`quasar-render-2d`'s `FramebufferPresenter`.
+
+This example intentionally owns its raw `winit` loop instead of using
+`quasar-app`: it exercises the presenter, allocation accounting and resize
+behaviour below the runner, and serves as the documented lower-level escape
+hatch for applications that need their own event loop. It exercises persistent dynamic
 texture updates, scaling/filtering, letterboxing, resize, zero-size deferral and
 recovery, headless screenshots, and native presentation benchmarks.
 

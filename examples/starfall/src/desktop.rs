@@ -13,7 +13,7 @@ use quasar_profile::{FrameProfiler, FrameSample};
 use quasar_text::{FontData, FontStack};
 use quasar_ui::{
     Rect, ShapedTextMeasure, TextRenderer, TextRendererOptions, UiBindings, UiTextStyles,
-    from_input_state,
+    from_frame_input,
 };
 use quasar_window::{DesktopConfig, WindowConfig, winit::event::WindowEvent};
 use starfall::{
@@ -110,6 +110,7 @@ pub fn run(settings: GameSettings, diagnostics: Diagnostics) -> Result<(), GameE
         timing: TimingConfig::Fixed(FixedStepConfig::for_rate(60.0, 8)),
         render: RenderPolicy::EveryFrame,
         max_frame_wait: Duration::from_millis(16),
+        frame_interval: None,
     };
     let initial = saved.unwrap_or(Options {
         fullscreen: settings.fullscreen,
@@ -311,17 +312,27 @@ impl StarfallApp {
         );
         Ok(())
     }
-    fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow, GameError> {
+    fn frame_update(&mut self, context: &mut AppContext<'_>) -> Result<Flow, GameError> {
         if self.exit_after_render {
             return Ok(Flow::Exit);
         }
-        let Some(window) = context.window else {
+        if context.focus_changed == Some(false)
+            && self.interactive
+            && self.playing
+            && !self.menu.is_open()
+        {
+            self.playing = false;
+            self.menu.open_pause();
+            if let Some(window) = context.window {
+                self.set_cursor_capture(window, false);
+            }
+            context.input.consume_all();
             return Ok(Flow::Continue);
-        };
+        }
         if self.menu.is_open() {
             let viewport = Rect::new(0.0, 0.0, context.size.0 as f32, context.size.1 as f32);
             let scale = context.scale_factor.max(0.5) as f32;
-            let input = from_input_state(&window.input, &UiBindings::default());
+            let input = from_frame_input(context.input, &UiBindings::default());
             let action = self.menu.update(
                 &input,
                 viewport,
@@ -329,16 +340,32 @@ impl StarfallApp {
                 &self.text_measure,
                 context.elapsed.as_secs_f32(),
             )?;
-            if let Some(flow) = self.apply_menu_action(action, window)? {
+            context.input.consume_all();
+            if let Some(window) = context.window
+                && let Some(flow) = self.apply_menu_action(action, window)?
+            {
                 return Ok(flow);
             }
             return Ok(Flow::Continue);
         }
-        if self.interactive && window.input.pressed(Key::Escape) {
+        if self.interactive && context.input.pressed(Key::Escape) {
             self.playing = false;
             self.menu.open_pause();
-            self.set_cursor_capture(window, false);
+            if let Some(window) = context.window {
+                self.set_cursor_capture(window, false);
+            }
+            context.input.consume_all();
             return Ok(Flow::Continue);
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow, GameError> {
+        if self.exit_after_render {
+            return Ok(Flow::Exit);
+        }
+        if self.menu.is_open() {
+            return Ok(Flow::Deferred);
         }
         let Some(session) = &mut self.session else {
             return Ok(Flow::Continue);
@@ -350,13 +377,13 @@ impl StarfallApp {
                 return Ok(Flow::Exit);
             }
         } else if self.playing {
-            if self.settings.controls.quit_requested(&window.input) {
+            if self.settings.controls.quit_requested(context.input) {
                 return Ok(Flow::Exit);
             }
             let input = if self.settings.autoplay {
                 starfall::world::autoplay_input(session.world())
             } else {
-                self.settings.input(&window.input)
+                self.settings.input(context.input)
             };
             session.step(input)?;
         }
@@ -572,11 +599,15 @@ impl Application for StarfallApp {
     fn setup(&mut self, context: &mut AppContext<'_>) -> Result<(), Self::Error> {
         self.initialize(context)
     }
+    fn frame_update(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
+        self.frame_update(context)
+    }
     fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
         self.tick(context)
     }
-    fn render(&mut self, context: &mut AppContext<'_>) -> Result<(), Self::Error> {
-        self.render(context)
+    fn render(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
+        self.render(context)?;
+        Ok(Flow::Continue)
     }
     fn suspended(&mut self, _: &mut AppContext<'_>) -> Result<(), Self::Error> {
         self.release_graphics()
@@ -587,6 +618,10 @@ impl Application for StarfallApp {
     }
 }
 impl DesktopApplication for StarfallApp {
+    fn resumed(&mut self, context: &mut AppContext<'_>) -> Result<(), Self::Error> {
+        self.initialize(context)
+    }
+
     fn configure_window(
         &mut self,
         window: &mut quasar_window::GameWindow,

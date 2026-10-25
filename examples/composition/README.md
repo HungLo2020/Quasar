@@ -3,7 +3,9 @@
 This ordinary Cargo example uses `quasar-render-3d` and `quasar-render-2d` on one
 caller-owned VulkanicGAL device and acquired frame target. The cube and HUD use
 views of the same GPU checker texture; there is no framebuffer readback/upload
-between them. The example owns its window and event loop.
+between them. The example intentionally owns its raw window and event loop instead of using
+`quasar-app`, so the composition/acquire/present path is exercised directly and
+serves as the lower-level escape hatch for custom event loops.
 
 ```sh
 cargo run -p quasar-composition

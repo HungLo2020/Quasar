@@ -1,7 +1,7 @@
 //! Pong owns action names and defaults; Quasar owns device state and mapping.
 use crate::Result;
 #[cfg(any(feature = "desktop", test))]
-use quasar_input::InputState;
+use quasar_input::InputRead;
 use quasar_input::{Binding, Bindings, Key};
 #[cfg(feature = "desktop")]
 use quasar_input::{Button, GamepadButton, MouseButton};
@@ -79,7 +79,7 @@ impl Controls {
 }
 
 #[cfg(any(feature = "desktop", test))]
-pub fn game_input(input: &InputState) -> pong::Input {
+pub fn game_input(input: &impl InputRead) -> pong::Input {
     pong::Input {
         left: input.action(LEFT).value as i8,
         right: input.action(RIGHT).value as i8,
@@ -194,6 +194,7 @@ fn gamepad_button_label(button: GamepadButton) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quasar_input::InputState;
     #[test]
     fn custom_controls_drive_gameplay_without_native_events() {
         let mut controls = Controls::default();

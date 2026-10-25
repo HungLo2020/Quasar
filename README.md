@@ -26,7 +26,7 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `quasar-storage` | Basalt v1 paths and atomic JSON persistence | None |
 | `quasar-assets` | Validated virtual paths, mounts, typed loaders, dependency graphs, schema checks, bounded cache, async worker and hot reload | Optional quasar-storage (Basalt mounts), diagnostics and notify |
 | `quasar-diagnostics` | Explicit structured logs, spans, counters, bounded failure diagnostics and optional CPU frame timing | None |
-| `quasar-app` | Optional Cargo-native winit/headless lifecycle runner with fixed or per-frame scheduling and application hooks | quasar-core, optional quasar-window |
+| `quasar-app` | Optional Cargo-native winit/headless lifecycle runner with explicit frame/fixed-tick/input/render phases and suspend/resume hooks | quasar-core, quasar-input, optional quasar-window |
 | `quasar-jobs` | Optional bounded worker pool with cancellation, dependencies, priorities, manual deterministic mode and metrics | None |
 | `quasar-profile` | Bounded CPU/GPU frame, upload, resource, synchronization and renderer profiling with p99 summaries | Optional quasar-frame |
 | `quasar-spatial` | Dependency-free 2D/3D AABB/ray/plane/frustum geometry and a deterministic spatial-hash index | None |
@@ -49,6 +49,7 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `examples/starfall` | Playable 3D reference game: shared 3D+2D frame, jobs/assets/audio, deterministic replay, config, in-game menus and profiling | quasar-app, input, sim, jobs, assets, diagnostics, audio, render-2d/3d, config, ui, profile |
 | `examples/falling-sand` | Interactive cellular sand with Rapier 2D obstacles, dynamic ball, spatial queries and retro menus | quasar-app, input, physics, spatial, render-2d, ui, profile |
 | `examples/physics-playground` | First-person Rapier 3D playground with character control, blocks, balls, triggers, raycasts, animated AI agents and navigation | quasar-app, input, physics, spatial, animation, nav, render-2d/3d, profile |
+| `examples/app-stress` | Internal integration harness: frame/fixed phases, explicit input consumption, jobs/async assets, paused ticks, resize/fullscreen and deterministic headless hashes | quasar-app, input, jobs, render-2d, window |
 
 Controller support lives in `quasar-input`: pure gamepad types, hotplug/player
 routing, deadzones, calibration and combined keyboard/gamepad actions, plus an
@@ -59,8 +60,9 @@ typed loaders, dependency graphs and bounded caches live in
 runner, editor or build tool. Optional observability uses the explicit,
 feature-gated [`quasar-diagnostics`](docs/diagnostics.md) layer; async loading and
 hot reload are documented in [async assets](docs/async-assets.md), timing policy
-in [timing](docs/timing.md), the optional runner in [app runner](docs/app-runner.md)
-and [adoption analysis](docs/app-adoption.md), background work in [jobs](docs/jobs.md), deterministic replay in
+in [timing](docs/timing.md), the optional runner in [app runner](docs/app-runner.md),
+its [v0.2.12 migration guide](docs/app-migration-v0.2.11.md) and
+[adoption analysis](docs/app-adoption.md), background work in [jobs](docs/jobs.md), deterministic replay in
 [simulation](docs/simulation.md), configuration in [configuration](docs/configuration.md),
 graphics measurements in [profiling](docs/profiling.md), spatial indexing in
 [spatial](docs/spatial.md), Rapier integration in [physics](docs/physics.md),
@@ -106,7 +108,7 @@ future additions. Audio is provided by `quasar-audio`; see
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.11`, with workspace package versions set to `0.2.11`.
+release is `v0.2.12`, with workspace package versions set to `0.2.12`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.

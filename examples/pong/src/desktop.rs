@@ -1,19 +1,59 @@
 use super::*;
 use pong::Phase;
-use quasar_core::FixedStep;
-use quasar_render_2d::{DisplayOptions, Filter, PresentOutcome, Renderer2D, Scaling, Textures};
-use quasar_storage::{GamePaths, read_json, write_json};
-use quasar_window::{
-    GameWindow, WindowConfig,
-    winit::{
-        application::ApplicationHandler,
-        event::{DeviceEvent, DeviceId, WindowEvent},
-        event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-        window::WindowId,
-    },
+use quasar_app::{
+    AppConfig, AppContext, Application, DesktopApplication, Flow, RenderPolicy, TimingConfig,
+    run as run_app,
 };
+use quasar_core::{DisplayOptions, Filter, FixedStepConfig, Scaling};
+use quasar_render_2d::{PresentOutcome, Renderer2D, Textures};
+use quasar_storage::{GamePaths, read_json, write_json};
+use quasar_window::{DesktopConfig, WindowConfig};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
+
+#[derive(Debug)]
+struct AppError(Box<dyn Error>);
+impl std::fmt::Display for AppError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+impl Error for AppError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+impl From<Box<dyn Error>> for AppError {
+    fn from(error: Box<dyn Error>) -> Self {
+        Self(error)
+    }
+}
+impl From<&str> for AppError {
+    fn from(error: &str) -> Self {
+        Self(Box::new(std::io::Error::other(error.to_owned())))
+    }
+}
+impl From<String> for AppError {
+    fn from(error: String) -> Self {
+        Self(Box::new(std::io::Error::other(error)))
+    }
+}
+impl From<quasar_input::BindingError> for AppError {
+    fn from(error: quasar_input::BindingError) -> Self {
+        Self(Box::new(error))
+    }
+}
+impl From<quasar_render_2d::Error> for AppError {
+    fn from(error: quasar_render_2d::Error) -> Self {
+        Self(Box::new(error))
+    }
+}
+impl From<quasar_render_2d::GalError> for AppError {
+    fn from(error: quasar_render_2d::GalError) -> Self {
+        Self(Box::new(error))
+    }
+}
+type AppResult<T> = std::result::Result<T, AppError>;
 
 #[derive(Serialize, Deserialize)]
 struct DisplaySettings {
@@ -148,11 +188,26 @@ pub fn run(
     display.fullscreen |= options.fullscreen;
     display.linear |= options.linear;
     display.integer |= options.integer;
-    let mut app = App {
+
+    let config = AppConfig {
+        window: WindowConfig {
+            title: "Quasar / Pong".into(),
+            application_id: "quasar-pong".into(),
+            size: (display.width, display.height),
+            minimum_size: (320, 200),
+            fullscreen: display.fullscreen,
+            resizable: true,
+        },
+        desktop: DesktopConfig::for_application("quasar-pong"),
+        timing: TimingConfig::Fixed(FixedStepConfig::for_rate(pong::TICK_HZ, 8)),
+        render: RenderPolicy::EveryFrame,
+        max_frame_wait: Duration::from_millis(16),
+        frame_interval: None,
+    };
+    let app = App {
         presenter: None,
         textures: Textures::default(),
         screenshot: None,
-        window: None,
         options,
         session,
         controls,
@@ -162,44 +217,20 @@ pub fn run(
         save_display,
         save_records,
         records,
-        clock: FixedStep::new(pong::TICK_HZ, 8)?,
-        previous: Instant::now(),
-        started: Instant::now(),
+        size: (0, 0),
         frames: 0,
         exercise_stage: 0,
-        error: None,
+        started: Instant::now(),
+        pause_pending: false,
     };
-    let event_loop = EventLoop::new()?;
-    event_loop.run_app(&mut app)?;
-    if let Some(error) = app.error.take() {
-        return Err(error.into());
-    }
-    app.session.outputs(
-        &app.options,
-        Some(&app.controls.hints()),
-        app.screenshot.as_deref(),
-    )?;
-    if app.save_controls {
-        write_json(
-            &app.paths.shared_config.join("controls.json"),
-            &app.controls,
-        )?;
-    }
-    if app.save_display {
-        write_json(&app.paths.config.join("display.json"), &app.display)?;
-    }
-    if app.save_records {
-        app.records.longest_rally = app.records.longest_rally.max(app.session.best_rally);
-        write_json(&app.paths.save.join("records.json"), &app.records)?;
-    }
+    run_app(app, config)?;
     Ok(())
 }
+
 struct App {
-    // Graphics is explicitly destroyed before the window on suspension/exit.
     presenter: Option<Renderer2D>,
     textures: Textures,
     screenshot: Option<Vec<u8>>,
-    window: Option<GameWindow>,
     options: Options,
     session: Session,
     controls: controls::Controls,
@@ -209,73 +240,39 @@ struct App {
     save_display: bool,
     save_records: bool,
     records: Records,
-    clock: FixedStep,
-    previous: Instant,
-    started: Instant,
+    size: (u32, u32),
     frames: u64,
     exercise_stage: u8,
-    error: Option<String>,
+    started: Instant,
+    pause_pending: bool,
 }
+
 impl App {
-    fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl std::fmt::Display) {
-        self.error = Some(error.to_string());
-        event_loop.exit();
-    }
     fn automated(&self) -> bool {
         self.options.autoplay
             || self.session.replay.is_some()
             || self.options.smoke_frames.is_some()
     }
-    fn initialize(&mut self, event_loop: &ActiveEventLoop) -> Result {
-        let mut window = GameWindow::create(
-            event_loop,
-            &WindowConfig {
-                title: "Quasar / Pong".into(),
-                application_id: "quasar-pong".into(),
-                size: (self.display.width, self.display.height),
-                minimum_size: (320, 200),
-                fullscreen: self.display.fullscreen,
-                resizable: true,
-            },
-        )?;
-        window.input.set_bindings(self.controls.bindings.clone())?;
+
+    fn initialize(&mut self, context: &mut AppContext<'_>) -> Result {
+        let window = context
+            .window
+            .ok_or("desktop runner did not provide a window")?;
         let size = window.native().inner_size();
         self.presenter = Some(Renderer2D::for_window(
             window.shared_native(),
             (size.width.max(1), size.height.max(1)),
             self.display.options(),
         )?);
-        self.window = Some(window);
-        self.previous = Instant::now();
-        self.clock.reset();
+        self.size = (size.width, size.height);
+        self.started = Instant::now();
         Ok(())
     }
-    fn redraw(&mut self, event_loop: &ActiveEventLoop) -> Result {
-        let window = self.window.as_ref().unwrap();
-        if !window.drawable() {
-            return Ok(());
-        }
-        let outcome = self.presenter.as_mut().unwrap().present(
-            &render::scene_with_hints(&self.session.game, &self.controls.hints()),
-            &self.textures,
-        )?;
-        if outcome == PresentOutcome::Presented {
-            self.frames += 1;
-            if self.options.exercise_window {
-                self.exercise()?;
-            }
-            if self.options.smoke_frames.is_some_and(|n| self.frames >= n) {
-                println!(
-                    "presented_frames={} window_exercise_stages={}",
-                    self.frames, self.exercise_stage
-                );
-                event_loop.exit();
-            }
-        }
-        Ok(())
-    }
-    fn exercise(&mut self) -> Result {
-        let window = self.window.as_ref().unwrap();
+
+    fn exercise(&mut self, context: &AppContext<'_>) -> Result {
+        let window = context
+            .window
+            .ok_or("desktop runner did not provide a window")?;
         match self.exercise_stage {
             0 if self.frames >= 2 => {
                 let _ = window
@@ -314,155 +311,182 @@ impl App {
         }
         Ok(())
     }
-}
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_none()
-            && let Err(error) = self.initialize(event_loop)
+
+    fn write_outputs(&mut self) -> Result {
+        if let Some(presenter) = &mut self.presenter
+            && self.options.screenshot.is_some()
         {
-            self.fail(event_loop, error);
+            let canvas = render::scene_with_hints(&self.session.game, &self.controls.hints());
+            self.screenshot = Some(presenter.render_to_image(&canvas, &self.textures)?);
         }
+        if self.options.smoke_frames.is_some()
+            && let Some(renderer) = &self.presenter
+        {
+            println!("render_2d_stats={:?}", renderer.stats());
+        }
+        self.session.outputs(
+            &self.options,
+            Some(&self.controls.hints()),
+            self.screenshot.as_deref(),
+        )?;
+        if self.save_controls {
+            write_json(
+                &self.paths.shared_config.join("controls.json"),
+                &self.controls,
+            )?;
+        }
+        if self.save_display {
+            write_json(&self.paths.config.join("display.json"), &self.display)?;
+        }
+        if self.save_records {
+            self.records.longest_rally = self.records.longest_rally.max(self.session.best_rally);
+            write_json(&self.paths.save.join("records.json"), &self.records)?;
+        }
+        Ok(())
     }
-    fn suspended(&mut self, _: &ActiveEventLoop) {
-        self.presenter.take();
-        self.window.take();
-        self.clock.reset();
+}
+
+impl Application for App {
+    type Error = AppError;
+
+    fn setup(&mut self, context: &mut AppContext<'_>) -> AppResult<()> {
+        self.initialize(context).map_err(AppError::from)
     }
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        let automated = self.automated();
-        let Some(window) = &mut self.window else {
-            return;
-        };
-        if window.native().id() != id {
-            return;
+
+    fn frame_update(&mut self, context: &mut AppContext<'_>) -> AppResult<Flow> {
+        if self.options.smoke_frames.is_some() && self.started.elapsed() > Duration::from_secs(30) {
+            return Err("native smoke run timed out before presenting requested frames".into());
         }
-        let update = window.process(&event);
-        if update.close_requested {
-            event_loop.exit();
-            return;
-        }
-        if let Some(size) = update.resized {
-            self.presenter
-                .as_mut()
-                .unwrap()
-                .resize(size.width, size.height);
-            if !window.fullscreen() && size.width > 0 && size.height > 0 {
-                let logical = size.to_logical::<u32>(window.native().scale_factor());
+        let size = context.size;
+        if size != self.size {
+            if let Some(presenter) = &mut self.presenter {
+                presenter.resize(size.0, size.1);
+            }
+            self.size = size;
+            if !self.display.fullscreen
+                && size.0 > 0
+                && size.1 > 0
+                && let Some(window) = context.window
+            {
+                let logical = quasar_window::winit::dpi::PhysicalSize::new(size.0, size.1)
+                    .to_logical::<u32>(window.native().scale_factor());
                 self.display.width = logical.width.clamp(320, 16384);
                 self.display.height = logical.height.clamp(200, 16384);
             }
         }
-        if update.focus_changed.is_some() {
-            self.clock.reset();
-            self.previous = Instant::now();
-            if update.focus_changed == Some(false)
-                && !automated
-                && self.session.game.phase == Phase::Playing
-            {
-                self.session.tick(
-                    Input {
-                        pause: true,
-                        ..Default::default()
-                    },
-                    false,
-                );
-            }
-        }
-        let input = &mut window.input;
-        if input.take_pressed(controls::QUIT) {
-            event_loop.exit();
-            return;
-        }
-        if input.take_pressed(controls::FULLSCREEN) {
-            window.toggle_fullscreen();
-            self.display.fullscreen = window.fullscreen();
-        }
-        let input = &mut window.input;
-        let presenter = self.presenter.as_mut().unwrap();
-        let mut options = presenter.options();
-        if input.take_pressed(controls::FILTER) {
-            self.display.linear = !self.display.linear;
-            options.filter = if self.display.linear {
-                Filter::Linear
-            } else {
-                Filter::Nearest
-            };
-        }
-        if input.take_pressed(controls::SCALE) {
-            self.display.integer = !self.display.integer;
-            options.scaling = if self.display.integer {
-                Scaling::Integer
-            } else {
-                Scaling::Fit
-            };
-        }
-        if let Err(error) = presenter.set_options(options) {
-            self.fail(event_loop, error);
-            return;
-        }
-        if update.redraw_requested
-            && let Err(error) = self.redraw(event_loop)
+        if context.focus_changed == Some(false)
+            && !self.automated()
+            && self.session.game.phase == Phase::Playing
         {
-            self.fail(event_loop, error);
+            self.pause_pending = true;
         }
+
+        let mut options = self.presenter.as_ref().map(|presenter| presenter.options());
+        let mut changed = false;
+        if context.input.action(controls::QUIT).pressed {
+            context.input.consume_action(controls::QUIT);
+            return Ok(Flow::Exit);
+        }
+        if context.input.action(controls::FULLSCREEN).pressed {
+            context.input.consume_action(controls::FULLSCREEN);
+            if let Some(window) = context.window {
+                window.toggle_fullscreen();
+                self.display.fullscreen = window.fullscreen();
+            }
+        }
+        if context.input.action(controls::FILTER).pressed {
+            context.input.consume_action(controls::FILTER);
+            self.display.linear = !self.display.linear;
+            if let Some(options) = &mut options {
+                options.filter = if self.display.linear {
+                    Filter::Linear
+                } else {
+                    Filter::Nearest
+                };
+                changed = true;
+            }
+        }
+        if context.input.action(controls::SCALE).pressed {
+            context.input.consume_action(controls::SCALE);
+            self.display.integer = !self.display.integer;
+            if let Some(options) = &mut options {
+                options.scaling = if self.display.integer {
+                    Scaling::Integer
+                } else {
+                    Scaling::Fit
+                };
+                changed = true;
+            }
+        }
+        if changed && let (Some(options), Some(presenter)) = (options, &mut self.presenter) {
+            presenter.set_options(options)?;
+        }
+        Ok(Flow::Continue)
     }
-    fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
-        if let Some(window) = &mut self.window {
-            window.process_device(&event);
+
+    fn tick(&mut self, context: &mut AppContext<'_>) -> AppResult<Flow> {
+        let mut input = controls::game_input(context.input);
+        if self.pause_pending {
+            input.pause = true;
+            self.pause_pending = false;
         }
+        let advanced = self.session.tick(input, self.options.autoplay);
+        if !advanced
+            || self.session.exhausted()
+            || self.options.ticks.is_some_and(|n| self.session.ticks >= n)
+        {
+            return Ok(Flow::Exit);
+        }
+        Ok(Flow::Continue)
     }
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.options.smoke_frames.is_some() && self.started.elapsed() > Duration::from_secs(30) {
-            self.fail(
-                event_loop,
-                "native smoke run timed out before presenting requested frames",
-            );
-            return;
+
+    fn render(&mut self, context: &mut AppContext<'_>) -> AppResult<Flow> {
+        if !context.drawable() {
+            return Ok(Flow::Continue);
         }
-        let automated = self.automated();
-        let Some(window) = &mut self.window else {
-            return;
+        let Some(presenter) = &mut self.presenter else {
+            return Ok(Flow::Continue);
         };
-        let now = Instant::now();
-        if window.focused() || automated {
-            self.clock.advance(now - self.previous);
-        } else {
-            self.clock.reset();
-        }
-        self.previous = now;
-        while self.clock.take_tick() {
-            let input = controls::game_input(&window.input);
-            let advanced = self.session.tick(input, self.options.autoplay);
-            window.input.consume_edges();
-            if !advanced
-                || self.session.exhausted()
-                || self.options.ticks.is_some_and(|n| self.session.ticks >= n)
-            {
-                event_loop.exit();
-                break;
+        let outcome = presenter.present(
+            &render::scene_with_hints(&self.session.game, &self.controls.hints()),
+            &self.textures,
+        )?;
+        if outcome == PresentOutcome::Presented {
+            self.frames += 1;
+            if self.options.exercise_window {
+                self.exercise(context)?;
+            }
+            if self.options.smoke_frames.is_some_and(|n| self.frames >= n) {
+                println!(
+                    "presented_frames={} window_exercise_stages={}",
+                    self.frames, self.exercise_stage
+                );
+                return Ok(Flow::Exit);
             }
         }
-        if window.drawable() {
-            window.native().request_redraw();
-        }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(
-            now + self.clock.until_next_tick().min(Duration::from_millis(16)),
-        ));
+        Ok(Flow::Continue)
     }
-    fn exiting(&mut self, _: &ActiveEventLoop) {
-        if let Some(renderer) = &mut self.presenter {
-            if self.options.screenshot.is_some() {
-                let canvas = render::scene_with_hints(&self.session.game, &self.controls.hints());
-                match renderer.render_to_image(&canvas, &self.textures) {
-                    Ok(pixels) => self.screenshot = Some(pixels),
-                    Err(error) => self.error = Some(error.to_string()),
-                }
-            }
-            if self.options.smoke_frames.is_some() {
-                println!("render_2d_stats={:?}", renderer.stats());
-            }
-        }
+
+    fn suspended(&mut self, _: &mut AppContext<'_>) -> AppResult<()> {
         self.presenter.take();
-        self.window.take();
+        Ok(())
+    }
+
+    fn shutdown(&mut self, _: &mut AppContext<'_>) -> AppResult<()> {
+        self.write_outputs().map_err(AppError::from)
+    }
+}
+
+impl DesktopApplication for App {
+    fn resumed(&mut self, context: &mut AppContext<'_>) -> AppResult<()> {
+        if self.presenter.is_none() {
+            self.initialize(context).map_err(AppError::from)?;
+        }
+        Ok(())
+    }
+
+    fn configure_window(&mut self, window: &mut quasar_window::GameWindow) -> AppResult<()> {
+        window.input.set_bindings(self.controls.bindings.clone())?;
+        Ok(())
     }
 }

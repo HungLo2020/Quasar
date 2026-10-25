@@ -1,14 +1,15 @@
 use quasar_app::{
-    AppConfig, AppContext, DesktopApplication, Flow, HeadlessConfig, RenderPolicy, run,
-    run_headless,
+    AppConfig, AppContext, DesktopApplication, Flow, HeadlessConfig, run, run_headless,
 };
 
 #[derive(Default)]
 struct Demo {
+    frames: u64,
     ticks: u64,
 }
 impl quasar_app::Application for Demo {
     type Error = std::convert::Infallible;
+
     fn setup(&mut self, context: &mut AppContext<'_>) -> Result<(), Self::Error> {
         println!(
             "{} setup size={:?}",
@@ -21,16 +22,42 @@ impl quasar_app::Application for Demo {
         );
         Ok(())
     }
-    fn tick(&mut self, _: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
-        self.ticks += 1;
-        Ok(if self.ticks == 30 {
-            Flow::Exit
-        } else {
-            Flow::Continue
-        })
+
+    fn frame_update(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
+        self.frames += 1;
+        // Variable-rate work sees this frame's input snapshot even when no
+        // fixed tick is due.
+        if context.input.pressed(quasar_input::Key::Space) {
+            println!("frame {} space pressed", context.frame);
+        }
+        Ok(Flow::Continue)
     }
+
+    fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
+        self.ticks += 1;
+        if self.ticks == 30 {
+            println!(
+                "stopping after {} ticks at simulation_time={:?}",
+                self.ticks, context.timing.simulation_time
+            );
+            return Ok(Flow::Exit);
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn render(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
+        println!(
+            "render frame={} tick={} interpolation={:.3}",
+            context.frame, context.tick, context.interpolation
+        );
+        Ok(Flow::Continue)
+    }
+
     fn shutdown(&mut self, _: &mut AppContext<'_>) -> Result<(), Self::Error> {
-        println!("shutdown after {} ticks", self.ticks);
+        println!(
+            "shutdown after {} frames and {} ticks",
+            self.frames, self.ticks
+        );
         Ok(())
     }
 }
@@ -47,11 +74,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         );
     }
-    run(
-        Demo::default(),
-        AppConfig {
-            render: RenderPolicy::Manual,
-            ..AppConfig::default()
-        },
-    )
+    run(Demo::default(), AppConfig::default())
 }

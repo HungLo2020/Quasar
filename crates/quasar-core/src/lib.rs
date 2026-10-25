@@ -192,6 +192,12 @@ impl FixedStep {
     pub fn catch_up_remaining(&self) -> u32 {
         self.catch_up_budget
     }
+    /// Number of ticks currently due, bounded by the remaining catch-up budget.
+    /// This lets a runner describe the frame before consuming ticks.
+    pub fn pending_ticks(&self) -> u32 {
+        let due = (self.accumulated.as_nanos() / self.step.as_nanos().max(1)) as u32;
+        due.min(self.catch_up_budget)
+    }
     pub fn dropped_total(&self) -> Duration {
         self.dropped_total
     }
@@ -497,5 +503,25 @@ mod tests {
         assert_eq!(clock.backlog(), Duration::ZERO);
         assert_eq!(clock.interpolation(), 0.0);
         assert_eq!(clock.catch_up_remaining(), 4);
+    }
+}
+
+#[cfg(test)]
+mod pending_ticks_tests {
+    use super::*;
+
+    #[test]
+    fn pending_ticks_reports_due_work_without_consuming_it() {
+        let mut clock = FixedStep::new(60.0, 8).unwrap();
+        clock.advance(clock.step() * 3);
+        assert_eq!(clock.pending_ticks(), 3);
+        assert!(clock.take_tick());
+        assert_eq!(clock.pending_ticks(), 2);
+        let mut ticks = 0;
+        while clock.take_tick() {
+            ticks += 1;
+        }
+        assert_eq!(ticks, 2);
+        assert_eq!(clock.pending_ticks(), 0);
     }
 }

@@ -486,3 +486,73 @@ fn bindings_serialize_and_reject_typographical_errors_and_ambiguous_sources() {
     invalid.bind(" ", Binding::key(Key::Space));
     assert!(invalid.validate().is_err());
 }
+
+#[test]
+fn frame_snapshot_keeps_short_taps_until_a_tick_and_delivers_edges_once() {
+    let mut bindings = Bindings::default();
+    bindings
+        .bind("fire", Binding::key(Key::Space))
+        .bind("move", Binding::axis(Key::KeyA, Key::KeyD));
+    let mut input = InputState::default();
+    input.set_bindings(bindings).unwrap();
+    input.key(Key::Space, true);
+    input.key(Key::Space, false);
+    input.key(Key::KeyD, true);
+    let mut frame = input.frame(1);
+    assert!(frame.pressed(Key::Space));
+    assert!(frame.released(Key::Space));
+    assert!(frame.action("fire").pressed);
+    assert!(frame.held(Key::KeyD));
+    assert_eq!(frame.action("move").value, 1.0);
+    // A paused/frame-only frame can inspect the edge without clearing it.
+    let still_pending = input.frame(2);
+    assert!(still_pending.action("fire").pressed);
+    // First simulation tick clears transient edges but keeps held state.
+    frame.apply_consumption(&mut input);
+    input.consume_edges();
+    frame.clear_transient();
+    assert!(!frame.pressed(Key::Space));
+    assert!(!frame.action("fire").pressed);
+    assert!(frame.held(Key::KeyD));
+    let next = input.frame(3);
+    assert!(!next.action("fire").pressed);
+    assert!(next.held(Key::KeyD));
+    assert_eq!(next.action("move").value, 1.0);
+}
+
+#[test]
+fn frame_consumption_is_visible_to_the_next_frame_and_respects_all() {
+    let mut bindings = Bindings::default();
+    bindings.bind("ui_activate", Binding::key(Key::Enter));
+    let mut input = InputState::default();
+    input.set_bindings(bindings).unwrap();
+    input.key(Key::Enter, true);
+    input.mouse_button(MouseButton::Left, true);
+    let mut frame = input.frame(1);
+    assert!(frame.consume_action("ui_activate"));
+    assert!(!frame.action("ui_activate").pressed);
+    frame.apply_consumption(&mut input);
+    let next = input.frame(2);
+    assert!(!next.action("ui_activate").pressed);
+    assert!(next.mouse_held(MouseButton::Left));
+    let mut frame = input.frame(3);
+    frame.consume_all();
+    frame.apply_consumption(&mut input);
+    let after = input.frame(4);
+    assert!(!after.mouse_held(MouseButton::Left));
+    assert_eq!(after.action("ui_activate").value, 0.0);
+}
+
+#[test]
+fn focus_loss_releases_held_actions_in_the_next_frame() {
+    let mut bindings = Bindings::default();
+    bindings.bind("move", Binding::key(Key::KeyW));
+    let mut input = InputState::default();
+    input.set_bindings(bindings).unwrap();
+    input.key(Key::KeyW, true);
+    input.release_all();
+    let frame = input.frame(1);
+    assert!(!frame.held(Key::KeyW));
+    assert!(frame.released(Key::KeyW));
+    assert!(!frame.action("move").pressed);
+}

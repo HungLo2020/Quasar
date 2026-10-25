@@ -103,11 +103,15 @@ manual deterministic execution, metrics and optional diagnostics are described
 in [jobs](jobs.md). It is not required by asset loading, rendering or games.
 
 `quasar-app` is an optional lifecycle composition layer, not a required runner.
-Its `Application` trait supports headless tick loops; the default `desktop`
-feature adds one `GameWindow`, winit event forwarding, fixed/frame scheduling,
-resize handling and ordered suspended/shutdown hooks. Applications own their GAL,
-renderer, audio and assets, and can bypass the runner entirely. See
-[app runner](app-runner.md) for the MissileCommand/MicroMages audit and limits.
+Its `Application` trait separates `frame_update` (variable-rate UI/camera work)
+from fixed `tick` steps and `render`, with one `FrameInput` snapshot shared by
+all phases. The default `desktop` feature adds one `GameWindow`, winit event
+forwarding, fixed/variable scheduling, focus and suspend/resume handling, and
+ordered shutdown hooks. Applications own their GAL, renderer, audio and assets,
+and can bypass the runner entirely. See [app runner](app-runner.md) for the
+phase/input/timing contract, [adoption analysis](app-adoption.md) for the
+MissileCommand/MicroMages audit and
+[the v0.2.11 migration guide](app-migration-v0.2.11.md).
 
 `quasar-diagnostics` is an explicit, independently usable observability layer.
 It has no global logger or runtime; callers own a `Diagnostics` handle and a

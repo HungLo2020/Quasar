@@ -38,6 +38,7 @@ pub fn run(settings: Settings, diagnostics: quasar_diagnostics::Diagnostics) -> 
         timing: TimingConfig::Fixed(FixedStepConfig::for_rate(60.0, 8)),
         render: RenderPolicy::EveryFrame,
         max_frame_wait: Duration::from_millis(16),
+        frame_interval: None,
     };
     run_app(PlaygroundApp::new(settings, diagnostics), config)
         .map_err(|error| PlaygroundError::invalid(error.to_string()))
@@ -143,25 +144,22 @@ impl PlaygroundApp {
     }
 
     fn input(&self, context: &AppContext<'_>) -> PlaygroundInput {
-        let Some(window) = context.window else {
-            return PlaygroundInput::default();
-        };
         let forward =
-            f32::from(window.input.held(Key::KeyW)) - f32::from(window.input.held(Key::KeyS));
+            f32::from(context.input.held(Key::KeyW)) - f32::from(context.input.held(Key::KeyS));
         let strafe =
-            f32::from(window.input.held(Key::KeyD)) - f32::from(window.input.held(Key::KeyA));
+            f32::from(context.input.held(Key::KeyD)) - f32::from(context.input.held(Key::KeyA));
         PlaygroundInput {
             forward,
             strafe,
             look: [
-                window.input.relative_motion.0 as f32,
-                window.input.relative_motion.1 as f32,
+                context.input.relative_motion().0 as f32,
+                context.input.relative_motion().1 as f32,
             ],
-            jump: window.input.held(Key::Space),
-            kick: window.input.mouse_pressed(MouseButton::Left),
-            spawn: window.input.pressed(Key::KeyF),
-            reset: window.input.pressed(Key::KeyR),
-            toggle_debug: window.input.pressed(Key::KeyN),
+            jump: context.input.held(Key::Space),
+            kick: context.input.mouse_pressed(MouseButton::Left),
+            spawn: context.input.pressed(Key::KeyF),
+            reset: context.input.pressed(Key::KeyR),
+            toggle_debug: context.input.pressed(Key::KeyN),
         }
     }
 
@@ -169,9 +167,7 @@ impl PlaygroundApp {
         if self.exit_after_render {
             return Ok(Flow::Exit);
         }
-        if let Some(window) = context.window
-            && window.input.pressed(Key::Escape)
-        {
+        if context.input.pressed(Key::Escape) {
             return Ok(Flow::Exit);
         }
         let input = self.input(context);
@@ -271,8 +267,9 @@ impl Application for PlaygroundApp {
     fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow> {
         self.tick(context)
     }
-    fn render(&mut self, context: &mut AppContext<'_>) -> Result<()> {
-        self.render(context)
+    fn render(&mut self, context: &mut AppContext<'_>) -> Result<Flow> {
+        self.render(context)?;
+        Ok(Flow::Continue)
     }
     fn suspended(&mut self, _: &mut AppContext<'_>) -> Result<()> {
         self.release_graphics()
@@ -296,6 +293,10 @@ impl Application for PlaygroundApp {
 }
 
 impl DesktopApplication for PlaygroundApp {
+    fn resumed(&mut self, context: &mut AppContext<'_>) -> Result<()> {
+        self.initialize(context)
+    }
+
     fn configure_window(&mut self, window: &mut quasar_window::GameWindow) -> Result<()> {
         if let Err(error) = window.capture_cursor(true) {
             self.diagnostics.event_with(

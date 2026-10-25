@@ -1,4 +1,4 @@
-use quasar_input::{Binding, Bindings, InputState, Key};
+use quasar_input::{Binding, Bindings, InputRead, Key};
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,7 +53,7 @@ impl Controls {
         }
         Ok(())
     }
-    pub fn input(&self, input: &InputState) -> crate::Input {
+    pub fn input(&self, input: &impl InputRead) -> crate::Input {
         crate::Input {
             x: input.action("move_x").value.round() as i8,
             y: input.action("move_y").value.round() as i8,

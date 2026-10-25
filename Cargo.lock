@@ -111,6 +111,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 
 [[package]]
+name = "app-stress"
+version = "0.2.12"
+dependencies = [
+ "quasar-app",
+ "quasar-core",
+ "quasar-input",
+ "quasar-jobs",
+ "quasar-render-2d",
+ "quasar-window",
+]
+
+[[package]]
 name = "approx"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -174,7 +186,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio-example"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "hound",
  "quasar-audio",
@@ -726,7 +738,7 @@ dependencies = [
 
 [[package]]
 name = "falling-sand"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "png",
  "quasar-app",
@@ -856,7 +868,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "framebuffer"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "quasar-render-2d",
  "quasar-window",
@@ -2191,7 +2203,7 @@ dependencies = [
 
 [[package]]
 name = "physics-playground"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "png",
  "quasar-animation",
@@ -2279,9 +2291,10 @@ dependencies = [
 
 [[package]]
 name = "pong"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "png",
+ "quasar-app",
  "quasar-core",
  "quasar-input",
  "quasar-render-2d",
@@ -2350,7 +2363,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-animation"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "proptest",
  "quasar-render-2d",
@@ -2360,15 +2373,16 @@ dependencies = [
 
 [[package]]
 name = "quasar-app"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "quasar-core",
+ "quasar-input",
  "quasar-window",
 ]
 
 [[package]]
 name = "quasar-assets"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "notify",
  "quasar-diagnostics",
@@ -2380,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-audio"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "cpal",
  "crossbeam-channel",
@@ -2394,7 +2408,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-composition"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "png",
  "quasar-frame",
@@ -2407,7 +2421,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-config"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "quasar-storage",
  "serde",
@@ -2418,11 +2432,11 @@ dependencies = [
 
 [[package]]
 name = "quasar-core"
-version = "0.2.11"
+version = "0.2.12"
 
 [[package]]
 name = "quasar-diagnostics"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "serde",
  "serde_json",
@@ -2430,7 +2444,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-frame"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "quasar-diagnostics",
  "vulkanic-gal",
@@ -2438,7 +2452,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-input"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "gilrs",
  "quasar-diagnostics",
@@ -2448,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-jobs"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "proptest",
  "quasar-diagnostics",
@@ -2456,7 +2470,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-nav"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "navmesh",
  "proptest",
@@ -2467,7 +2481,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-physics"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "proptest",
  "quasar-spatial",
@@ -2477,7 +2491,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-profile"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "quasar-frame",
  "serde",
@@ -2488,7 +2502,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-render-2d"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "png",
  "quasar-core",
@@ -2501,14 +2515,14 @@ dependencies = [
 
 [[package]]
 name = "quasar-render-3d"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "vulkanic-gal",
 ]
 
 [[package]]
 name = "quasar-sim"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "proptest",
  "quasar-core",
@@ -2519,14 +2533,14 @@ dependencies = [
 
 [[package]]
 name = "quasar-spatial"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "quasar-storage"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "serde",
  "serde_json",
@@ -2535,7 +2549,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-text"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "cosmic-text",
  "proptest",
@@ -2546,7 +2560,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-tilemap"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "png",
  "quasar-render-2d",
@@ -2557,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-ui"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "proptest",
  "quasar-config",
@@ -2571,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-window"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "quasar-diagnostics",
  "quasar-input",
@@ -3277,7 +3291,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "starfall"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "png",
  "quasar-app",
@@ -3420,9 +3434,10 @@ dependencies = [
 
 [[package]]
 name = "tilequest"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "png",
+ "quasar-app",
  "quasar-core",
  "quasar-frame",
  "quasar-input",
@@ -3698,7 +3713,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vulkanic-gal"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "ash",
  "ash-window",

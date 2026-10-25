@@ -3,8 +3,8 @@
 An optional mesh renderer consuming VulkanicGAL's public API. No window,
 application loop, scene graph, ECS, asset decoder, or frame coordinator is
 required. This is an initial mesh/material layer, not a full game world renderer.
-These APIs were introduced in Git tag `2.1`. The current release is `v0.2.11`,
-with Cargo package versions set to `0.2.11`. The crate defaults to the `vulkan`
+These APIs were introduced in Git tag `2.1`. The current release is `v0.2.12`,
+with Cargo package versions set to `0.2.12`. The crate defaults to the `vulkan`
 feature; enable `opengl` with `default-features = false` when using an
 OpenGL-backed GAL.
 

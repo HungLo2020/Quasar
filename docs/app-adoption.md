@@ -39,31 +39,36 @@ The game-specific `redraw`, `process_input`, gameplay updates, audio event
 mapping, replay handling and persistence remain. A realistic net reduction is
 **roughly 80–110 LOC**: the generic event-loop/window/forwarding/scheduling
 blocks are removed, while presenter construction/resize, pause policy, input
-mapping and game callbacks remain (some of which move into `setup`/`tick`).
+mapping and game callbacks remain (some of which move into `setup`, `resumed`, `frame_update` and `tick`).
 
 A minimal adoption shape:
 
 ```rust
 impl Application for MissileApp {
     type Error = MyError;
-    fn setup(&mut self, context: &mut AppContext<'_>) -> Result<(), Self::Error> {
-        let window = context.window.expect("desktop runner provides a window");
-        self.presenter = Some(FramebufferPresenter::new(
-            window.shared_native(), context.size.into(), (WIDTH, HEIGHT), options,
-        )?);
+    fn setup(&mut self, _: &mut AppContext<'_>) -> Result<(), Self::Error> {
+        self.load_records()?; // once per run
         Ok(())
     }
-    fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
-        let input = &context.window.expect("window").input;
-        // Read edges/held values, update gameplay, sound and records.
-        // The runner consumes edges after this callback.
-        while self.clock.tick_once()? { self.session.tick(...) }
+    fn frame_update(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
+        // Menus, overlays and anything that must run even with zero ticks.
+        if context.input.action("pause").pressed {
+            context.input.consume_action("pause");
+            self.session.pause();
+        }
         Ok(Flow::Continue)
     }
-    fn render(&mut self, context: &mut AppContext<'_>) -> Result<(), Self::Error> {
+    fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
+        if self.session.is_paused() {
+            return Ok(Flow::Deferred);
+        }
+        self.session.tick(context.input, &mut self.audio)?;
+        Ok(Flow::Continue)
+    }
+    fn render(&mut self, _: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
         self.renderer.render(...);
         self.presenter.as_mut().unwrap().present(self.renderer.rgba())?;
-        Ok(())
+        Ok(Flow::Continue)
     }
     fn suspended(&mut self, _: &mut AppContext<'_>) -> Result<(), Self::Error> {
         self.presenter.take(); // before the runner drops the window
@@ -71,6 +76,17 @@ impl Application for MissileApp {
     }
     fn shutdown(&mut self, _: &mut AppContext<'_>) -> Result<(), Self::Error> {
         self.save_records()?;
+        Ok(())
+    }
+}
+impl DesktopApplication for MissileApp {
+    fn resumed(&mut self, context: &mut AppContext<'_>) -> Result<(), Self::Error> {
+        if self.presenter.is_none() {
+            let window = context.window.expect("desktop runner provides a window");
+            self.presenter = Some(FramebufferPresenter::new(
+                window.shared_native(), context.size.into(), (WIDTH, HEIGHT), options,
+            )?);
+        }
         Ok(())
     }
 }
@@ -113,20 +129,22 @@ A minimal adoption shape:
 ```rust
 impl Application for MicroMagesApp {
     type Error = MyError;
-    fn setup(&mut self, context: &mut AppContext<'_>) -> Result<(), Self::Error> {
-        self.presenter = Some(FramebufferPresenter::new(
-            context.window.expect("window").shared_native(),
-            context.size.into(), (WIDTH, HEIGHT), options,
-        )?);
+    fn setup(&mut self, _: &mut AppContext<'_>) -> Result<(), Self::Error> {
+        self.session.load()?; // once per run
         Ok(())
     }
-    fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
-        self.session.tick_from_window(context.window.expect("window").input)?;
+    fn frame_update(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
+        // Menu/deadline handling that must run on frames without a fixed tick.
+        self.session.update_ui(context.input)?;
         Ok(Flow::Continue)
     }
-    fn render(&mut self, _: &mut AppContext<'_>) -> Result<(), Self::Error> {
+    fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
+        self.session.tick(context.input)?;
+        Ok(Flow::Continue)
+    }
+    fn render(&mut self, _: &mut AppContext<'_>) -> Result<Flow, Self::Error> {
         self.presenter.as_mut().unwrap().present(&self.displayed, scaling)?;
-        Ok(())
+        Ok(Flow::Continue)
     }
     fn suspended(&mut self, _: &mut AppContext<'_>) -> Result<(), Self::Error> {
         self.presenter.take();
@@ -134,6 +152,17 @@ impl Application for MicroMagesApp {
     }
     fn shutdown(&mut self, _: &mut AppContext<'_>) -> Result<(), Self::Error> {
         self.session.finish()?;
+        Ok(())
+    }
+}
+impl DesktopApplication for MicroMagesApp {
+    fn resumed(&mut self, context: &mut AppContext<'_>) -> Result<(), Self::Error> {
+        if self.presenter.is_none() {
+            self.presenter = Some(FramebufferPresenter::new(
+                context.window.expect("window").shared_native(),
+                context.size.into(), (WIDTH, HEIGHT), options,
+            )?);
+        }
         Ok(())
     }
 }
@@ -152,13 +181,13 @@ as a presenter adapter or folded into the application.
 |---|---|---|
 | Custom X11 identity | `AppConfig.desktop` | `AppConfig.desktop` |
 | Window size/title/min size | `AppConfig.window` | `AppConfig.window` |
-| Build presenter after window | `setup` + `context.window.shared_native()` | same |
+| Build presenter after window | `resumed` + `context.window.shared_native()` | same |
 | Caller-owned VulkanicGAL/presenter | app field | app field |
-| Read input without per-game edge consumption | `tick` reads `context.window.input`; runner consumes | same |
+| Read input without per-game edge consumption | `frame_update`/`tick` read `context.input`; runner clears edges | same |
 | Resize handling | `window_event` + `context.size` | same |
 | 120 Hz sim / 60 Hz sim | `TimingConfig::Fixed` | `TimingConfig::Fixed` |
 | Fixed render or frame deadline | `RenderPolicy`/app render | fixed step + app render |
-| Pause/focus reset | app hook + `FixedStep::reset` | app hook + config |
+| Pause/focus reset | `Flow::Deferred` + `focus_changed` | same |
 | Headless | `run_headless` with game session | `run_headless` with game session |
 | Normal Cargo run | `quasar_app::run` in `main` | same |
 
@@ -173,8 +202,12 @@ semantics.
   window, so this is not a blocker.
 - MicroMages’ custom fullscreen/menu reconciliation still belongs in its
   application hooks; it is game policy, not generic lifecycle.
-- The runner consumes input edges after each tick. Games must move immediate
-  input/UI processing into `tick` (or inspect pending edges in `window_event`)
-  rather than consuming edges in their own `about_to_wait`.
+- The runner clears transient edges after the first fixed tick. Games must move
+  immediate input/UI processing into `frame_update` and claim it with the
+  explicit `FrameInput::consume_*` methods; gameplay reads `context.input` in
+  `tick`. Do not consume edges manually in `about_to_wait`.
+- Window-bound graphics are created in `resumed`, not `setup`, because `setup`
+  runs only once per run. `suspended` still releases GPU state before the runner
+  drops the window.
 - Exact LOC reductions are estimates based on the current source ranges and
   will vary with how presenters/window adapters are folded.

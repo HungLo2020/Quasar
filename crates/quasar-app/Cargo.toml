@@ -12,6 +12,7 @@ desktop = ["dep:quasar-window"]
 
 [dependencies]
 quasar-core.workspace = true
+quasar-input.workspace = true
 quasar-window = { workspace = true, optional = true }
 
 [[example]]

@@ -1,15 +1,22 @@
 //! Portable device state and named action mapping. No window or graphics dependencies.
 //! Feed physical button changes from any backend (or a script), then read named
-//! action values/edges. Consume edges after a simulation tick, not after rendering.
+//! action values/edges. In a lower-level loop, consume edges after a simulation
+//! tick, not after rendering. Under `quasar-app`, a [`FrameInput`] snapshot is
+//! captured once per frame and shared by variable-rate and fixed-phase callbacks;
+//! consumers explicitly claim actions/buttons/text/pointer with its `consume_*`
+//! methods. Implementations of [`InputRead`] can be used by game code that works
+//! with either [`InputState`] or [`FrameInput`].
 //!
 //! Controller types, player routing and the pure [`GamepadHub`] event path are
 //! always available. Enable the optional `gilrs` feature for the native
 //! `GilrsGamepads` adapter; without it the core remains free of platform device
 //! libraries and accepts synthetic [`GamepadEvent`] values.
 mod bindings;
+mod frame;
 mod gamepad;
 mod key;
 pub use bindings::{Binding, BindingError, Bindings};
+pub use frame::{ConsumedInput, FrameInput};
 #[cfg(feature = "gilrs")]
 pub use gamepad::GilrsGamepads;
 pub use gamepad::{
@@ -21,6 +28,22 @@ pub use gamepad::{
 pub use key::Key;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+
+/// Read-only input view shared by [`InputState`] and [`FrameInput`].
+///
+/// Game code can accept this trait without caring whether it is executing in a
+/// lower-level loop or under the runner's frame/tick scheduler.
+pub trait InputRead {
+    fn action(&self, name: &str) -> ActionState;
+    fn held(&self, key: Key) -> bool;
+    fn pressed(&self, key: Key) -> bool;
+    fn released(&self, key: Key) -> bool;
+    fn mouse_held(&self, button: MouseButton) -> bool;
+    fn mouse_pressed(&self, button: MouseButton) -> bool;
+    fn mouse_released(&self, button: MouseButton) -> bool;
+    fn cursor_physical(&self) -> Option<(f64, f64)>;
+    fn relative_motion(&self) -> (f64, f64);
+}
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MouseButton {
@@ -80,6 +103,36 @@ pub struct InputState {
     /// Cursor position within `preedit`, in character indices.
     pub preedit_cursor: usize,
 }
+impl InputRead for InputState {
+    fn action(&self, name: &str) -> ActionState {
+        InputState::action(self, name)
+    }
+    fn held(&self, key: Key) -> bool {
+        InputState::held(self, key)
+    }
+    fn pressed(&self, key: Key) -> bool {
+        InputState::pressed(self, key)
+    }
+    fn released(&self, key: Key) -> bool {
+        InputState::released(self, key)
+    }
+    fn mouse_held(&self, button: MouseButton) -> bool {
+        InputState::mouse_held(self, button)
+    }
+    fn mouse_pressed(&self, button: MouseButton) -> bool {
+        InputState::mouse_pressed(self, button)
+    }
+    fn mouse_released(&self, button: MouseButton) -> bool {
+        InputState::mouse_released(self, button)
+    }
+    fn cursor_physical(&self) -> Option<(f64, f64)> {
+        self.cursor_physical
+    }
+    fn relative_motion(&self) -> (f64, f64) {
+        self.relative_motion
+    }
+}
+
 impl InputState {
     /// Replaces all bindings after validation. Held devices initialize action
     /// values without generating spurious presses; pending edges are discarded.
@@ -260,6 +313,23 @@ impl InputState {
             state.released = false;
         }
         self.clear_motion_and_text();
+    }
+
+    /// Captures the pending edges and held state for one runner frame.
+    pub fn capture_frame(&self, frame: &mut FrameInput, index: u64) {
+        frame.capture(self, index);
+    }
+
+    /// Convenience snapshot for tests and lower-level callers.
+    pub fn frame(&self, index: u64) -> FrameInput {
+        let mut frame = FrameInput::default();
+        self.capture_frame(&mut frame, index);
+        frame
+    }
+
+    /// Applies consumption requests from a frame snapshot to the pending state.
+    pub fn apply_frame_consumption(&mut self, frame: &FrameInput) {
+        frame.apply_consumption(self);
     }
     fn clear_motion_and_text(&mut self) {
         self.relative_motion = (0.0, 0.0);

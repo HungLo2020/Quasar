@@ -10,7 +10,7 @@ use quasar_diagnostics::{Field, Level as LogLevel};
 use quasar_frame::{CompletionPolicy, FrameSurface};
 use quasar_input::{Binding, Bindings, GamepadButton, Key, MouseButton};
 use quasar_profile::{FrameProfiler, FrameSample};
-use quasar_ui::{Rect, UiBindings, from_input_state};
+use quasar_ui::{Rect, UiBindings, from_frame_input};
 use quasar_window::{
     DesktopConfig, WindowConfig,
     winit::{
@@ -42,6 +42,7 @@ pub fn run(settings: Settings, diagnostics: quasar_diagnostics::Diagnostics) -> 
         timing: TimingConfig::Fixed(FixedStepConfig::for_rate(60.0, 8)),
         render: RenderPolicy::EveryFrame,
         max_frame_wait: Duration::from_millis(16),
+        frame_interval: None,
     };
     run_app(
         FallingSandApp::new(settings, diagnostics, ui_options),
@@ -163,43 +164,37 @@ impl FallingSandApp {
     }
 
     fn input(&self, context: &AppContext<'_>) -> sand::SandInput {
-        let Some(window) = context.window else {
-            return sand::SandInput::default();
-        };
-        let size = window.native().inner_size();
-        let pointer = window.input.cursor_physical.map(|(x, y)| {
+        let size = context.size;
+        let pointer = context.input.cursor_physical().map(|(x, y)| {
             [
-                (x / f64::from(size.width.max(1)) * f64::from(sand::GRID_WIDTH as u32)) as f32,
-                (y / f64::from(size.height.max(1)) * f64::from(sand::GRID_HEIGHT as u32)) as f32,
+                (x / f64::from(size.0.max(1)) * f64::from(sand::GRID_WIDTH as u32)) as f32,
+                (y / f64::from(size.1.max(1)) * f64::from(sand::GRID_HEIGHT as u32)) as f32,
             ]
         });
         sand::SandInput {
             pointer: pointer.unwrap_or([0.0, 0.0]),
             pointer_valid: pointer.is_some(),
-            primary_held: window.input.mouse_held(MouseButton::Left),
-            primary_pressed: window.input.mouse_pressed(MouseButton::Left),
-            secondary_held: window.input.mouse_held(MouseButton::Right),
-            reset: window.input.pressed(Key::KeyR),
+            primary_held: context.input.mouse_held(MouseButton::Left),
+            primary_pressed: context.input.mouse_pressed(MouseButton::Left),
+            secondary_held: context.input.mouse_held(MouseButton::Right),
+            reset: context.input.pressed(Key::KeyR),
             tool: self.tool,
             brush_radius: self.settings.brush_radius,
         }
     }
 
-    fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow> {
+    fn frame_update(&mut self, context: &mut AppContext<'_>) -> Result<Flow> {
         if self.exit_after_render {
             return Ok(Flow::Exit);
         }
-        let Some(window) = context.window else {
-            return Ok(Flow::Continue);
-        };
-        let size = window.native().inner_size();
-        let viewport = Rect::new(0.0, 0.0, size.width as f32, size.height as f32);
+        let viewport = Rect::new(0.0, 0.0, context.size.0 as f32, context.size.1 as f32);
         let scale = (context.scale_factor as f32 * self.ui_options.ui_scale).max(0.5);
         if self.menu.is_open() {
-            let input = from_input_state(&window.input, &UiBindings::default());
+            let input = from_frame_input(context.input, &UiBindings::default());
             let action =
                 self.menu
                     .update(&input, viewport, scale, context.elapsed.as_secs_f32())?;
+            context.input.consume_all();
             match action {
                 MenuAction::Start | MenuAction::Resume => {
                     self.playing = true;
@@ -220,7 +215,9 @@ impl FallingSandApp {
                     self.ui_options = options;
                     self.settings.brush_radius = options.brush_radius;
                     self.menu.set_options(options);
-                    window.set_fullscreen(options.fullscreen);
+                    if let Some(window) = context.window {
+                        window.set_fullscreen(options.fullscreen);
+                    }
                     let path = UiOptions::path();
                     if let Err(error) = options.save(&path) {
                         self.diagnostics.event_with(
@@ -235,22 +232,33 @@ impl FallingSandApp {
             }
             return Ok(Flow::Continue);
         }
-        if window.input.pressed(Key::Escape) {
+        if context.input.pressed(Key::Escape) {
             self.playing = false;
             self.menu.open_pause();
+            context.input.consume_all();
             return Ok(Flow::Continue);
         }
-        if window.input.pressed(Key::Digit1) {
+        Ok(Flow::Continue)
+    }
+
+    fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow> {
+        if self.exit_after_render {
+            return Ok(Flow::Continue);
+        }
+        if self.menu.is_open() {
+            return Ok(Flow::Deferred);
+        }
+        if context.input.pressed(Key::Digit1) {
             self.tool = sand::Tool::Sand;
-        } else if window.input.pressed(Key::Digit2) {
+        } else if context.input.pressed(Key::Digit2) {
             self.tool = sand::Tool::Rock;
-        } else if window.input.pressed(Key::Digit3) {
+        } else if context.input.pressed(Key::Digit3) {
             self.tool = sand::Tool::Erase;
         }
         let input = self.input(context);
         self.cursor = input.pointer_valid.then_some(input.pointer);
         if !self.playing {
-            return Ok(Flow::Continue);
+            return Ok(Flow::Deferred);
         }
         let Some(world) = &mut self.world else {
             return Ok(Flow::Continue);
@@ -348,11 +356,15 @@ impl Application for FallingSandApp {
     fn setup(&mut self, context: &mut AppContext<'_>) -> Result<()> {
         self.initialize(context)
     }
+    fn frame_update(&mut self, context: &mut AppContext<'_>) -> Result<Flow> {
+        self.frame_update(context)
+    }
     fn tick(&mut self, context: &mut AppContext<'_>) -> Result<Flow> {
         self.tick(context)
     }
-    fn render(&mut self, context: &mut AppContext<'_>) -> Result<()> {
-        self.render(context)
+    fn render(&mut self, context: &mut AppContext<'_>) -> Result<Flow> {
+        self.render(context)?;
+        Ok(Flow::Continue)
     }
     fn suspended(&mut self, _: &mut AppContext<'_>) -> Result<()> {
         self.release_graphics()
@@ -377,6 +389,10 @@ impl Application for FallingSandApp {
 }
 
 impl DesktopApplication for FallingSandApp {
+    fn resumed(&mut self, context: &mut AppContext<'_>) -> Result<()> {
+        self.initialize(context)
+    }
+
     fn configure_window(&mut self, window: &mut quasar_window::GameWindow) -> Result<()> {
         let mut bindings = Bindings::default();
         bindings

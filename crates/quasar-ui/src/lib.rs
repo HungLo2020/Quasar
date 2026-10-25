@@ -58,7 +58,7 @@ pub use widget::{
 #[cfg(feature = "input")]
 mod input;
 #[cfg(feature = "input")]
-pub use input::{UiBindings, from_input_state};
+pub use input::{UiBindings, from_frame_input, from_input_state};
 
 #[cfg(feature = "render2d")]
 mod render2d;

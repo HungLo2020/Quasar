@@ -8,9 +8,10 @@ publish.workspace = true
 
 [features]
 default = ["desktop"]
-desktop = ["dep:quasar-window", "quasar-render-2d/gpu", "quasar-render-2d/vulkan"]
+desktop = ["dep:quasar-app", "quasar-app/desktop", "dep:quasar-window", "quasar-render-2d/gpu", "quasar-render-2d/vulkan"]
 
 [dependencies]
+quasar-app = { workspace = true, optional = true }
 quasar-input.workspace = true
 quasar-core.workspace = true
 quasar-storage.workspace = true
