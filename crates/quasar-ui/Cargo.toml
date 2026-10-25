@@ -1,0 +1,33 @@
+[package]
+name = "quasar-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+serde = ["dep:serde"]
+render2d = ["dep:quasar-render-2d"]
+input = ["dep:quasar-input"]
+config = ["dep:quasar-config"]
+text = ["dep:quasar-text"]
+text-render2d = ["text", "render2d", "quasar-render-2d/text", "quasar-render-2d/gpu"]
+
+[dependencies]
+quasar-config = { workspace = true, optional = true }
+quasar-input = { workspace = true, optional = true }
+quasar-render-2d = { workspace = true, optional = true }
+quasar-text = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = "1"
+quasar-frame = { workspace = true, features = ["vulkan", "diagnostics"] }
+quasar-render-2d = { workspace = true, features = ["gpu", "vulkan"] }
+vulkanic-gal = { workspace = true, features = ["vulkan"] }
+
+[[example]]
+name = "ui_benchmark"
+path = "examples/ui_benchmark.rs"

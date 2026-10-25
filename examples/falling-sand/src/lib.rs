@@ -1,4 +1,5 @@
 //! Falling Sand: cellular sand, Rapier 2D obstacles and `quasar-spatial` queries.
+pub mod menu;
 pub mod render;
 pub mod sand;
 pub mod settings;
@@ -141,7 +142,7 @@ fn render_screenshot(
         .map_err(|error| SandError::invalid(error.to_string()))?;
     let report = target
         .render(&mut gal, |gal, target| {
-            graphics.commands(gal, target, world, None, sand::Tool::Sand)
+            graphics.commands(gal, target, world, None, sand::Tool::Sand, None)
         })
         .map_err(|error| SandError::invalid(error.to_string()))?;
     let file = std::fs::File::create(path)

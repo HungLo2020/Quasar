@@ -12,9 +12,11 @@ gpu = ["dep:vulkanic-gal", "dep:quasar-frame"]
 vulkan = ["dep:raw-window-handle", "vulkanic-gal/vulkan"]
 opengl = ["vulkanic-gal/opengl"]
 png = ["dep:png"]
+text = ["dep:quasar-text", "gpu"]
 
 [dependencies]
 quasar-core.workspace = true
+quasar-text = { workspace = true, optional = true }
 quasar-frame = { workspace = true, optional = true }
 vulkanic-gal = { workspace = true, optional = true }
 raw-window-handle = { workspace = true, optional = true }

@@ -72,6 +72,24 @@ See [animation](animation.md).
 spatial, jobs and navmesh adapters. It has no agent steering, ECS or renderer;
 games own decision-making and movement. See [navigation](nav.md).
 
+`quasar-text` is an optional, renderer-independent text stack. Callers register
+their own TTF/OTF bytes; it shapes with cosmic-text/Harfrust, lays out wrapped
+and bidirectional text, exposes caret/hit/selection geometry, and rasterizes
+glyphs into reusable CPU atlas pages. It owns no window, GPU object, ECS or
+application runner. `quasar-render-2d` can upload changed atlas pages through
+persistent dynamic textures, and `quasar-ui` can use the same shaped layouts for
+widget measurement, editing and drawing. See [text](text.md) for audits,
+fallback/licensing policy, measurements and limitations.
+
+`quasar-ui` is an optional retained in-game UI layer for menus, pause screens,
+options dialogs, HUD widgets, modal confirmations and overlays. It owns widget
+trees, layout, focus, modal scopes, text editing and consumed-input reporting,
+but no window, GPU device, ECS or scene graph. Games advance it with their own
+input snapshot and decide what each action means. The optional `render2d`
+feature appends quads to the caller's `quasar-render-2d` canvas on the same GAL
+frame, so UI never creates a device or submission. See [in-game UI](ui.md) for
+the audit, composition model, themes and limitations.
+
 `quasar-sim` is an optional deterministic simulation layer built on generic
 game-owned state. It reuses `quasar-core::FixedStep` for scheduling, records
 validated input/hash journals, verifies replay divergence, and supports

@@ -5,8 +5,11 @@ rigid-body engines. Quasar does **not** implement a solver, broad phase,
 narrow phase or character controller.
 
 ```toml
-# Both dimensions, dynamics and events (same as defaults).
+# Default: Rapier 2D, fixed-step dynamics and events.
 quasar-physics = { path = "crates/quasar-physics" }
+
+# Add 3D alongside 2D.
+quasar-physics = { path = "crates/quasar-physics", features = ["dim3"] }
 
 # Collision-only, 2D only: no Quasar dynamics wrapper is compiled.
 quasar-physics = { path = "crates/quasar-physics", default-features = false, features = ["dim2"] }
@@ -72,15 +75,15 @@ query pipelines and every advanced Rapier feature.
 | Feature | Default | Effect |
 |---|---|---|
 | `dim2` | yes | Compile Rapier 2D integration |
-| `dim3` | yes | Compile Rapier 3D integration |
+| `dim3` | no | Compile Rapier 3D integration (opt in) |
 | `dynamics` | yes | Compile the Quasar fixed-step wrappers and event stepping |
 | `events` | yes | Collect Rapier collision/contact-force events via `std::sync::mpsc` |
 | `spatial` | no | `quasar-spatial` AABB conversion and collider index construction |
 | `enhanced-determinism` | no | Forward Rapier's cross-run determinism feature |
 
-Disable default features and select one dimension to avoid compiling the other
-Rapier engine. Collision-only use does not require `dynamics`, `events` or
-`spatial`.
+The default build compiles only Rapier 2D. Enable `dim3` to add Rapier 3D;
+disable `dim2` explicitly for 3D-only builds to avoid compiling both engines.
+Collision-only use does not require `dynamics`, `events` or `spatial`.
 
 ## Determinism and stepping
 

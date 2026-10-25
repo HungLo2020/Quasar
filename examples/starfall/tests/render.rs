@@ -23,7 +23,7 @@ fn world_and_hud_render_to_a_non_uniform_offscreen_frame() {
     let mut target = OffscreenTarget::new(&mut gal, 320, 180).unwrap();
     let report = target
         .render(&mut gal, |gal, target| {
-            graphics.commands(gal, target, &world)
+            graphics.commands(gal, target, &world, None)
         })
         .unwrap();
     assert_eq!(report.rgba.len(), 320 * 180 * 4);

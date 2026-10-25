@@ -75,6 +75,10 @@ pub struct InputState {
     pub scroll_pixels: (f64, f64),
     /// Text from the backend, separate from physical keyboard bindings.
     pub text: String,
+    /// Uncommitted IME composition text.
+    pub preedit: String,
+    /// Cursor position within `preedit`, in character indices.
+    pub preedit_cursor: usize,
 }
 impl InputState {
     /// Replaces all bindings after validation. Held devices initialize action
@@ -243,6 +247,8 @@ impl InputState {
             state.pressed = false;
         }
         self.cursor_physical = None;
+        self.preedit.clear();
+        self.preedit_cursor = 0;
         self.clear_motion_and_text();
     }
     /// Consume once per simulation tick/UI update, retaining held values.

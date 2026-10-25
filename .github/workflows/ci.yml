@@ -42,6 +42,13 @@ jobs:
       - run: cargo check --locked -p quasar-nav --all-targets
       - run: cargo check --locked -p quasar-nav --no-default-features --all-targets
       - run: cargo check --locked -p quasar-nav --all-features --all-targets
+      - run: cargo check --locked -p quasar-ui --lib
+      - run: cargo check --locked -p quasar-ui --lib --no-default-features
+      - run: cargo check --locked -p quasar-ui --lib --features input,config,serde
+      - run: cargo check --locked -p quasar-ui --lib --features text
+      - run: cargo check --locked -p quasar-text --lib
+      - run: cargo check --locked -p quasar-text --lib --no-default-features
+      - run: cargo check --locked -p quasar-text --lib --features serde
       - run: cargo check --locked -p quasar-input --features gilrs
       - run: cargo check --locked -p quasar-assets --features serde,storage
       - run: cargo check --locked -p quasar-assets --features async,hot-reload
@@ -94,6 +101,7 @@ jobs:
           cargo test --locked -p quasar-profile --no-default-features
           cargo test --locked -p quasar-spatial
           cargo test --locked -p quasar-physics
+          cargo test --locked -p quasar-physics --features dim3
           cargo test --locked -p quasar-physics --no-default-features --features dim2
           cargo test --locked -p quasar-physics --no-default-features --features dim3
           cargo test --locked -p quasar-physics --no-default-features --features dim2,dynamics
@@ -102,6 +110,17 @@ jobs:
           cargo test --locked -p quasar-animation --all-features
           cargo test --locked -p quasar-nav
           cargo test --locked -p quasar-nav --all-features
+          cargo test --locked -p quasar-ui
+          cargo test --locked -p quasar-ui --no-default-features
+          cargo test --locked -p quasar-ui --all-features
+          cargo test --locked -p quasar-ui --features input
+          cargo test --locked -p quasar-ui --features config
+          cargo test --locked -p quasar-ui --features text
+          cargo test --locked -p quasar-ui --features text-render2d
+          cargo test --locked -p quasar-render-2d --features text
+          cargo test --locked -p quasar-text
+          cargo test --locked -p quasar-text --no-default-features
+          cargo test --locked -p quasar-text --features serde
           cargo test --locked -p starfall
           cargo test --locked -p starfall --no-default-features
           cargo test --locked -p falling-sand
@@ -129,6 +148,7 @@ jobs:
           cargo clippy --locked -p quasar-profile --all-targets --no-default-features -- -D warnings
           cargo clippy --locked -p quasar-spatial --all-targets -- -D warnings
           cargo clippy --locked -p quasar-physics --all-targets -- -D warnings
+          cargo clippy --locked -p quasar-physics --all-targets --features dim3 -- -D warnings
           cargo clippy --locked -p quasar-physics --all-targets --all-features -- -D warnings
           cargo clippy --locked -p quasar-physics --all-targets --no-default-features --features dim2 -- -D warnings
           cargo clippy --locked -p quasar-physics --all-targets --no-default-features --features dim3,spatial -- -D warnings
@@ -137,6 +157,11 @@ jobs:
           cargo clippy --locked -p quasar-animation --all-targets --no-default-features -- -D warnings
           cargo clippy --locked -p quasar-nav --all-targets --all-features -- -D warnings
           cargo clippy --locked -p quasar-nav --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked -p quasar-ui --all-targets --all-features -- -D warnings
+          cargo clippy --locked -p quasar-ui --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked -p quasar-text --all-targets --all-features -- -D warnings
+          cargo clippy --locked -p quasar-text --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked -p quasar-render-2d --all-targets --features text -- -D warnings
           cargo clippy --locked -p starfall --all-targets -- -D warnings
           cargo clippy --locked -p starfall --all-targets --no-default-features -- -D warnings
           cargo clippy --locked -p falling-sand --all-targets -- -D warnings
@@ -209,6 +234,10 @@ jobs:
           ! cargo tree --locked -p quasar-physics --no-default-features --features dim3 -e normal | grep -q 'rapier2d'
           cargo tree --locked -p quasar-nav --no-default-features --features tilemap -e normal | (! grep -Eq 'quasar-render-2d|vulkanic-gal')
           cargo tree --locked -p quasar-animation --features sprite -e normal | (! grep -Eq 'vulkanic-gal|shaderc')
+          cargo tree --locked -p quasar-ui -e normal | (! grep -Eq 'quasar-render-2d|vulkanic-gal|quasar-input|quasar-config')
+          cargo tree --locked -p quasar-ui --features render2d -e normal | grep -q 'quasar-render-2d'
+          cargo tree --locked -p quasar-text -e normal | (! grep -Eq 'quasar-render-2d|vulkanic-gal|quasar-window|quasar-input|quasar-ui')
+          cargo tree --locked -p quasar-render-2d -e normal | (! grep -q 'quasar-text')
       - run: RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
   gpu-composition:
     runs-on: ubuntu-latest
@@ -219,6 +248,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libxkbcommon-dev libxkbcommon-x11-0 libasound2-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev mesa-vulkan-drivers xvfb
       - name: Run GPU lifetime and pixel tests
         run: xvfb-run -a cargo test --locked -p quasar-composition -p quasar-render-2d -p tilequest -p vulkanic-gal -p pong --lib -- --include-ignored --test-threads=1
+
+      - name: Test quasar-ui shared-GAL rendering
+        run: xvfb-run -a cargo test --locked -p quasar-ui --all-features --test render -- --ignored --test-threads=1
 
       - name: Run OpenGL backend and cross-backend conformance tests
         run: xvfb-run -a cargo test --locked -p vulkanic-gal --no-default-features --features vulkan,opengl --lib -- --include-ignored --test-threads=1

@@ -9,6 +9,7 @@ use quasar_render_3d::RenderStats as Stats3D;
 use quasar_render_3d::{
     Camera3D, Draw3D, Mat4, Material, Mesh, PassOptions, RenderState3D, Vertex,
 };
+use quasar_ui::{Ui, UiRenderer};
 use vulkanic_gal::{
     CommandList, CommandListDesc, CommandOp, GalError, GalResult, Handle, HandleKind,
     ResourceBarrier, SubmissionBatch, TextureFormat, TextureOrigin3d, TextureUsage,
@@ -22,6 +23,7 @@ pub struct Graphics {
     texture: Handle,
     texture_view: Handle,
     textures: Textures,
+    ui: UiRenderer,
     stats: RendererStats,
 }
 impl Graphics {
@@ -49,17 +51,23 @@ impl Graphics {
             texture: texture_handle,
             texture_view,
             textures: Textures::default(),
+            ui: UiRenderer::new(),
             stats: RendererStats::default(),
         })
     }
     pub fn last_stats(&self) -> RendererStats {
         self.stats
     }
+    #[cfg(feature = "desktop")]
+    pub fn enable_text(&mut self, renderer: quasar_ui::TextRenderer) {
+        self.ui.enable_text(renderer);
+    }
     pub fn commands(
         &mut self,
         gal: &mut VulkanicGal,
         target: Handle,
         world: &GameWorld,
+        menu: Option<&Ui>,
     ) -> GalResult<Vec<CommandList>> {
         let size = gal.pass_target_extent(target)?;
         let aspect = size.width as f32 / size.height.max(1) as f32;
@@ -211,9 +219,17 @@ impl Graphics {
             },
         )?;
         let stats3d: Stats3D = world_prepared.stats;
+        #[cfg(feature = "desktop")]
+        if let Some(menu) = menu {
+            self.ui
+                .prepare_text(&mut self.two_d, gal, &mut self.textures, menu)?;
+        }
         let mut canvas = Canvas::new(size.width, size.height)
             .map_err(|error| GalError::invalid_argument(error.to_string()))?;
         hud(&mut canvas, world);
+        if let Some(menu) = menu {
+            self.ui.draw(&mut canvas, menu);
+        }
         let hud_prepared = self.two_d.prepare(
             gal,
             &canvas,

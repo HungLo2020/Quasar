@@ -23,6 +23,10 @@ use std::{error::Error as StdError, fmt};
 #[cfg(feature = "png")]
 pub use texture::write_png;
 pub use texture::{Image, TextureId, Textures};
+#[cfg(feature = "text")]
+mod text;
+#[cfg(feature = "text")]
+pub use text::{GpuTextAtlas, TextUploadStats};
 #[cfg(feature = "gpu")]
 pub use vulkanic_gal::{BackendChoice, GalError, GalResult, VulkanicGal};
 

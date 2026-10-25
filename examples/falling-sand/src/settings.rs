@@ -1,13 +1,103 @@
 //! Command-line configuration for the falling-sand demo.
 use crate::SandError;
 use quasar_diagnostics::Level;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UiOptions {
+    pub fullscreen: bool,
+    pub brush_radius: f32,
+    pub ui_scale: f32,
+}
+
+impl Default for UiOptions {
+    fn default() -> Self {
+        Self {
+            fullscreen: false,
+            brush_radius: 4.0,
+            ui_scale: 1.0,
+        }
+    }
+}
+
+impl UiOptions {
+    pub fn load_default() -> Self {
+        let path = Self::path();
+        Self::load(&path).unwrap_or_default()
+    }
+
+    pub fn path() -> PathBuf {
+        default_ui_path()
+    }
+
+    pub fn load(path: &Path) -> Result<Self, SandError> {
+        let mut config = quasar_config::Config::new();
+        config
+            .set_default("ui.fullscreen", false)
+            .map_err(|error| SandError::invalid(error.to_string()))?;
+        config
+            .set_default("ui.brush_radius", 4.0)
+            .map_err(|error| SandError::invalid(error.to_string()))?;
+        config
+            .set_default("ui.scale", 1.0)
+            .map_err(|error| SandError::invalid(error.to_string()))?;
+        if path.exists() {
+            config
+                .load_file(path)
+                .map_err(|error| SandError::invalid(format!("UI settings: {error}")))?;
+        }
+        Ok(Self {
+            fullscreen: config
+                .get_bool("ui.fullscreen")
+                .map_err(|error| SandError::invalid(error.to_string()))?,
+            brush_radius: config
+                .get_f32("ui.brush_radius")
+                .map_err(|error| SandError::invalid(error.to_string()))?
+                .clamp(1.0, 16.0),
+            ui_scale: config
+                .get_f32("ui.scale")
+                .map_err(|error| SandError::invalid(error.to_string()))?
+                .clamp(0.75, 2.0),
+        })
+    }
+
+    pub fn save(&self, path: &Path) -> Result<(), SandError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| SandError::invalid(format!("create UI settings dir: {error}")))?;
+        }
+        let text = format!(
+            "version = 1\n\n[ui]\nfullscreen = {}\nbrush_radius = {:.2}\nscale = {:.2}\n",
+            self.fullscreen, self.brush_radius, self.ui_scale
+        );
+        let temporary = path.with_extension("tmp");
+        std::fs::write(&temporary, text)
+            .map_err(|error| SandError::invalid(format!("write UI settings: {error}")))?;
+        std::fs::rename(&temporary, path)
+            .map_err(|error| SandError::invalid(format!("replace UI settings: {error}")))?;
+        Ok(())
+    }
+}
+
+fn default_ui_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(path).join("quasar").join("falling-sand.toml");
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join(".config")
+            .join("quasar")
+            .join("falling-sand.toml");
+    }
+    PathBuf::from("falling-sand-ui.toml")
+}
 
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub headless: bool,
     pub ticks: u64,
     pub seed: u64,
+    pub brush_radius: f32,
     pub width: u32,
     pub height: u32,
     pub screenshot: Option<PathBuf>,
@@ -24,6 +114,7 @@ impl Default for Settings {
             headless: false,
             ticks: 600,
             seed: 0x5eed_1234,
+            brush_radius: 4.0,
             width: 1280,
             height: 720,
             screenshot: None,
@@ -57,6 +148,11 @@ impl Settings {
                     settings.ticks = value(&mut arguments, "--ticks")?.parse().map_err(|_| {
                         SandError::invalid("--ticks must be a non-negative integer")
                     })?;
+                }
+                "--brush-radius" => {
+                    settings.brush_radius = value(&mut arguments, "--brush-radius")?
+                        .parse()
+                        .map_err(|_| SandError::invalid("--brush-radius must be 1..=16"))?;
                 }
                 "--seed" => {
                     settings.seed = value(&mut arguments, "--seed")?
@@ -100,6 +196,9 @@ impl Settings {
         if !(64..=7680).contains(&settings.width) || !(64..=4320).contains(&settings.height) {
             return Err(SandError::invalid("window dimensions are out of range"));
         }
+        if !(1.0..=16.0).contains(&settings.brush_radius) {
+            return Err(SandError::invalid("--brush-radius must be 1..=16"));
+        }
         if settings.ticks == 0 {
             return Err(SandError::invalid("--ticks must be at least 1"));
         }
@@ -120,6 +219,7 @@ OPTIONS:
     --headless                 Run deterministic ticks without a window
     --ticks N                  Headless tick budget (default 600)
     --seed N                   Initial sand/ball seed (default 0x5eed1234)
+    --brush-radius N           Brush radius in cells (default 4)
     --autoplay                 Drive the deterministic scripted brush
     --width N --height N       Window or screenshot dimensions
     --screenshot PATH          Write a PNG after the run

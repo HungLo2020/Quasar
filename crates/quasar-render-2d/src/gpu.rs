@@ -56,6 +56,7 @@ struct TextureGpu {
     samplers: [Handle; 2],
     combined: [Handle; 2],
     dynamic: bool,
+    initialized: bool,
 }
 struct Slot {
     geometry: Handle,
@@ -860,6 +861,7 @@ impl RenderState2D {
                 samplers: [samplers[0], samplers[1]],
                 combined: [combined[0], combined[1]],
                 dynamic,
+                initialized: !dynamic,
             },
         );
         Ok(())
@@ -1286,11 +1288,16 @@ impl RenderState2D {
             if !texture.dynamic {
                 continue;
             }
-            let pixels = self.pending_dynamic.remove(&batch.texture).ok_or_else(|| {
-                GalError::invalid_argument(
+            let Some(pixels) = self.pending_dynamic.remove(&batch.texture) else {
+                // A dynamic texture that already has GPU contents can be reused
+                // without re-uploading unchanged pixels.
+                if texture.initialized {
+                    continue;
+                }
+                return Err(GalError::invalid_argument(
                     "dynamic texture must be updated before it is prepared for drawing",
-                )
-            })?;
+                ));
+            };
             let size = assets.dimensions(batch.texture).ok_or_else(|| {
                 GalError::invalid_argument("dynamic texture is missing from the texture store")
             })?;
@@ -1304,6 +1311,11 @@ impl RenderState2D {
                 ));
             }
             dynamic_uploads.push((batch.texture, pixels, size));
+        }
+        for (id, _, _) in &dynamic_uploads {
+            if let Some(texture) = self.textures.get_mut(id) {
+                texture.initialized = true;
+            }
         }
         let mut upload_offsets = BTreeMap::new();
         let mut upload_bytes = 0usize;

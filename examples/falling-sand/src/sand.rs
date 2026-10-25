@@ -40,6 +40,7 @@ pub struct SandInput {
     pub secondary_held: bool,
     pub reset: bool,
     pub tool: Tool,
+    pub brush_radius: f32,
 }
 
 impl Default for SandInput {
@@ -52,6 +53,7 @@ impl Default for SandInput {
             secondary_held: false,
             reset: false,
             tool: Tool::Sand,
+            brush_radius: 4.0,
         }
     }
 }
@@ -257,7 +259,7 @@ impl SandWorld {
             match input.tool {
                 Tool::Sand => {
                     if input.primary_held {
-                        self.paint_sand(input.pointer, 4.0);
+                        self.paint_sand(input.pointer, input.brush_radius);
                     }
                 }
                 Tool::Rock => {
@@ -272,7 +274,7 @@ impl SandWorld {
                 }
             }
             if input.secondary_held {
-                self.paint_erase(input.pointer, 4.0);
+                self.paint_erase(input.pointer, input.brush_radius);
             }
         }
         self.physics.step_fixed();
@@ -495,5 +497,6 @@ pub fn autoplay_input(world: &SandWorld) -> SandInput {
         secondary_held: tick % 240 > 220,
         reset: false,
         tool,
+        brush_radius: 4.0,
     }
 }

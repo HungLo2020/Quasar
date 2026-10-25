@@ -20,7 +20,17 @@ cargo run -p falling-sand -- --benchmark --benchmark-frames 120 --benchmark-file
 | `3` | Erase tool |
 | `R` | Reset |
 | `F11` | Fullscreen |
-| `Escape` | Quit |
+| `Escape` | Pause menu |
+
+## Menus and settings
+
+The game opens on a retro main menu (`Start`, `Options`, `Quit`). `Escape`
+during play opens the pause menu (`Resume`, `Options`, `Quit to menu`,
+`Restart`). Quit and restart require a modal confirmation. The options screen
+covers fullscreen, brush radius and UI scale; **Apply** commits and persists
+them to a game-owned TOML file (`$XDG_CONFIG_HOME/quasar/falling-sand.toml`),
+while **Cancel** restores the last applied values. Menus are built with
+`quasar-ui` and drawn onto the shared `quasar-render-2d` canvas.
 
 ## What it demonstrates
 
@@ -32,6 +42,10 @@ cargo run -p falling-sand -- --benchmark --benchmark-frames 120 --benchmark-file
   overlap rejection and the HUD's nearby-object count use grid queries.
 - `quasar-app` fixed-step lifecycle, `quasar-input` mouse/keyboard, diagnostics,
   `quasar-profile` frame measurements and `quasar-frame` presentation.
+- `quasar-ui` retro main/pause/options/confirmation menus drawn onto the same
+  2D canvas with the bitmap 5×7 font, game-owned TOML persistence and
+  apply/cancel semantics. The demo intentionally enables no `quasar-text`
+  feature, showing that font dependencies remain optional.
 - Headless deterministic ticks with `--headless --autoplay`, screenshots through
   `quasar-frame::OffscreenTarget`, and an optional benchmark JSON artifact.
 
@@ -63,6 +77,10 @@ grid; sand cannot leave it.
 
 ```sh
 cargo test -p falling-sand
+cargo test -p falling-sand --test menu
 cargo test -p falling-sand --test sand -- --ignored
 cargo clippy -p falling-sand --all-targets -- -D warnings
 ```
+
+Menu tests cover Enter-to-start, Escape pause, options apply/cancel and settings
+persistence without touching game save schemas.

@@ -157,9 +157,25 @@ fn offscreen_frame_is_non_uniform_and_resources_balance() {
     let mut graphics = Graphics::new(&mut gal).unwrap();
     let mut target = OffscreenTarget::new(&mut gal, 480, 270).unwrap();
     let world = run_script(31, 40);
+    let mut menu = falling_sand::menu::Menu::new(falling_sand::settings::UiOptions::default());
+    menu.open_main();
+    menu.update(
+        &quasar_ui::UiInput::default(),
+        quasar_ui::Rect::new(0.0, 0.0, 480.0, 270.0),
+        1.0,
+        1.0 / 60.0,
+    )
+    .unwrap();
     let report = target
         .render(&mut gal, |gal, target| {
-            graphics.commands(gal, target, &world, Some([60.0, 30.0]), Tool::Sand)
+            graphics.commands(
+                gal,
+                target,
+                &world,
+                Some([60.0, 30.0]),
+                Tool::Sand,
+                menu.ui(),
+            )
         })
         .unwrap();
     assert_eq!(report.rgba.len(), 480 * 270 * 4);

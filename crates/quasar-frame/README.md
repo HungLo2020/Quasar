@@ -3,8 +3,8 @@
 Small optional frame helpers extracted after the explicit cube/HUD composition
 worked. This crate depends only on VulkanicGAL. Renderers remain usable without
 it. It owns no GAL, window, game loop, scene, renderer registry or render graph.
-These APIs were introduced in Git tag `2.1`. The current release is `v0.2.10`,
-with Cargo package versions set to `0.2.10`. This crate does not select a backend
+These APIs were introduced in Git tag `2.1`. The current release is `v0.2.11`,
+with Cargo package versions set to `0.2.11`. This crate does not select a backend
 by default; enable its `vulkan` or `opengl` forwarding feature when the same
 dependency needs a backend, or select one through the renderer crate.
 

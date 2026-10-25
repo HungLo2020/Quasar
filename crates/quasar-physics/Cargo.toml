@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = ["dim2", "dim3", "dynamics", "events"]
+default = ["dim2", "dynamics", "events"]
 dim2 = ["dep:rapier2d"]
 dim3 = ["dep:rapier3d"]
 dynamics = []

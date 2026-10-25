@@ -33,10 +33,12 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `quasar-physics` | Optional Rapier 0.36 integration: collision-only worlds, bounded fixed-step dynamics, filters, events and optional spatial indexes | Optional quasar-spatial |
 | `quasar-animation` | Renderer-neutral clips/tracks/interpolation, playback, blending, events and layered state machines; optional sprite/serde adapters | Optional quasar-render-2d |
 | `quasar-nav` | Generic A*/Dijkstra, 2D/3D grids, dynamic costs/blocking, smoothing, optional tilemap/spatial/jobs/navmesh adapters | Optional quasar-tilemap, spatial, jobs, navmesh |
+| `quasar-text` | Caller-owned TTF/OTF fonts, Harfrust shaping via cosmic-text, bidi/wrapping/alignment, caret/selection, glyph rasterization and cache-friendly CPU atlases | None |
+| `quasar-ui` | Retained in-game menus/HUD: widget tree, stack/grid/absolute layout, DPI/safe areas, focus/modal scopes, text editing, rebinding, themes and consumed-input reporting; optional input/render2d/config/text adapters | Optional quasar-input, quasar-render-2d, quasar-config, quasar-text |
 | `quasar-sim` | Optional fixed-step coordination, deterministic journals, snapshots, replay verification and divergence reports | quasar-core, optional quasar-jobs |
 | `quasar-audio` | WAV/Ogg decode, deterministic mixing, buses, spatial audio, scheduling, streaming Ogg, offline WAV and CPAL output | Optional quasar-storage (settings) |
 | `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
-| `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, camera/transforms, clipping, GPU readback, persistent software-framebuffer presentation | VulkanicGAL, quasar-core, quasar-frame |
+| `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, optional shaped glyph-atlas pages, camera/transforms, clipping, GPU readback, persistent software-framebuffer presentation | VulkanicGAL, quasar-core, quasar-frame; optional quasar-text |
 | `quasar-tilemap` | Versioned/Tiled maps, indexed tile/object queries, PNG atlases, animation, culled draw lists and CLI | Optional quasar-render-2d |
 | `quasar-render-3d` | Indexed meshes, camera/model transforms, textured materials, lighting, depth and prepared passes | VulkanicGAL |
 | `quasar-frame` | Optional recording transactions, target caching, acquire/present/cancel and completion polling | VulkanicGAL |
@@ -44,8 +46,8 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `examples/framebuffer` | CPU-rendered RGBA8 framebuffer presented through `quasar-render-2d`, with headless screenshots, window exercises and benchmarks | quasar-render-2d |
 | `examples/audio` | Music, overlapping/spatial effects, buses, voice groups, procedural audio, offline WAV output and audio benchmarks | quasar-audio |
 | `examples/pong` | Game rules, 2D draw lists, desktop application, headless CLI and replay | Selected crates |
-| `examples/starfall` | Playable 3D reference game: shared 3D+2D frame, jobs/assets/audio, deterministic replay, config and profiling | quasar-app, input, sim, jobs, assets, diagnostics, audio, render-2d/3d, config, profile |
-| `examples/falling-sand` | Interactive cellular sand with Rapier 2D obstacles, dynamic ball and spatial queries | quasar-app, input, physics, spatial, render-2d, profile |
+| `examples/starfall` | Playable 3D reference game: shared 3D+2D frame, jobs/assets/audio, deterministic replay, config, in-game menus and profiling | quasar-app, input, sim, jobs, assets, diagnostics, audio, render-2d/3d, config, ui, profile |
+| `examples/falling-sand` | Interactive cellular sand with Rapier 2D obstacles, dynamic ball, spatial queries and retro menus | quasar-app, input, physics, spatial, render-2d, ui, profile |
 | `examples/physics-playground` | First-person Rapier 3D playground with character control, blocks, balls, triggers, raycasts, animated AI agents and navigation | quasar-app, input, physics, spatial, animation, nav, render-2d/3d, profile |
 
 Controller support lives in `quasar-input`: pure gamepad types, hotplug/player
@@ -63,6 +65,7 @@ and [adoption analysis](docs/app-adoption.md), background work in [jobs](docs/jo
 graphics measurements in [profiling](docs/profiling.md), spatial indexing in
 [spatial](docs/spatial.md), Rapier integration in [physics](docs/physics.md),
 animation in [animation](docs/animation.md), navigation in [nav](docs/nav.md),
+in-game menus/HUDs in [UI](docs/ui.md), fonts and shaped text in [text](docs/text.md),
 and edge/focus behavior in [input hardening](docs/input-hardening.md). New
 human-editable configuration defaults to TOML with JSON compatibility; the
 [Starfall](examples/starfall/README.md) reference game demonstrates the combined
@@ -103,7 +106,7 @@ future additions. Audio is provided by `quasar-audio`; see
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.10`, with workspace package versions set to `0.2.10`.
+release is `v0.2.11`, with workspace package versions set to `0.2.11`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.
@@ -220,6 +223,9 @@ needed to play; no standalone GLSL compiler is needed at runtime.
 cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo test -p quasar-audio --no-default-features --locked
+cargo test -p quasar-text --features serde --locked
+cargo run --release -p quasar-text --example text_benchmark
+cargo test -p quasar-ui --features text-render2d --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo doc --workspace --no-deps --locked
 python3 tools/verify_pong.py

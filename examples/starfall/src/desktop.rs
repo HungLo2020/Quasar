@@ -8,16 +8,25 @@ use quasar_audio::{AudioEngine, EngineConfig, PlaybackConfig};
 use quasar_core::FixedStepConfig;
 use quasar_diagnostics::{Diagnostics, Field, Level as LogLevel};
 use quasar_frame::{CompletionPolicy, FrameSurface};
+use quasar_input::{Binding, Bindings, GamepadButton, Key};
 use quasar_profile::{FrameProfiler, FrameSample};
+use quasar_text::{FontData, FontStack};
+use quasar_ui::{
+    Rect, ShapedTextMeasure, TextRenderer, TextRendererOptions, UiBindings, UiTextStyles,
+    from_input_state,
+};
 use quasar_window::{DesktopConfig, WindowConfig, winit::event::WindowEvent};
 use starfall::{
     content::SoundBank,
     load_content_blocking,
+    menu::{Menu, MenuAction, Options},
     render::Graphics,
     session::{GameSession, StepResult},
     settings::GameSettings,
     world::{GameError, GameEvent, GameInput},
 };
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 use vulkanic_gal::{
     FrameSurfaceDesc, PresentMode, TextureFormat, VulkanicGal,
@@ -25,7 +34,69 @@ use vulkanic_gal::{
     set_gpu_timestamps_requested,
 };
 
+/// Game actions plus UI navigation actions installed on one input state.
+fn desktop_bindings(settings: &GameSettings) -> Result<Bindings, GameError> {
+    let mut bindings = settings.controls.bindings()?;
+    bindings
+        .bind("ui_up", Binding::key(Key::ArrowUp))
+        .bind("ui_down", Binding::key(Key::ArrowDown))
+        .bind("ui_left", Binding::key(Key::ArrowLeft))
+        .bind("ui_right", Binding::key(Key::ArrowRight))
+        .bind("ui_next", Binding::key(Key::Tab))
+        .bind("ui_previous", Binding::key(Key::ArrowUp))
+        .bind("ui_activate", Binding::key(Key::Enter))
+        .bind("ui_cancel", Binding::key(Key::Escape))
+        .bind("ui_up", Binding::gamepad_button(GamepadButton::DPadUp))
+        .bind("ui_down", Binding::gamepad_button(GamepadButton::DPadDown))
+        .bind("ui_left", Binding::gamepad_button(GamepadButton::DPadLeft))
+        .bind(
+            "ui_right",
+            Binding::gamepad_button(GamepadButton::DPadRight),
+        )
+        .bind("ui_activate", Binding::gamepad_button(GamepadButton::South))
+        .bind("ui_cancel", Binding::gamepad_button(GamepadButton::East));
+    Ok(bindings)
+}
+
+fn build_text(settings: &GameSettings) -> Result<(ShapedTextMeasure, TextRenderer), GameError> {
+    let fonts = settings.assets_root.join("fonts");
+    let mut stack = FontStack::new();
+    for (name, license) in [
+        ("DejaVuSans.ttf", "Bitstream Vera / public-domain changes"),
+        (
+            "DejaVuSans-Bold.ttf",
+            "Bitstream Vera / public-domain changes",
+        ),
+        (
+            "NotoSansDevanagari-Regular.ttf",
+            "SIL Open Font License 1.1",
+        ),
+    ] {
+        let path = fonts.join(name);
+        let bytes = std::fs::read(&path)
+            .map_err(|error| GameError::invalid(format!("{}: {error}", path.display())))?;
+        stack.add_font(FontData::new(name, bytes).with_license(license));
+    }
+    stack.with_default_family("DejaVu Sans");
+    let engine = stack
+        .build("en-US")
+        .map_err(|error| GameError::invalid(format!("font system: {error}")))?;
+    let engine = Rc::new(RefCell::new(engine));
+    let styles = UiTextStyles::new("DejaVu Sans");
+    let renderer = TextRenderer::new(engine, styles, TextRendererOptions::default())
+        .map_err(|error| GameError::invalid(format!("text renderer: {error}")))?;
+    let measure = renderer.measure();
+    Ok((measure, renderer))
+}
+
 pub fn run(settings: GameSettings, diagnostics: Diagnostics) -> Result<(), GameError> {
+    let mut settings = settings;
+    let saved = Options::load_default();
+    if let Some(saved) = &saved {
+        settings.fullscreen = saved.fullscreen;
+        settings.audio_volume = saved.volume;
+        settings.mouse_sensitivity = saved.sensitivity;
+    }
     let config = AppConfig {
         window: WindowConfig {
             title: settings.window_title.clone(),
@@ -40,8 +111,18 @@ pub fn run(settings: GameSettings, diagnostics: Diagnostics) -> Result<(), GameE
         render: RenderPolicy::EveryFrame,
         max_frame_wait: Duration::from_millis(16),
     };
-    run_app(StarfallApp::new(settings, diagnostics), config)
-        .map_err(|error| GameError::invalid(error.to_string()))
+    let initial = saved.unwrap_or(Options {
+        fullscreen: settings.fullscreen,
+        volume: settings.audio_volume,
+        sensitivity: settings.mouse_sensitivity,
+        player_name: "Pilot".into(),
+    });
+    let (text_measure, text_renderer) = build_text(&settings)?;
+    run_app(
+        StarfallApp::new(settings, diagnostics, initial, text_measure, text_renderer),
+        config,
+    )
+    .map_err(|error| GameError::invalid(error.to_string()))
 }
 
 struct StarfallApp {
@@ -59,10 +140,32 @@ struct StarfallApp {
     samples: u64,
     exit_after_render: bool,
     recorded_written: bool,
+    menu: Menu,
+    interactive: bool,
+    playing: bool,
+    cursor_captured: bool,
+    text_measure: ShapedTextMeasure,
+    text_renderer: Option<TextRenderer>,
+    player_name: String,
 }
 impl StarfallApp {
-    fn new(settings: GameSettings, diagnostics: Diagnostics) -> Self {
+    fn new(
+        settings: GameSettings,
+        diagnostics: Diagnostics,
+        initial_options: Options,
+        text_measure: ShapedTextMeasure,
+        text_renderer: TextRenderer,
+    ) -> Self {
         let profiler = FrameProfiler::new(settings.profile_capacity);
+        let interactive = !settings.headless
+            && !settings.benchmark
+            && settings.replay.is_none()
+            && !settings.autoplay;
+        let player_name = initial_options.player_name.clone();
+        let mut menu = Menu::new(initial_options);
+        if interactive {
+            menu.open_main();
+        }
         Self {
             settings,
             diagnostics,
@@ -78,6 +181,13 @@ impl StarfallApp {
             samples: 0,
             exit_after_render: false,
             recorded_written: false,
+            menu,
+            interactive,
+            playing: !interactive,
+            cursor_captured: false,
+            text_measure,
+            text_renderer: Some(text_renderer),
+            player_name,
         }
     }
     fn initialize(&mut self, context: &mut AppContext<'_>) -> Result<(), GameError> {
@@ -93,7 +203,7 @@ impl StarfallApp {
             self.texture = Some(content.texture.clone());
             self.sounds = Some(content.sounds.clone());
         }
-        let expected_bindings = self.settings.controls.bindings()?;
+        let expected_bindings = desktop_bindings(&self.settings)?;
         if let Some(window) = context.window
             && window.input.bindings() != &expected_bindings
         {
@@ -152,8 +262,11 @@ impl StarfallApp {
             .texture
             .as_ref()
             .ok_or_else(|| GameError::invalid("content texture missing"))?;
-        let graphics = Graphics::new(&mut gal, texture)
+        let mut graphics = Graphics::new(&mut gal, texture)
             .map_err(|error| GameError::invalid(format!("create renderers: {error}")))?;
+        if let Some(text) = self.text_renderer.take() {
+            graphics.enable_text(text);
+        }
         self.surface = Some(FrameSurface::new(size.width.max(1), size.height.max(1)));
         self.graphics = Some(graphics);
         self.gal = Some(gal);
@@ -202,6 +315,31 @@ impl StarfallApp {
         if self.exit_after_render {
             return Ok(Flow::Exit);
         }
+        let Some(window) = context.window else {
+            return Ok(Flow::Continue);
+        };
+        if self.menu.is_open() {
+            let viewport = Rect::new(0.0, 0.0, context.size.0 as f32, context.size.1 as f32);
+            let scale = context.scale_factor.max(0.5) as f32;
+            let input = from_input_state(&window.input, &UiBindings::default());
+            let action = self.menu.update(
+                &input,
+                viewport,
+                scale,
+                &self.text_measure,
+                context.elapsed.as_secs_f32(),
+            )?;
+            if let Some(flow) = self.apply_menu_action(action, window)? {
+                return Ok(flow);
+            }
+            return Ok(Flow::Continue);
+        }
+        if self.interactive && window.input.pressed(Key::Escape) {
+            self.playing = false;
+            self.menu.open_pause();
+            self.set_cursor_capture(window, false);
+            return Ok(Flow::Continue);
+        }
         let Some(session) = &mut self.session else {
             return Ok(Flow::Continue);
         };
@@ -211,10 +349,7 @@ impl StarfallApp {
                     .event(LogLevel::Info, "starfall.replay", "complete");
                 return Ok(Flow::Exit);
             }
-        } else {
-            let window = context
-                .window
-                .ok_or_else(|| GameError::invalid("window missing during tick"))?;
+        } else if self.playing {
             if self.settings.controls.quit_requested(&window.input) {
                 return Ok(Flow::Exit);
             }
@@ -228,6 +363,89 @@ impl StarfallApp {
         let events = session.world().events.clone();
         self.play_events(&events);
         Ok(Flow::Continue)
+    }
+
+    fn apply_menu_action(
+        &mut self,
+        action: MenuAction,
+        window: &quasar_window::GameWindow,
+    ) -> Result<Option<Flow>, GameError> {
+        match action {
+            MenuAction::None => {}
+            MenuAction::Start | MenuAction::Resume => {
+                self.playing = true;
+                self.menu.close();
+                self.set_cursor_capture(window, true);
+            }
+            MenuAction::Restart => {
+                self.playing = true;
+                self.menu.close();
+                self.set_cursor_capture(window, true);
+                self.restart_session()?;
+            }
+            MenuAction::QuitToMenu => {
+                self.playing = false;
+                self.restart_session()?;
+                self.menu.open_main();
+                self.set_cursor_capture(window, false);
+            }
+            MenuAction::Quit => return Ok(Some(Flow::Exit)),
+            MenuAction::Apply(options) => {
+                self.settings.fullscreen = options.fullscreen;
+                self.settings.audio_volume = options.volume;
+                self.settings.mouse_sensitivity = options.sensitivity;
+                self.player_name.clone_from(&options.player_name);
+                window.set_fullscreen(options.fullscreen);
+                if let Some(audio) = &self.audio
+                    && let Err(error) = audio.set_master_volume(options.volume)
+                {
+                    self.diagnostics.event_with(
+                        LogLevel::Warn,
+                        "starfall.audio",
+                        "volume_apply_failed",
+                        [Field::new("error", error.to_string())],
+                    );
+                }
+                if let Err(error) = options.save(&Options::path()) {
+                    self.diagnostics.event_with(
+                        LogLevel::Error,
+                        "starfall.settings",
+                        "save_failed",
+                        [Field::new("error", error.to_string())],
+                    );
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn restart_session(&mut self) -> Result<(), GameError> {
+        if let Some(session) = &mut self.session
+            && !session.is_replay()
+        {
+            session.step(GameInput {
+                restart: true,
+                ..GameInput::default()
+            })?;
+        }
+        Ok(())
+    }
+
+    fn set_cursor_capture(&mut self, window: &quasar_window::GameWindow, capture: bool) {
+        if self.cursor_captured == capture {
+            return;
+        }
+        match window.capture_cursor(capture) {
+            Ok(()) => self.cursor_captured = capture,
+            Err(error) => {
+                self.diagnostics.event_with(
+                    LogLevel::Warn,
+                    "starfall.input",
+                    "mouse_capture_unavailable",
+                    [Field::new("error", error.to_string())],
+                );
+            }
+        }
     }
     fn play_events(&mut self, events: &[GameEvent]) {
         for event in events {
@@ -263,9 +481,10 @@ impl StarfallApp {
         ) else {
             return Ok(());
         };
+        let menu = self.menu.ui();
         let report = surface
             .render(gal, CompletionPolicy::Poll, |gal, target| {
-                graphics.commands(gal, target, session.world())
+                graphics.commands(gal, target, session.world(), menu)
             })
             .map_err(|error| GameError::invalid(format!("render: {error}")))?;
         if let Some(report) = report {
@@ -372,18 +591,22 @@ impl DesktopApplication for StarfallApp {
         &mut self,
         window: &mut quasar_window::GameWindow,
     ) -> Result<(), Self::Error> {
-        let bindings = self.settings.controls.bindings()?;
+        let bindings = desktop_bindings(&self.settings)?;
+        window.native().set_ime_allowed(true);
         window
             .input
             .set_bindings(bindings)
             .map_err(|error| GameError::invalid(format!("install controls: {error}")))?;
-        if let Err(error) = window.capture_cursor(true) {
+        let capture = !self.menu.is_open();
+        if let Err(error) = window.capture_cursor(capture) {
             self.diagnostics.event_with(
                 LogLevel::Warn,
                 "starfall.input",
                 "mouse_capture_unavailable",
                 [Field::new("error", error.to_string())],
             );
+        } else {
+            self.cursor_captured = capture;
         }
         Ok(())
     }
@@ -392,6 +615,21 @@ impl DesktopApplication for StarfallApp {
         context: &mut AppContext<'_>,
         event: &WindowEvent,
     ) -> Result<(), Self::Error> {
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == quasar_window::winit::event::ElementState::Pressed
+            && !event.repeat
+            && matches!(
+                event.physical_key,
+                quasar_window::winit::keyboard::PhysicalKey::Code(
+                    quasar_window::winit::keyboard::KeyCode::F11
+                )
+            )
+        {
+            self.settings.fullscreen = !self.settings.fullscreen;
+            if let Some(window) = context.window {
+                window.set_fullscreen(self.settings.fullscreen);
+            }
+        }
         if matches!(
             event,
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }

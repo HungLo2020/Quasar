@@ -4,7 +4,7 @@ default-members = ["examples/pong"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.10"
+version = "0.2.11"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT"
@@ -22,6 +22,8 @@ quasar-sim = { path = "crates/quasar-sim", default-features = false }
 quasar-spatial = { path = "crates/quasar-spatial", default-features = false }
 quasar-physics = { path = "crates/quasar-physics", default-features = false }
 quasar-animation = { path = "crates/quasar-animation", default-features = false }
+quasar-ui = { path = "crates/quasar-ui", default-features = false }
+quasar-text = { path = "crates/quasar-text", default-features = false }
 quasar-nav = { path = "crates/quasar-nav", default-features = false }
 quasar-window = { path = "crates/quasar-window" }
 quasar-audio = { path = "crates/quasar-audio", default-features = false }

@@ -2,6 +2,7 @@
 use crate::sand::{BALL_RADIUS, Cell, GRID_HEIGHT, GRID_WIDTH, ObstacleKind, SandWorld, Tool};
 use quasar_profile::RendererStats;
 use quasar_render_2d::{Canvas, Color, DisplayOptions, LoadOp, Rect, RenderState2D, Textures};
+use quasar_ui::{Ui, UiRenderer};
 use vulkanic_gal::{CommandList, GalError, GalResult, Handle, VulkanicGal};
 
 const BACKGROUND: Color = Color([10, 14, 24, 255]);
@@ -16,6 +17,7 @@ const HUD_DIM: Color = Color([142, 162, 184, 255]);
 pub struct Graphics {
     state: RenderState2D,
     textures: Textures,
+    ui: UiRenderer,
     stats: RendererStats,
 }
 
@@ -24,6 +26,7 @@ impl Graphics {
         Ok(Self {
             state: RenderState2D::new(gal)?,
             textures: Textures::default(),
+            ui: UiRenderer::new(),
             stats: RendererStats::default(),
         })
     }
@@ -39,6 +42,7 @@ impl Graphics {
         world: &SandWorld,
         cursor: Option<[f32; 2]>,
         tool: Tool,
+        menu: Option<&Ui>,
     ) -> GalResult<Vec<CommandList>> {
         let size = gal.pass_target_extent(target)?;
         let width = size.width as f32;
@@ -169,6 +173,9 @@ impl Graphics {
             HUD_DIM,
         );
 
+        if let Some(menu) = menu {
+            self.ui.draw(&mut canvas, menu);
+        }
         let prepared = self.state.prepare(
             gal,
             &canvas,

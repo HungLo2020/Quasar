@@ -23,8 +23,19 @@ pub fn process_window_event(input: &mut InputState, event: &WindowEvent) {
             input.mouse_button(mouse_button(*button), state.is_pressed())
         }
         // IME commits are the authoritative text entry path on Wayland and
-        // composed-input platforms. Preedit is intentionally not committed.
-        WindowEvent::Ime(Ime::Commit(text)) => input.text.push_str(text),
+        // composed-input platforms. Preedit remains separate until commit.
+        WindowEvent::Ime(Ime::Commit(text)) => {
+            input.text.push_str(text);
+            input.preedit.clear();
+            input.preedit_cursor = 0;
+        }
+        WindowEvent::Ime(Ime::Preedit(text, cursor)) => {
+            input.preedit.clone_from(text);
+            input.preedit_cursor = cursor.map_or(0, |(start, _)| {
+                let start = start.min(text.len());
+                text[..start].chars().count()
+            });
+        }
         WindowEvent::CursorMoved { position, .. } => {
             input.cursor_physical = Some((position.x, position.y))
         }
@@ -347,6 +358,22 @@ mod tests {
         assert_eq!(input.text, "chat");
         input.consume_edges();
         assert!(input.text.is_empty());
+    }
+
+    #[test]
+    fn ime_preedit_stays_separate_until_commit() {
+        let mut input = InputState::default();
+        process_window_event(
+            &mut input,
+            &WindowEvent::Ime(Ime::Preedit("かな".into(), Some((6, 6)))),
+        );
+        assert_eq!(input.preedit, "かな");
+        assert_eq!(input.preedit_cursor, 2);
+        assert!(input.text.is_empty());
+        process_window_event(&mut input, &WindowEvent::Ime(Ime::Commit("仮名".into())));
+        assert!(input.preedit.is_empty());
+        assert_eq!(input.preedit_cursor, 0);
+        assert_eq!(input.text, "仮名");
     }
 
     #[test]

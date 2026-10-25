@@ -5,6 +5,7 @@
 //! optional `desktop` module.
 
 pub mod content;
+pub mod menu;
 pub mod render;
 pub mod session;
 pub mod settings;
@@ -86,7 +87,7 @@ pub fn render_screenshot(
         .map_err(|error| GameError::invalid(error.to_string()))?;
     let report = target
         .render(&mut gal, |gal, target| {
-            graphics.commands(gal, target, world)
+            graphics.commands(gal, target, world, None)
         })
         .map_err(|error| GameError::invalid(error.to_string()))?;
     let _ = RendererStats::default();

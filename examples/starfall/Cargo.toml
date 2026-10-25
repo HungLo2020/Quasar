@@ -13,6 +13,8 @@ desktop = [
   "quasar-app/desktop",
   "quasar-audio/native",
   "quasar-window/diagnostics",
+  "dep:quasar-text",
+  "quasar-ui/text-render2d",
 ]
 
 [dependencies]
@@ -29,6 +31,8 @@ quasar-profile = { workspace = true, features = ["json", "frame"] }
 quasar-render-2d = { workspace = true, features = ["gpu", "vulkan"] }
 quasar-render-3d.workspace = true
 quasar-sim = { workspace = true, features = ["serde"] }
+quasar-text = { workspace = true, optional = true }
+quasar-ui = { workspace = true, features = ["input", "render2d"] }
 quasar-window = { workspace = true, optional = true }
 png.workspace = true
 serde.workspace = true

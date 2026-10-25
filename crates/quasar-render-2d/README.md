@@ -41,9 +41,17 @@ Draw order is preserved, using straight alpha blending. Adjacent quads with the
 same texture and filter become one instanced draw. Images are uploaded once and
 cached; ordinary frames upload geometry and uniforms. Buffer growth rebuilds
 only affected buffer bindings, preserving image uploads. `stats()` reports
-quad/batch counts and upload bytes. The bitmap font
-covers uppercase ASCII, digits, and simple punctuation; custom fonts can use
-sprite atlases. No scene graph or font shaping is included.
+quad/batch counts and upload bytes. The built-in bitmap font
+covers uppercase ASCII, digits, and simple punctuation. The optional `text`
+feature adds a `GpuTextAtlas` adapter for `quasar-text`: shaped Unicode text is
+rasterized into persistent glyph atlas pages, uploaded only when a page version
+changes, and drawn as fractional-position tinted quads on the same caller-owned
+`Canvas`. No scene graph or window is added.
+
+The default features are `gpu` and `vulkan`; the optional `text` feature adds
+`quasar-text` and is off by default. `GpuTextAtlas::sync` creates one
+`DynamicTexture` per atlas page and reuses unchanged pages without re-uploading
+them. Bitmap-only games compile no font dependencies.
 
 The default features are `gpu` and `vulkan`; `headless()` therefore uses the
 Vulkan implementation by default. `headless_with(BackendChoice)` requests a

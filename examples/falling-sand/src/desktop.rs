@@ -1,4 +1,5 @@
-use falling_sand::settings::Settings;
+use falling_sand::menu::{Menu, MenuAction};
+use falling_sand::settings::{Settings, UiOptions};
 use falling_sand::{Result, SandError, render, sand};
 use quasar_app::{
     AppConfig, AppContext, Application, DesktopApplication, Flow, RenderPolicy, TimingConfig,
@@ -7,8 +8,9 @@ use quasar_app::{
 use quasar_core::FixedStepConfig;
 use quasar_diagnostics::{Field, Level as LogLevel};
 use quasar_frame::{CompletionPolicy, FrameSurface};
-use quasar_input::{Key, MouseButton};
+use quasar_input::{Binding, Bindings, GamepadButton, Key, MouseButton};
 use quasar_profile::{FrameProfiler, FrameSample};
+use quasar_ui::{Rect, UiBindings, from_input_state};
 use quasar_window::{
     DesktopConfig, WindowConfig,
     winit::{
@@ -24,13 +26,16 @@ use vulkanic_gal::{
 };
 
 pub fn run(settings: Settings, diagnostics: quasar_diagnostics::Diagnostics) -> Result<()> {
+    let ui_options = UiOptions::load_default();
+    let mut settings = settings;
+    settings.brush_radius = ui_options.brush_radius;
     let config = AppConfig {
         window: WindowConfig {
             title: "Falling Sand - Quasar".into(),
             application_id: "falling-sand".into(),
             size: (settings.width, settings.height),
             minimum_size: (640, 360),
-            fullscreen: false,
+            fullscreen: ui_options.fullscreen,
             resizable: true,
         },
         desktop: DesktopConfig::for_application("falling-sand"),
@@ -38,8 +43,11 @@ pub fn run(settings: Settings, diagnostics: quasar_diagnostics::Diagnostics) -> 
         render: RenderPolicy::EveryFrame,
         max_frame_wait: Duration::from_millis(16),
     };
-    run_app(FallingSandApp::new(settings, diagnostics), config)
-        .map_err(|error| SandError::invalid(error.to_string()))
+    run_app(
+        FallingSandApp::new(settings, diagnostics, ui_options),
+        config,
+    )
+    .map_err(|error| SandError::invalid(error.to_string()))
 }
 
 struct FallingSandApp {
@@ -55,11 +63,23 @@ struct FallingSandApp {
     exit_after_render: bool,
     tool: sand::Tool,
     cursor: Option<[f32; 2]>,
+    menu: Menu,
+    ui_options: UiOptions,
+    playing: bool,
 }
 
 impl FallingSandApp {
-    fn new(settings: Settings, diagnostics: quasar_diagnostics::Diagnostics) -> Self {
+    fn new(
+        settings: Settings,
+        diagnostics: quasar_diagnostics::Diagnostics,
+        ui_options: UiOptions,
+    ) -> Self {
         let profiler = FrameProfiler::new(settings.benchmark_frames.max(16));
+        let interactive = !settings.benchmark;
+        let mut menu = Menu::new(ui_options);
+        if interactive {
+            menu.open_main();
+        }
         Self {
             settings,
             diagnostics,
@@ -73,6 +93,9 @@ impl FallingSandApp {
             exit_after_render: false,
             tool: sand::Tool::Sand,
             cursor: None,
+            menu,
+            ui_options,
+            playing: !interactive,
         }
     }
 
@@ -158,6 +181,7 @@ impl FallingSandApp {
             secondary_held: window.input.mouse_held(MouseButton::Right),
             reset: window.input.pressed(Key::KeyR),
             tool: self.tool,
+            brush_radius: self.settings.brush_radius,
         }
     }
 
@@ -165,20 +189,69 @@ impl FallingSandApp {
         if self.exit_after_render {
             return Ok(Flow::Exit);
         }
-        if let Some(window) = context.window {
-            if window.input.pressed(Key::Escape) {
-                return Ok(Flow::Exit);
+        let Some(window) = context.window else {
+            return Ok(Flow::Continue);
+        };
+        let size = window.native().inner_size();
+        let viewport = Rect::new(0.0, 0.0, size.width as f32, size.height as f32);
+        let scale = (context.scale_factor as f32 * self.ui_options.ui_scale).max(0.5);
+        if self.menu.is_open() {
+            let input = from_input_state(&window.input, &UiBindings::default());
+            let action =
+                self.menu
+                    .update(&input, viewport, scale, context.elapsed.as_secs_f32())?;
+            match action {
+                MenuAction::Start | MenuAction::Resume => {
+                    self.playing = true;
+                    self.menu.close();
+                }
+                MenuAction::Restart => {
+                    self.world = Some(sand::SandWorld::new(self.settings.seed));
+                    self.playing = true;
+                    self.menu.close();
+                }
+                MenuAction::QuitToMenu => {
+                    self.world = Some(sand::SandWorld::new(self.settings.seed));
+                    self.playing = false;
+                    self.menu.open_main();
+                }
+                MenuAction::Quit => return Ok(Flow::Exit),
+                MenuAction::Apply(options) => {
+                    self.ui_options = options;
+                    self.settings.brush_radius = options.brush_radius;
+                    self.menu.set_options(options);
+                    window.set_fullscreen(options.fullscreen);
+                    let path = UiOptions::path();
+                    if let Err(error) = options.save(&path) {
+                        self.diagnostics.event_with(
+                            LogLevel::Error,
+                            "falling-sand.settings",
+                            "save_failed",
+                            [Field::new("error", error.to_string())],
+                        );
+                    }
+                }
+                MenuAction::None => {}
             }
-            if window.input.pressed(Key::Digit1) {
-                self.tool = sand::Tool::Sand;
-            } else if window.input.pressed(Key::Digit2) {
-                self.tool = sand::Tool::Rock;
-            } else if window.input.pressed(Key::Digit3) {
-                self.tool = sand::Tool::Erase;
-            }
+            return Ok(Flow::Continue);
+        }
+        if window.input.pressed(Key::Escape) {
+            self.playing = false;
+            self.menu.open_pause();
+            return Ok(Flow::Continue);
+        }
+        if window.input.pressed(Key::Digit1) {
+            self.tool = sand::Tool::Sand;
+        } else if window.input.pressed(Key::Digit2) {
+            self.tool = sand::Tool::Rock;
+        } else if window.input.pressed(Key::Digit3) {
+            self.tool = sand::Tool::Erase;
         }
         let input = self.input(context);
         self.cursor = input.pointer_valid.then_some(input.pointer);
+        if !self.playing {
+            return Ok(Flow::Continue);
+        }
         let Some(world) = &mut self.world else {
             return Ok(Flow::Continue);
         };
@@ -202,9 +275,10 @@ impl FallingSandApp {
         };
         let cursor = self.cursor;
         let tool = self.tool;
+        let menu = self.menu.ui();
         let report = surface
             .render(gal, CompletionPolicy::Poll, |gal, target| {
-                graphics.commands(gal, target, world, cursor, tool)
+                graphics.commands(gal, target, world, cursor, tool, menu)
             })
             .map_err(|error| SandError::invalid(format!("render: {error}")))?;
         if let Some(report) = report {
@@ -304,6 +378,29 @@ impl Application for FallingSandApp {
 
 impl DesktopApplication for FallingSandApp {
     fn configure_window(&mut self, window: &mut quasar_window::GameWindow) -> Result<()> {
+        let mut bindings = Bindings::default();
+        bindings
+            .bind("ui_up", Binding::key(Key::ArrowUp))
+            .bind("ui_down", Binding::key(Key::ArrowDown))
+            .bind("ui_left", Binding::key(Key::ArrowLeft))
+            .bind("ui_right", Binding::key(Key::ArrowRight))
+            .bind("ui_next", Binding::key(Key::Tab))
+            .bind("ui_previous", Binding::key(Key::ArrowUp))
+            .bind("ui_activate", Binding::key(Key::Enter))
+            .bind("ui_cancel", Binding::key(Key::Escape))
+            .bind("ui_up", Binding::gamepad_button(GamepadButton::DPadUp))
+            .bind("ui_down", Binding::gamepad_button(GamepadButton::DPadDown))
+            .bind("ui_left", Binding::gamepad_button(GamepadButton::DPadLeft))
+            .bind(
+                "ui_right",
+                Binding::gamepad_button(GamepadButton::DPadRight),
+            )
+            .bind("ui_activate", Binding::gamepad_button(GamepadButton::South))
+            .bind("ui_cancel", Binding::gamepad_button(GamepadButton::East));
+        window
+            .input
+            .set_bindings(bindings)
+            .map_err(|error| SandError::invalid(format!("install UI bindings: {error}")))?;
         if let Err(error) = window.capture_cursor(false) {
             self.diagnostics.event_with(
                 LogLevel::Warn,

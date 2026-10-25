@@ -1,0 +1,24 @@
+[package]
+name = "quasar-text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash"] }
+serde = { workspace = true, optional = true }
+unicode-segmentation = "1"
+unicode-script = "0.5"
+
+[dev-dependencies]
+proptest = "1"
+
+[[example]]
+name = "text_benchmark"
+path = "examples/text_benchmark.rs"

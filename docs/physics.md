@@ -21,6 +21,31 @@ risk incompatible behavior. Quasar's layer therefore focuses on:
 
 No renderer, window, asset, ECS, editor or application runner is a dependency.
 
+## Features and default build
+
+| Feature | Default | Effect |
+|---|---|---|
+| `dim2` | yes | Compile Rapier 2D integration |
+| `dim3` | no | Compile Rapier 3D integration (opt in) |
+| `dynamics` | yes | Compile the Quasar fixed-step wrappers and event stepping |
+| `events` | yes | Collect Rapier collision/contact-force events |
+| `spatial` | no | `quasar-spatial` AABB conversion and collider index construction |
+| `enhanced-determinism` | no | Forward Rapier's cross-run determinism feature |
+
+The default build compiles only Rapier 2D (`rapier2d`/`parry2d`); `rapier3d` is
+opt-in. Enable `dim3` to add 3D, and disable `dim2` explicitly for 3D-only
+builds so both engines are not compiled. Collision-only use does not require
+`dynamics`, `events` or `spatial`.
+
+```sh
+cargo tree -p quasar-physics -e normal                     # rapier2d only
+cargo tree -p quasar-physics -e normal --no-default-features --features dim2
+cargo tree -p quasar-physics -e normal --no-default-features --features dim3
+```
+
+The default change is a workspace semver-minor behavior change: existing
+`quasar-physics` users keep 2D dynamics and events; 3D users must opt in.
+
 ## Crate structure
 
 ```text

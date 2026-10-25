@@ -30,14 +30,31 @@ rewritten or converted:
 | Turn | Mouse horizontal motion, or `Q` / `E` |
 | Shoot | Mouse left button or `Space` |
 | Restart | `R` |
-| Fullscreen | `F11` |
-| Quit | `Escape` |
+| Pause / menu | `Escape` |
+| Fullscreen | `F11` or the options menu |
+| Quit | Select Quit from the pause menu |
 
 Mouse sensitivity is configured with `game.mouse_sensitivity` (default
-`0.0026` radians/pixel). The cursor is captured while the window is focused and
-is released automatically on focus loss. Gamepad bindings are registered in the
-same action map (left stick, right stick, South, Start); a caller-provided
-gamepad source can feed them without changing the game.
+`0.0026` radians/pixel), or from the options menu. The cursor is captured while
+playing and released while a menu is open or on focus loss. Gamepad bindings are
+registered in the same action map (left stick, right stick, South, Start); a
+caller-provided gamepad source can feed them without changing the game.
+
+## Menus and settings
+
+The game opens on a modern-theme main menu (`Start`, `Options`, `Quit`) drawn
+with real TTF text: DejaVu Sans plus a Noto Devanagari fallback. The subtitle
+exercises Greek, Cyrillic, Devanagari, Hebrew/Arabic bidi and fallback.
+`Escape` during play opens the pause menu (`Resume`, `Options`, `Quit to menu`,
+`Restart`), releases cursor capture and suppresses gameplay input. Options cover
+fullscreen, master volume, mouse sensitivity and a Unicode pilot callsign; IME
+preedit is rendered without mutating committed text. **Apply** commits and
+persists them to a game-owned TOML file
+(`$XDG_CONFIG_HOME/quasar/starfall-ui.toml`), while **Cancel** restores the last
+applied values. Quit requires a modal confirmation. Menus are built with
+`quasar-ui` and drawn with `quasar-text` glyph atlases onto the shared
+`quasar-render-2d` canvas in the same GAL frame as the 3D world. Font licenses
+ship in `assets/fonts/`.
 
 ## Why it is a reference
 
@@ -55,6 +72,10 @@ gamepad source can feed them without changing the game.
   churn and synchronization waits.
 - **Configuration:** typed defaults/file/environment/CLI precedence through
   `quasar-config`; controls and gameplay timings are game-defined keys.
+- **In-game UI and text:** `quasar-ui` main/pause/options/confirmation screens
+  share the game's 2D canvas; `quasar-text` provides shaped TTF text, Unicode
+  fallback, bidi, DPI scaling and interactive editing. Apply persists audio,
+  fullscreen, sensitivity and the pilot callsign.
 
 ## Verification
 
@@ -66,8 +87,9 @@ cargo clippy -p starfall --all-targets -- -D warnings
 ```
 
 Tests cover level validation, autoplay completion, snapshot restore, exact
-record/replay, asset/texture/sound loading, typed config precedence, errors and
-an offscreen 3D+HUD pixel/content check.
+record/replay, asset/texture/sound loading, typed config precedence, errors,
+menu start/pause/options/confirmation behavior, preferences round-trip and an
+offscreen 3D+HUD pixel/content check.
 
 ## Benchmark sample
 

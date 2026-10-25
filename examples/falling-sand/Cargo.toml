@@ -16,6 +16,7 @@ desktop = [
 
 [dependencies]
 quasar-app.workspace = true
+quasar-config = { workspace = true, features = ["toml"] }
 quasar-core.workspace = true
 quasar-diagnostics = { workspace = true, features = ["timing"] }
 quasar-frame = { workspace = true, features = ["vulkan", "diagnostics"] }
@@ -24,6 +25,7 @@ quasar-physics = { workspace = true, features = ["dim2", "dynamics", "events", "
 quasar-profile = { workspace = true, features = ["json", "frame"] }
 quasar-render-2d = { workspace = true, features = ["gpu", "vulkan"] }
 quasar-sim.workspace = true
+quasar-ui = { workspace = true, features = ["config", "input", "render2d"] }
 quasar-spatial.workspace = true
 quasar-window = { workspace = true, optional = true }
 png.workspace = true
