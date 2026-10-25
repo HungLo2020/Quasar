@@ -51,6 +51,27 @@ synchronization measurements; it owns no GAL or renderer. See
 combines these layers with the existing window, input, jobs, assets, audio and
 renderers.
 
+`quasar-spatial` is a dependency-free 2D/3D geometry and spatial-index crate.
+`Aabb`, `Ray`, `Plane` and `Frustum` are usable alone; `SpatialGrid<N, T>` is a
+deterministic spatial hash with caller keys, bounded large-item handling and
+radius/frustum/ray/closest queries. It owns no ECS, renderer or world origin.
+
+`quasar-physics` is an optional thin adapter over `rapier2d`/`rapier3d`. It
+provides caller-owned collision-only worlds, bounded fixed-step dynamics,
+collision groups, sensors/events and optional `quasar-spatial` index conversion,
+while `Deref` and Rapier re-exports keep every advanced engine API available. It
+has no renderer, window, audio, ECS or application-runner dependency.
+
+`quasar-animation` is a renderer-neutral timeline/state-machine layer. Clips,
+tracks, markers, players, pose blending and layered transitions have no ECS,
+scene graph or GPU dependency. Optional sprite conversion and skeletal pose
+adapters keep engine integration thin; games own entities and update cadence.
+See [animation](animation.md).
+
+`quasar-nav` owns generic graph/grid path queries and optional tilemap,
+spatial, jobs and navmesh adapters. It has no agent steering, ECS or renderer;
+games own decision-making and movement. See [navigation](nav.md).
+
 `quasar-sim` is an optional deterministic simulation layer built on generic
 game-owned state. It reuses `quasar-core::FixedStep` for scheduling, records
 validated input/hash journals, verifies replay divergence, and supports

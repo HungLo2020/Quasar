@@ -1,0 +1,32 @@
+[package]
+name = "quasar-animation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+serde = ["dep:serde"]
+sprite = ["dep:quasar-render-2d"]
+
+[dependencies]
+quasar-render-2d = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = "1"
+serde_json.workspace = true
+
+[[example]]
+name = "sprite_sequence"
+path = "examples/sprite_sequence.rs"
+
+[[example]]
+name = "skeletal_blend"
+path = "examples/skeletal_blend.rs"
+
+[[example]]
+name = "animation_benchmark"
+path = "examples/animation_benchmark.rs"

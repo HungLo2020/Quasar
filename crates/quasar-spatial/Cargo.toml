@@ -1,0 +1,17 @@
+[package]
+name = "quasar-spatial"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+
+[dev-dependencies]
+proptest = "1"
+
+[[example]]
+name = "spatial_benchmark"
+path = "examples/spatial_benchmark.rs"

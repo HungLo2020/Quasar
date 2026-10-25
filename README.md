@@ -29,6 +29,10 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `quasar-app` | Optional Cargo-native winit/headless lifecycle runner with fixed or per-frame scheduling and application hooks | quasar-core, optional quasar-window |
 | `quasar-jobs` | Optional bounded worker pool with cancellation, dependencies, priorities, manual deterministic mode and metrics | None |
 | `quasar-profile` | Bounded CPU/GPU frame, upload, resource, synchronization and renderer profiling with p99 summaries | Optional quasar-frame |
+| `quasar-spatial` | Dependency-free 2D/3D AABB/ray/plane/frustum geometry and a deterministic spatial-hash index | None |
+| `quasar-physics` | Optional Rapier 0.36 integration: collision-only worlds, bounded fixed-step dynamics, filters, events and optional spatial indexes | Optional quasar-spatial |
+| `quasar-animation` | Renderer-neutral clips/tracks/interpolation, playback, blending, events and layered state machines; optional sprite/serde adapters | Optional quasar-render-2d |
+| `quasar-nav` | Generic A*/Dijkstra, 2D/3D grids, dynamic costs/blocking, smoothing, optional tilemap/spatial/jobs/navmesh adapters | Optional quasar-tilemap, spatial, jobs, navmesh |
 | `quasar-sim` | Optional fixed-step coordination, deterministic journals, snapshots, replay verification and divergence reports | quasar-core, optional quasar-jobs |
 | `quasar-audio` | WAV/Ogg decode, deterministic mixing, buses, spatial audio, scheduling, streaming Ogg, offline WAV and CPAL output | Optional quasar-storage (settings) |
 | `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
@@ -41,6 +45,8 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `examples/audio` | Music, overlapping/spatial effects, buses, voice groups, procedural audio, offline WAV output and audio benchmarks | quasar-audio |
 | `examples/pong` | Game rules, 2D draw lists, desktop application, headless CLI and replay | Selected crates |
 | `examples/starfall` | Playable 3D reference game: shared 3D+2D frame, jobs/assets/audio, deterministic replay, config and profiling | quasar-app, input, sim, jobs, assets, diagnostics, audio, render-2d/3d, config, profile |
+| `examples/falling-sand` | Interactive cellular sand with Rapier 2D obstacles, dynamic ball and spatial queries | quasar-app, input, physics, spatial, render-2d, profile |
+| `examples/physics-playground` | First-person Rapier 3D playground with character control, blocks, balls, triggers, raycasts, animated AI agents and navigation | quasar-app, input, physics, spatial, animation, nav, render-2d/3d, profile |
 
 Controller support lives in `quasar-input`: pure gamepad types, hotplug/player
 routing, deadzones, calibration and combined keyboard/gamepad actions, plus an
@@ -54,10 +60,15 @@ hot reload are documented in [async assets](docs/async-assets.md), timing policy
 in [timing](docs/timing.md), the optional runner in [app runner](docs/app-runner.md)
 and [adoption analysis](docs/app-adoption.md), background work in [jobs](docs/jobs.md), deterministic replay in
 [simulation](docs/simulation.md), configuration in [configuration](docs/configuration.md),
-graphics measurements in [profiling](docs/profiling.md), and edge/focus behavior
-in [input hardening](docs/input-hardening.md). New human-editable configuration
-defaults to TOML with JSON compatibility; the [Starfall](examples/starfall/README.md)
-reference game demonstrates the combined stack.
+graphics measurements in [profiling](docs/profiling.md), spatial indexing in
+[spatial](docs/spatial.md), Rapier integration in [physics](docs/physics.md),
+animation in [animation](docs/animation.md), navigation in [nav](docs/nav.md),
+and edge/focus behavior in [input hardening](docs/input-hardening.md). New
+human-editable configuration defaults to TOML with JSON compatibility; the
+[Starfall](examples/starfall/README.md) reference game demonstrates the combined
+stack, while [Falling Sand](examples/falling-sand/README.md) and the
+[Physics Playground](examples/physics-playground/README.md) demonstrate spatial
+indexing, Rapier 2D/3D and headless/native verification.
 
 ### Desktop window identity
 
@@ -92,7 +103,7 @@ future additions. Audio is provided by `quasar-audio`; see
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.9`, with workspace package versions set to `0.2.9`.
+release is `v0.2.10`, with workspace package versions set to `0.2.10`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.

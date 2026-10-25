@@ -1,10 +1,10 @@
 [workspace]
-members = ["crates/*", "examples/pong", "examples/composition", "examples/tilequest", "examples/framebuffer", "examples/audio", "examples/starfall"]
+members = ["crates/*", "examples/pong", "examples/composition", "examples/tilequest", "examples/framebuffer", "examples/audio", "examples/starfall", "examples/falling-sand", "examples/physics-playground"]
 default-members = ["examples/pong"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.9"
+version = "0.2.10"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT"
@@ -19,6 +19,10 @@ quasar-input = { path = "crates/quasar-input" }
 quasar-jobs = { path = "crates/quasar-jobs" }
 quasar-profile = { path = "crates/quasar-profile", default-features = false }
 quasar-sim = { path = "crates/quasar-sim", default-features = false }
+quasar-spatial = { path = "crates/quasar-spatial", default-features = false }
+quasar-physics = { path = "crates/quasar-physics", default-features = false }
+quasar-animation = { path = "crates/quasar-animation", default-features = false }
+quasar-nav = { path = "crates/quasar-nav", default-features = false }
 quasar-window = { path = "crates/quasar-window" }
 quasar-audio = { path = "crates/quasar-audio", default-features = false }
 quasar-app = { path = "crates/quasar-app", default-features = false }
@@ -30,7 +34,7 @@ quasar-storage = { path = "crates/quasar-storage" }
 vulkanic-gal = { path = "crates/vulkanic-gal", default-features = false }
 winit = "0.30.13"
 raw-window-handle = "0.6.2"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 png = "0.17"
 tempfile = "3.27"

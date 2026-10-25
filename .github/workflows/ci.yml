@@ -31,6 +31,17 @@ jobs:
       - run: cargo check --locked -p quasar-config --all-targets --features storage
       - run: cargo check --locked -p quasar-profile --all-targets
       - run: cargo check --locked -p quasar-profile --no-default-features --all-targets
+      - run: cargo check --locked -p quasar-spatial --all-targets
+      - run: cargo check --locked -p quasar-physics --all-targets
+      - run: cargo check --locked -p quasar-physics --no-default-features --all-targets
+      - run: cargo check --locked -p quasar-physics --no-default-features --features dim2 --all-targets
+      - run: cargo check --locked -p quasar-physics --no-default-features --features dim3 --all-targets
+      - run: cargo check --locked -p quasar-animation --all-targets
+      - run: cargo check --locked -p quasar-animation --no-default-features --all-targets
+      - run: cargo check --locked -p quasar-animation --features serde,sprite --all-targets
+      - run: cargo check --locked -p quasar-nav --all-targets
+      - run: cargo check --locked -p quasar-nav --no-default-features --all-targets
+      - run: cargo check --locked -p quasar-nav --all-features --all-targets
       - run: cargo check --locked -p quasar-input --features gilrs
       - run: cargo check --locked -p quasar-assets --features serde,storage
       - run: cargo check --locked -p quasar-assets --features async,hot-reload
@@ -81,8 +92,22 @@ jobs:
           cargo test --locked -p quasar-config --no-default-features --features json
           cargo test --locked -p quasar-profile
           cargo test --locked -p quasar-profile --no-default-features
+          cargo test --locked -p quasar-spatial
+          cargo test --locked -p quasar-physics
+          cargo test --locked -p quasar-physics --no-default-features --features dim2
+          cargo test --locked -p quasar-physics --no-default-features --features dim3
+          cargo test --locked -p quasar-physics --no-default-features --features dim2,dynamics
+          cargo test --locked -p quasar-physics --no-default-features --features dim2,dim3,dynamics,spatial
+          cargo test --locked -p quasar-animation
+          cargo test --locked -p quasar-animation --all-features
+          cargo test --locked -p quasar-nav
+          cargo test --locked -p quasar-nav --all-features
           cargo test --locked -p starfall
           cargo test --locked -p starfall --no-default-features
+          cargo test --locked -p falling-sand
+          cargo test --locked -p falling-sand --no-default-features
+          cargo test --locked -p physics-playground
+          cargo test --locked -p physics-playground --no-default-features
           cargo check --locked -p quasar-window --features diagnostics
           cargo check --locked -p quasar-audio --features diagnostics
           cargo check --locked -p quasar-frame --features diagnostics
@@ -102,8 +127,22 @@ jobs:
           cargo clippy --locked -p quasar-config --all-targets --no-default-features --features json -- -D warnings
           cargo clippy --locked -p quasar-profile --all-targets -- -D warnings
           cargo clippy --locked -p quasar-profile --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked -p quasar-spatial --all-targets -- -D warnings
+          cargo clippy --locked -p quasar-physics --all-targets -- -D warnings
+          cargo clippy --locked -p quasar-physics --all-targets --all-features -- -D warnings
+          cargo clippy --locked -p quasar-physics --all-targets --no-default-features --features dim2 -- -D warnings
+          cargo clippy --locked -p quasar-physics --all-targets --no-default-features --features dim3,spatial -- -D warnings
+          cargo clippy --locked -p quasar-physics --all-targets --no-default-features --features dim2,dim3,dynamics,spatial -- -D warnings
+          cargo clippy --locked -p quasar-animation --all-targets --all-features -- -D warnings
+          cargo clippy --locked -p quasar-animation --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked -p quasar-nav --all-targets --all-features -- -D warnings
+          cargo clippy --locked -p quasar-nav --all-targets --no-default-features -- -D warnings
           cargo clippy --locked -p starfall --all-targets -- -D warnings
           cargo clippy --locked -p starfall --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked -p falling-sand --all-targets -- -D warnings
+          cargo clippy --locked -p falling-sand --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked -p physics-playground --all-targets -- -D warnings
+          cargo clippy --locked -p physics-playground --all-targets --no-default-features -- -D warnings
       - name: Run native X11 identity and resize tests
         run: |
           xvfb-run -a sh -c 'QUASAR_X11_TESTS=1 cargo test --locked -p quasar-window --test x11_native -- --test-threads=1'
@@ -139,7 +178,15 @@ jobs:
           cargo check --locked -p quasar-sim --no-default-features
           cargo check --locked -p quasar-config --no-default-features
           cargo check --locked -p quasar-profile --no-default-features
+          cargo check --locked -p quasar-spatial --no-default-features
+          cargo check --locked -p quasar-physics --no-default-features
+          cargo check --locked -p quasar-physics --no-default-features --features dim2
+          cargo check --locked -p quasar-physics --no-default-features --features dim3
+          cargo check --locked -p quasar-animation --no-default-features
+          cargo check --locked -p quasar-nav --no-default-features
           cargo check --locked -p starfall --no-default-features
+          cargo check --locked -p falling-sand --no-default-features
+          cargo check --locked -p physics-playground --no-default-features
           cargo clippy --locked -p quasar-window --all-targets --no-default-features -- -D warnings
           cargo clippy --locked -p quasar-sim --all-targets --no-default-features -- -D warnings
           cargo clippy --locked -p quasar-jobs --all-targets --no-default-features -- -D warnings
@@ -151,6 +198,17 @@ jobs:
           cargo clippy --locked -p quasar-render-2d --all-targets --no-default-features --features gpu -- -D warnings
           cargo clippy --locked -p quasar-render-2d --all-targets --no-default-features --features gpu,opengl -- -D warnings
           cargo clippy --locked -p quasar-render-3d --all-targets --no-default-features --features opengl -- -D warnings
+
+      - name: Verify spatial/physics/nav dependency isolation
+        run: |
+          cargo tree --locked -p quasar-spatial -e normal | (! grep -Eq 'rapier[23]d|parry[23]d')
+          cargo tree --locked -p quasar-physics --no-default-features -e normal | (! grep -Eq 'rapier[23]d|parry[23]d')
+          cargo tree --locked -p quasar-physics --no-default-features --features dim2 -e normal | grep -q 'rapier2d'
+          ! cargo tree --locked -p quasar-physics --no-default-features --features dim2 -e normal | grep -q 'rapier3d'
+          cargo tree --locked -p quasar-physics --no-default-features --features dim3 -e normal | grep -q 'rapier3d'
+          ! cargo tree --locked -p quasar-physics --no-default-features --features dim3 -e normal | grep -q 'rapier2d'
+          cargo tree --locked -p quasar-nav --no-default-features --features tilemap -e normal | (! grep -Eq 'quasar-render-2d|vulkanic-gal')
+          cargo tree --locked -p quasar-animation --features sprite -e normal | (! grep -Eq 'vulkanic-gal|shaderc')
       - run: RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
   gpu-composition:
     runs-on: ubuntu-latest
@@ -192,6 +250,28 @@ jobs:
 
       - name: Exercise Starfall benchmark
         run: xvfb-run -a cargo run --locked -p starfall -- --benchmark --benchmark-frames 30 --benchmark-file /tmp/starfall-profile.json
+
+      - name: Exercise Falling Sand headless simulation and screenshot
+        run: |
+          cargo run --locked -p falling-sand -- --headless --ticks 240 --autoplay
+          cargo run --locked -p falling-sand -- --headless --ticks 120 --autoplay --screenshot /tmp/falling-sand.png
+
+      - name: Test Falling Sand shared-GAL rendering
+        run: xvfb-run -a cargo test --locked -p falling-sand --test sand -- --ignored --test-threads=1
+
+      - name: Exercise Falling Sand benchmark
+        run: xvfb-run -a cargo run --locked -p falling-sand -- --benchmark --benchmark-frames 20 --benchmark-file /tmp/falling-sand-profile.json
+
+      - name: Exercise Physics Playground headless simulation and screenshot
+        run: |
+          cargo run --locked -p physics-playground -- --headless --ticks 240 --autoplay
+          cargo run --locked -p physics-playground -- --headless --ticks 120 --autoplay --screenshot /tmp/physics-playground.png
+
+      - name: Test Physics Playground shared-GAL rendering
+        run: xvfb-run -a cargo test --locked -p physics-playground --test playground -- --ignored --test-threads=1
+
+      - name: Exercise Physics Playground benchmark
+        run: xvfb-run -a cargo run --locked -p physics-playground -- --benchmark --benchmark-frames 20 --benchmark-file /tmp/physics-playground-profile.json
 
       - name: Exercise native software-framebuffer presentation
         run: xvfb-run -a cargo run --locked -p framebuffer -- --frames 30 --exercise-window

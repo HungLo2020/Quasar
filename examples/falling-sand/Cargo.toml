@@ -1,0 +1,37 @@
+[package]
+name = "falling-sand"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["desktop"]
+desktop = [
+  "dep:quasar-window",
+  "quasar-app/desktop",
+  "quasar-window/diagnostics",
+]
+
+[dependencies]
+quasar-app.workspace = true
+quasar-core.workspace = true
+quasar-diagnostics = { workspace = true, features = ["timing"] }
+quasar-frame = { workspace = true, features = ["vulkan", "diagnostics"] }
+quasar-input.workspace = true
+quasar-physics = { workspace = true, features = ["dim2", "dynamics", "events", "spatial"] }
+quasar-profile = { workspace = true, features = ["json", "frame"] }
+quasar-render-2d = { workspace = true, features = ["gpu", "vulkan"] }
+quasar-sim.workspace = true
+quasar-spatial.workspace = true
+quasar-window = { workspace = true, optional = true }
+png.workspace = true
+vulkanic-gal = { workspace = true, features = ["vulkan"] }
+
+[[bin]]
+name = "falling-sand"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile.workspace = true

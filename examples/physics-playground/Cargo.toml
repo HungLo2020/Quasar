@@ -1,0 +1,40 @@
+[package]
+name = "physics-playground"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["desktop"]
+desktop = [
+  "dep:quasar-window",
+  "quasar-app/desktop",
+  "quasar-window/diagnostics",
+]
+
+[dependencies]
+quasar-animation.workspace = true
+quasar-app.workspace = true
+quasar-core.workspace = true
+quasar-diagnostics = { workspace = true, features = ["timing"] }
+quasar-frame = { workspace = true, features = ["vulkan", "diagnostics"] }
+quasar-input.workspace = true
+quasar-nav = { workspace = true, features = ["spatial"] }
+quasar-physics = { workspace = true, features = ["dim3", "dynamics", "events", "spatial"] }
+quasar-profile = { workspace = true, features = ["json", "frame"] }
+quasar-render-2d = { workspace = true, features = ["gpu", "vulkan"] }
+quasar-render-3d.workspace = true
+quasar-sim.workspace = true
+quasar-spatial.workspace = true
+quasar-window = { workspace = true, optional = true }
+png.workspace = true
+vulkanic-gal = { workspace = true, features = ["vulkan"] }
+
+[[bin]]
+name = "physics-playground"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile.workspace = true
