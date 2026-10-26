@@ -160,6 +160,7 @@ unsafe fn compile_inner(
     Ok(spirv)
 }
 
+#[cfg(feature = "vulkan")]
 pub(in crate::backends) fn compile_glsl_for_backend(
     stage: shaderc::ShaderKind,
     source: &str,
@@ -199,7 +200,7 @@ pub(in crate::backends) fn compile_glsl_for_target(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vulkan"))]
 pub(crate) fn compile_glsl_for_backend_test(
     stage: shaderc::ShaderKind,
     source: &str,

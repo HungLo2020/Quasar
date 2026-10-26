@@ -79,6 +79,7 @@ fn store(dir: &Path, path: &Path, spirv: &[u8]) -> std::io::Result<()> {
 
 /// Returns cached SPIR-V for this exact input, or compiles and stores it.
 /// `compile` must be the deterministic backend compiler for these inputs.
+#[cfg(feature = "vulkan")]
 pub(in crate::backends) fn compile_with_disk_cache(
     dir: Option<&Path>,
     stage: shaderc::ShaderKind,
@@ -123,6 +124,17 @@ pub(in crate::backends) fn compile_variant_with_disk_cache(
 mod tests {
     use super::*;
 
+    /// The default (Vulkan) cache key space, available in every build.
+    fn compile_with_disk_cache_for_test(
+        dir: Option<&Path>,
+        stage: shaderc::ShaderKind,
+        entry: &str,
+        source: &str,
+        compile: impl FnOnce() -> Result<Vec<u8>, String>,
+    ) -> Result<(Vec<u8>, bool), String> {
+        compile_variant_with_disk_cache(dir, "", stage, entry, source, compile)
+    }
+
     fn fake_spirv(tag: u8) -> Vec<u8> {
         let mut bytes = SPIRV_MAGIC.to_le_bytes().to_vec();
         bytes.extend_from_slice(&[tag; 20]);
@@ -137,10 +149,12 @@ mod tests {
         let compile = |tag| move || Ok(fake_spirv(tag));
         let vertex = shaderc::ShaderKind::Vertex;
         let (first, hit) =
-            compile_with_disk_cache(Some(&dir), vertex, "main", "src", compile(1)).unwrap();
+            compile_with_disk_cache_for_test(Some(&dir), vertex, "main", "src", compile(1))
+                .unwrap();
         assert!(!hit);
         let (again, hit) =
-            compile_with_disk_cache(Some(&dir), vertex, "main", "src", compile(9)).unwrap();
+            compile_with_disk_cache_for_test(Some(&dir), vertex, "main", "src", compile(9))
+                .unwrap();
         assert!(hit);
         assert_eq!(first, again);
         for (stage, entry, source) in [
@@ -149,7 +163,8 @@ mod tests {
             (vertex, "main", "src "),
         ] {
             let (_, hit) =
-                compile_with_disk_cache(Some(&dir), stage, entry, source, compile(2)).unwrap();
+                compile_with_disk_cache_for_test(Some(&dir), stage, entry, source, compile(2))
+                    .unwrap();
             assert!(!hit, "{stage:?} {entry} {source:?} must not alias");
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -165,18 +180,20 @@ mod tests {
         let path = dir.join(format!("{:032x}.spv", key(stage, "main", "x")));
         std::fs::write(&path, b"not spirv").unwrap();
         let (bytes, hit) =
-            compile_with_disk_cache(Some(&dir), stage, "main", "x", || Ok(fake_spirv(3))).unwrap();
+            compile_with_disk_cache_for_test(Some(&dir), stage, "main", "x", || Ok(fake_spirv(3)))
+                .unwrap();
         assert!(!hit);
         assert_eq!(bytes, fake_spirv(3));
         assert_eq!(std::fs::read(&path).unwrap(), fake_spirv(3));
-        let error =
-            compile_with_disk_cache(Some(&dir), stage, "main", "y", || Err("bad".to_string()));
+        let error = compile_with_disk_cache_for_test(Some(&dir), stage, "main", "y", || {
+            Err("bad".to_string())
+        });
         assert!(error.is_err());
         assert!(!dir
             .join(format!("{:032x}.spv", key(stage, "main", "y")))
             .exists());
         assert!(
-            compile_with_disk_cache(None, stage, "main", "x", || Ok(fake_spirv(4)))
+            compile_with_disk_cache_for_test(None, stage, "main", "x", || Ok(fake_spirv(4)))
                 .unwrap()
                 .0
                 == fake_spirv(4)

@@ -98,7 +98,25 @@ impl VulkanicGal {
         window: NativeWindow,
         surface: FrameSurfaceDesc,
     ) -> GalResult<Self> {
-        let backend = match BackendChoice::Vulkan.resolved()? {
+        unsafe { Self::create_native_windowed(BackendChoice::Vulkan, label, window, surface) }
+    }
+
+    /// A presenting GAL on `backend` for the host's native X11 or Wayland
+    /// window, given as integer handles.
+    ///
+    /// # Safety
+    /// The native handles must be valid for their declared platform, and the
+    /// window/display must remain alive until the returned GAL is destroyed.
+    /// Prefer `create_windowed`, which retains the window owner.
+    #[cfg(any(feature = "vulkan", feature = "wgpu"))]
+    pub unsafe fn create_native_windowed(
+        backend: BackendChoice,
+        label: &str,
+        window: NativeWindow,
+        surface: FrameSurfaceDesc,
+    ) -> GalResult<Self> {
+        let backend = match backend.resolved()? {
+            #[cfg(feature = "vulkan")]
             BackendChoice::Vulkan => create_native_windowed_vulkan_backend(
                 label,
                 window.platform,
@@ -109,7 +127,7 @@ impl VulkanicGal {
             )?,
             #[cfg(feature = "wgpu")]
             BackendChoice::Wgpu => unsafe {
-                backends::create_native_windowed_wgpu_backend(
+                super::backends::create_native_windowed_wgpu_backend(
                     label,
                     window.platform,
                     window.native_display,
@@ -132,6 +150,7 @@ pub fn set_gpu_timestamps_requested(requested: bool) {
 }
 
 /// The error for a backend that cannot create a window surface.
+#[cfg(any(feature = "vulkan", feature = "wgpu"))]
 fn windowless(backend: BackendChoice) -> GalError {
     match backend {
         BackendChoice::OpenGl => GalError::unsupported_feature(
