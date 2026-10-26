@@ -61,7 +61,7 @@ runner, editor or build tool. Optional observability uses the explicit,
 feature-gated [`quasar-diagnostics`](docs/diagnostics.md) layer; async loading and
 hot reload are documented in [async assets](docs/async-assets.md), timing policy
 in [timing](docs/timing.md), the optional runner in [app runner](docs/app-runner.md),
-its [v0.2.12 migration guide](docs/app-migration-v0.2.11.md) and
+its [v0.2.13 migration guide](docs/app-migration-v0.2.11.md) and
 [adoption analysis](docs/app-adoption.md), background work in [jobs](docs/jobs.md), deterministic replay in
 [simulation](docs/simulation.md), configuration in [configuration](docs/configuration.md),
 graphics measurements in [profiling](docs/profiling.md), spatial indexing in
@@ -108,7 +108,7 @@ future additions. Audio is provided by `quasar-audio`; see
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.12`, with workspace package versions set to `0.2.12`.
+release is `v0.2.13`, with workspace package versions set to `0.2.13`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.
@@ -133,8 +133,10 @@ usable directly on a caller-owned GAL.
 VulkanicGAL's backends are Cargo features. `vulkan` is the default and retains
 the existing Vulkan implementation. `opengl` is an optional backend for an
 existing OpenGL context; this repository does not yet create an OpenGL window,
-context or buffer swap. `quasar-render-2d` and `quasar-render-3d` default to
-Vulkan and forward `vulkan`/`opengl` to the GAL.
+context or buffer swap. `wgpu` is an optional portability backend that runs the
+same GAL on Vulkan, Metal or Direct3D 12 through wgpu. `quasar-render-2d`,
+`quasar-render-3d` and `quasar-frame` default to Vulkan and forward
+`vulkan`/`opengl`/`wgpu` to the GAL.
 
 ```toml
 # Vulkan, the default.
@@ -143,11 +145,23 @@ quasar-render-2d = { path = "crates/quasar-render-2d" }
 # OpenGL-only build with no ash/shaderc dependency.
 quasar-render-2d = { path = "crates/quasar-render-2d", default-features = false, features = ["gpu", "opengl"] }
 quasar-render-3d = { path = "crates/quasar-render-3d", default-features = false, features = ["opengl"] }
+
+# wgpu-only build (Metal on macOS, Direct3D 12 or Vulkan elsewhere), no ash.
+quasar-render-2d = { path = "crates/quasar-render-2d", default-features = false, features = ["gpu", "wgpu"] }
+```
+
+`VULKANIC_BACKEND=wgpu` (or `vulkan`, `opengl`) overrides the backend of every
+GAL a process creates, including through `create_windowed_vulkan`, so an
+existing game runs on another compiled-in backend without code changes:
+
+```sh
+VULKANIC_BACKEND=wgpu cargo run -p starfall --features vulkanic-gal/wgpu
 ```
 
 `Renderer2D::headless_with(BackendChoice)` and
 `Renderer2D::from_windowed_gal(...)` request a renderer rather than a Vulkan
-renderer. `for_window` remains the Vulkan window convenience path. Build without
+renderer. `for_window` is the window convenience path: Vulkan by default, wgpu in
+builds without Vulkan. Build without
 a backend to use the GAL frontend with a caller-provided backend or for
 diagnostics; backend creation then returns an explicit unsupported error.
 
@@ -242,10 +256,11 @@ cargo run -p audio-example -- --play   # requires a working output device
 ```
 
 Imported OpenGL/GPU checks and the 2D renderer conformance tests are explicitly ignored in ordinary tests because
-they require a graphics environment. Run the full suite with driver access:
+they require a graphics environment. Run the full suite with driver access, and again on wgpu:
 
 ```sh
 cargo test --workspace --locked -- --include-ignored
+VULKANIC_BACKEND=wgpu cargo test --workspace --features vulkanic-gal/wgpu -- --include-ignored --test-threads=1
 cargo run -p pong -- --autoplay --no-save --smoke-frames 30 --exercise-window
 ```
 

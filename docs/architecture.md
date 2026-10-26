@@ -185,18 +185,27 @@ Cursor locking falls back to confinement if the platform does not support a lock
 
 ## Presentation and lifetime
 
-VulkanicGAL's `vulkan` and `opengl` backends are independent Cargo features;
-`vulkan` is the default. Vulkan-only dependencies (`ash`, `ash-window`,
-`shaderc`) and OpenGL-only dependencies (`glow`) are not compiled unless their
-feature is selected. `BackendChoice` remains available in both configurations;
-requesting a backend that was compiled out returns an explicit unsupported
-error. A future Direct3D, Metal or software backend can follow the same feature
-and frontend pattern without changing the renderer API.
+VulkanicGAL's `vulkan`, `opengl` and `wgpu` backends are independent Cargo
+features; `vulkan` is the default. Vulkan-only dependencies (`ash`,
+`ash-window`), OpenGL-only dependencies (`glow`) and wgpu-only dependencies
+(`wgpu`, `naga`) are not compiled unless their feature is selected; Shaderc is
+shared by the two SPIR-V backends. `BackendChoice` names every backend in every
+configuration; requesting a backend that was compiled out returns an explicit
+unsupported error. The wgpu backend reaches Metal and Direct3D 12 through the
+same frontend, so renderers gained them without API changes.
+
+Only VulkanicGAL may depend on native graphics crates. The
+`quasar-workspace-checks` tests fail if any other workspace crate reaches
+`ash`, `glow`, `wgpu`, `naga` or Shaderc through the lockfile (directly or
+through a third-party crate), or names them in source.
 
 `Renderer2D::headless_with(BackendChoice)` and
 `Renderer2D::from_windowed_gal(...)` are backend-neutral creation paths.
-`Renderer2D::headless()` and `for_window()` retain the Vulkan default. The
-presenter creates an owned Vulkan surface through ash-window. The backend
+`Renderer2D::headless()` and `for_window()` retain the Vulkan default and use
+wgpu in builds without Vulkan; `VULKANIC_BACKEND=wgpu|vulkan|opengl` overrides
+the backend of every GAL a process creates, so unmodified games run on another
+compiled-in backend. The Vulkan presenter creates an owned surface through
+ash-window; the wgpu presenter creates one through wgpu. The backend
 retains an Arc to the native window until its Vulkan resources have been
 destroyed. The legacy raw-integer native-window constructor is unsafe: its
 caller must guarantee native handle validity and lifetime. OpenGL keeps its

@@ -1,4 +1,4 @@
-//! Persistent GLSL→SPIR-V results for the Vulkan backend.
+//! Persistent GLSL→SPIR-V results for the SPIR-V backends.
 //!
 //! Shaderc takes 50–80 ms per optimized module, and every launch compiled the
 //! same built-in and pack shaders again, stalling the first frame that needed
@@ -16,7 +16,7 @@ const SPIRV_MAGIC: u32 = 0x0723_0203;
 /// Cache directory explicitly supplied by the application through
 /// `VULKANIC_SPIRV_CACHE_DIR`. Unset or `off` disables disk caching. Source dumps
 /// also disable caching so a cache hit cannot bypass the requested output.
-pub(super) fn cache_dir() -> Option<PathBuf> {
+pub(in crate::backends) fn cache_dir() -> Option<PathBuf> {
     // Source dumps happen inside the compiler; never skip them with a hit.
     if std::env::var_os("MATTMC_RUST_SHADER_DUMP_DIR").is_some() {
         return None;
@@ -27,8 +27,19 @@ pub(super) fn cache_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+#[cfg(test)]
 fn key(stage: shaderc::ShaderKind, entry: &str, source: &str) -> u128 {
+    variant_key("", stage, entry, source)
+}
+
+/// The cache key; a non-empty `variant` separates other compile options
+/// while leaving the original keys unchanged.
+fn variant_key(variant: &str, stage: shaderc::ShaderKind, entry: &str, source: &str) -> u128 {
     let mut material = Vec::with_capacity(SCHEMA.len() + entry.len() + source.len() + 32);
+    if !variant.is_empty() {
+        material.extend_from_slice(&(variant.len() as u64).to_le_bytes());
+        material.extend_from_slice(variant.as_bytes());
+    }
     for part in [
         SCHEMA.as_bytes(),
         &[u8::from(cfg!(debug_assertions)), u8::from(cfg!(test))],
@@ -68,8 +79,21 @@ fn store(dir: &Path, path: &Path, spirv: &[u8]) -> std::io::Result<()> {
 
 /// Returns cached SPIR-V for this exact input, or compiles and stores it.
 /// `compile` must be the deterministic backend compiler for these inputs.
-pub(super) fn compile_with_disk_cache(
+pub(in crate::backends) fn compile_with_disk_cache(
     dir: Option<&Path>,
+    stage: shaderc::ShaderKind,
+    entry: &str,
+    source: &str,
+    compile: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> Result<(Vec<u8>, bool), String> {
+    compile_variant_with_disk_cache(dir, "", stage, entry, source, compile)
+}
+
+/// `compile_with_disk_cache` for output compiled with other options, named
+/// by `variant`.
+pub(in crate::backends) fn compile_variant_with_disk_cache(
+    dir: Option<&Path>,
+    variant: &str,
     stage: shaderc::ShaderKind,
     entry: &str,
     source: &str,
@@ -78,7 +102,10 @@ pub(super) fn compile_with_disk_cache(
     let Some(dir) = dir else {
         return compile().map(|spirv| (spirv, false));
     };
-    let path = dir.join(format!("{:032x}.spv", key(stage, entry, source)));
+    let path = dir.join(format!(
+        "{:032x}.spv",
+        variant_key(variant, stage, entry, source)
+    ));
     if let Ok(bytes) = std::fs::read(&path) {
         if valid_spirv(&bytes) {
             return Ok((bytes, true));

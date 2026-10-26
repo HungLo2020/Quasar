@@ -20,20 +20,37 @@ fn barrier(resource: Handle, before: TextureUsageState, after: TextureUsageState
     })
 }
 
+#[cfg(feature = "wgpu")]
+fn wgpu_gal() -> VulkanicGal {
+    crate::test_support::wgpu_gal("graphics storage wgpu")
+        .expect("wgpu required for storage conformance")
+}
+
+#[cfg(not(feature = "wgpu"))]
+fn wgpu_gal() -> VulkanicGal {
+    unreachable!("wgpu is only listed when the feature is enabled")
+}
+
 #[test]
-#[ignore = "requires OpenGL and Vulkan; run cargo test --workspace -- --include-ignored"]
+#[ignore = "requires OpenGL and Vulkan (and wgpu when enabled); run cargo test --workspace -- --include-ignored"]
 fn graphics_storage_observes_every_vertex_and_fragment_with_explicit_reset_copy_and_retirement() {
-    for opengl in [false, true] {
-        let mut gal = if opengl {
-            VulkanicGal::new_with_backend(Box::new(
+    let mut backends = vec!["vulkan", "opengl"];
+    if cfg!(feature = "wgpu") {
+        backends.push("wgpu");
+    }
+    for backend in backends {
+        // wgpu takes the Vulkan backend's GLSL dialect.
+        let opengl = backend == "opengl";
+        let mut gal = match backend {
+            "opengl" => VulkanicGal::new_with_backend(Box::new(
                 super::opengl::OpenGlBackend::new("graphics storage OpenGL")
                     .expect("OpenGL required for storage conformance"),
-            ))
-        } else {
-            VulkanicGal::new_with_backend(Box::new(
+            )),
+            "vulkan" => VulkanicGal::new_with_backend(Box::new(
                 super::vulkan::VulkanBackend::new("graphics storage Vulkan")
                     .expect("Vulkan required for storage conformance"),
-            ))
+            )),
+            _ => wgpu_gal(),
         };
         let mut owned = Vec::new();
         macro_rules! own {
@@ -528,7 +545,7 @@ void main() {{
             let count = words[0] as usize;
             assert!(
                 (3..=LIMIT).contains(&count),
-                "bounded vertex observations: {count}, OpenGL={opengl}, epoch={epoch}, header={:?}",
+                "bounded vertex observations: {count}, backend={backend}, epoch={epoch}, header={:?}",
                 &words[..3]
             );
             assert_eq!(

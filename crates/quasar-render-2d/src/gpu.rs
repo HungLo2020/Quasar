@@ -1,9 +1,9 @@
 use crate::{Canvas, DisplayOptions, Filter, Rect, Sprite, TextureId, Textures, Viewport};
 use quasar_frame::{CompletionPolicy, FrameSurface};
-#[cfg(feature = "vulkan")]
+#[cfg(any(feature = "vulkan", feature = "wgpu"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(feature = "vulkan")]
+#[cfg(any(feature = "vulkan", feature = "wgpu"))]
 use std::sync::Arc;
 use vulkanic_gal::{commands::SubmissionUsage, metrics::BackendRuntimeMetrics, resources::*, *};
 
@@ -99,18 +99,21 @@ impl Renderer2D {
     /// Creates a headless renderer with the crate's default backend.
     ///
     /// Vulkan is selected when the `vulkan` feature is enabled (the default),
-    /// otherwise OpenGL when the `opengl` feature is enabled.
+    /// otherwise wgpu when `wgpu` is enabled, otherwise OpenGL when `opengl`
+    /// is enabled. `VULKANIC_BACKEND` overrides the choice.
     pub fn headless() -> GalResult<Self> {
-        #[cfg(not(any(feature = "vulkan", feature = "opengl")))]
+        #[cfg(not(any(feature = "vulkan", feature = "opengl", feature = "wgpu")))]
         {
             Err(GalError::unsupported_feature(
                 "no graphics backend feature is enabled for quasar-render-2d",
             ))
         }
-        #[cfg(any(feature = "vulkan", feature = "opengl"))]
+        #[cfg(any(feature = "vulkan", feature = "opengl", feature = "wgpu"))]
         {
             let backend = if cfg!(feature = "vulkan") {
                 BackendChoice::Vulkan
+            } else if cfg!(feature = "wgpu") {
+                BackendChoice::Wgpu
             } else {
                 BackendChoice::OpenGl
             };
@@ -149,16 +152,23 @@ impl Renderer2D {
         gal.configure_frame_surface(window_surface_desc(size))?;
         Self::with_window_surface(gal, size, options)
     }
-    /// Creates a renderer on a Vulkan-backed window.
-    #[cfg(feature = "vulkan")]
+    /// Creates a renderer on a window: Vulkan when the `vulkan` feature is
+    /// enabled (the default), otherwise wgpu. `VULKANIC_BACKEND` overrides
+    /// the choice.
+    #[cfg(any(feature = "vulkan", feature = "wgpu"))]
     pub fn for_window<W: HasDisplayHandle + HasWindowHandle + 'static>(
         window: Arc<W>,
         size: (u32, u32),
         options: DisplayOptions,
     ) -> GalResult<Self> {
         options.validate().map_err(GalError::invalid_argument)?;
+        let backend = if cfg!(feature = "vulkan") {
+            BackendChoice::Vulkan
+        } else {
+            BackendChoice::Wgpu
+        };
         let gal =
-            VulkanicGal::create_windowed_vulkan("Quasar 2D", window, window_surface_desc(size))?;
+            VulkanicGal::create_windowed(backend, "Quasar 2D", window, window_surface_desc(size))?;
         Self::with_window_surface(gal, size, options)
     }
     fn with_window_surface(
@@ -411,8 +421,9 @@ pub struct FramebufferPresenter {
     canvas: Canvas,
 }
 impl FramebufferPresenter {
-    /// Creates a Vulkan-backed presenter for a native window.
-    #[cfg(feature = "vulkan")]
+    /// Creates a presenter for a native window on the default windowed
+    /// backend (see `Renderer2D::for_window`).
+    #[cfg(any(feature = "vulkan", feature = "wgpu"))]
     pub fn new<W: HasDisplayHandle + HasWindowHandle + 'static>(
         window: Arc<W>,
         window_size: (u32, u32),

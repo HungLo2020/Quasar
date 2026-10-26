@@ -55,6 +55,7 @@ jobs:
       - run: cargo check --locked -p quasar-diagnostics --features timing,serde
       - run: cargo test --locked -p quasar-input -p pong -p quasar-tilemap -p tilequest -p quasar-audio --no-default-features
       - run: cargo test --locked -p quasar-audio --no-default-features --features settings --test settings
+      - run: cargo test --locked -p quasar-workspace-checks
       - run: python tools/verify_pong.py
       - run: python tools/verify_tilemap.py
   audio-native:

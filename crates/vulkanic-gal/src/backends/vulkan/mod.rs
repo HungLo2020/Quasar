@@ -4,8 +4,6 @@ pub(crate) use lowering::set_gpu_timestamps_requested;
 #[cfg(test)]
 pub(crate) mod renderdoc;
 mod resources;
-pub mod shaderc_spirv_compiler;
-mod spirv_disk_cache;
 mod swapchain;
 mod trace;
 

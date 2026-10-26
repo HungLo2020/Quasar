@@ -55,6 +55,12 @@ pub(crate) fn vulkan_gal(label: &str) -> GalResult<VulkanicGal> {
     )?)))
 }
 
+/// A GAL over a real headless wgpu device, or the environment gap.
+#[cfg(feature = "wgpu")]
+pub(crate) fn wgpu_gal(label: &str) -> GalResult<VulkanicGal> {
+    VulkanicGal::create(super::create::BackendChoice::Wgpu, label)
+}
+
 /// A GAL over a real isolated OpenGL context, or the environment gap.
 #[cfg(feature = "opengl")]
 pub(crate) fn opengl_gal(label: &str) -> GalResult<VulkanicGal> {

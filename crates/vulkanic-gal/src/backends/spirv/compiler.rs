@@ -64,7 +64,20 @@ fn shader_error_context(source: &str, diagnostic: &str) -> Option<String> {
     (!context.is_empty()).then_some(context)
 }
 
+/// The SPIR-V environment a module is compiled for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::backends) enum SpirvTarget {
+    /// SPIR-V 1.6 for the native Vulkan 1.3 context.
+    Vulkan1_3,
+    /// SPIR-V 1.3, which naga reads: glslang emits member-wise struct copies
+    /// instead of SPIR-V 1.4's `OpCopyLogical`.
+    #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
+    Vulkan1_1,
+}
+
+#[allow(clippy::too_many_arguments)]
 unsafe fn compile_inner(
+    target: SpirvTarget,
     stage: i32,
     source_ptr: *const u8,
     source_len: u64,
@@ -103,7 +116,10 @@ unsafe fn compile_inner(
         // The native Vulkan context is created at 1.3. Emit modules against
         // that same contract so shader-pack features are not silently
         // lowered through a stale Vulkan 1.0 capability model.
-        shaderc::EnvVersion::Vulkan1_3 as u32,
+        match target {
+            SpirvTarget::Vulkan1_3 => shaderc::EnvVersion::Vulkan1_3 as u32,
+            SpirvTarget::Vulkan1_1 => shaderc::EnvVersion::Vulkan1_1 as u32,
+        },
     );
     options.set_auto_bind_uniforms(true);
     options.set_auto_map_locations(true);
@@ -144,7 +160,17 @@ unsafe fn compile_inner(
     Ok(spirv)
 }
 
-pub(super) fn compile_glsl_for_backend(
+pub(in crate::backends) fn compile_glsl_for_backend(
+    stage: shaderc::ShaderKind,
+    source: &str,
+    source_name: &str,
+    entry: &str,
+) -> Result<Vec<u8>, String> {
+    compile_glsl_for_target(SpirvTarget::Vulkan1_3, stage, source, source_name, entry)
+}
+
+pub(in crate::backends) fn compile_glsl_for_target(
+    target: SpirvTarget,
     stage: shaderc::ShaderKind,
     source: &str,
     source_name: &str,
@@ -161,6 +187,7 @@ pub(super) fn compile_glsl_for_backend(
     };
     unsafe {
         compile_inner(
+            target,
             stage,
             source.as_ptr(),
             source.len() as u64,
@@ -209,6 +236,7 @@ pub unsafe extern "C" fn mattmc_vulkan_shaderc_compile_glsl_to_spirv(
     *out_error_len = 0;
 
     match compile_inner(
+        SpirvTarget::Vulkan1_3,
         stage,
         source_ptr,
         source_len,
@@ -279,6 +307,7 @@ mod tests {
 
         let spirv = unsafe {
             compile_inner(
+                SpirvTarget::Vulkan1_3,
                 0,
                 source.as_ptr(),
                 source.len() as u64,

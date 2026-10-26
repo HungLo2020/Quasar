@@ -15,6 +15,36 @@ fn files(root: &Path) -> Vec<PathBuf> {
     }
     out
 }
+/// Where each native graphics crate may be named. Shaderc and SPIRV-Tools
+/// are shared by the SPIR-V backends through `backends/spirv`.
+const NATIVE_CRATE_HOMES: &[(&str, &[&str])] = &[
+    ("ash::", &["backends/vulkan/"]),
+    ("ash_window::", &["backends/vulkan/"]),
+    ("glow::", &["backends/opengl/"]),
+    ("shaderc::", &["backends/vulkan/", "backends/spirv/"]),
+    ("wgpu::", &["backends/wgpu/"]),
+    ("naga::", &["backends/wgpu/", "backends/spirv/"]),
+];
+
+/// Whether `source` names the crate `token` starts, rather than a local
+/// module of the same name (`self::wgpu::`, `backends::wgpu::`) or a longer
+/// identifier (`hash::`).
+fn names_crate(source: &str, token: &str) -> bool {
+    source.match_indices(token).any(|(index, _)| {
+        let before = &source[..index];
+        !before
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            && !["self::", "super::", "backends::"]
+                .iter()
+                .any(|local| before.ends_with(local))
+    })
+}
+
+/// The backend implementation modules under `backends/`.
+const BACKENDS: &[&str] = &["vulkan", "opengl", "wgpu"];
+
 #[test]
 fn backend_implementations_remain_private() {
     let source =
@@ -35,16 +65,11 @@ fn native_graphics_dependencies_stay_in_their_backend() {
         }
         let relative = path.strip_prefix(&root).unwrap().to_string_lossy();
         let source = fs::read_to_string(&path).unwrap();
-        for token in ["ash::", "ash_window::", "shaderc::", "glow::"] {
-            if source.contains(token) {
-                let backend = if token == "glow::" {
-                    "backends/opengl/"
-                } else {
-                    "backends/vulkan/"
-                };
+        for (token, homes) in NATIVE_CRATE_HOMES {
+            if names_crate(&source, token) {
                 assert!(
-                    relative.starts_with(backend),
-                    "{relative} exposes {token} outside {backend}"
+                    homes.iter().any(|home| relative.starts_with(home)),
+                    "{relative} exposes {token} outside {homes:?}"
                 );
             }
         }
@@ -56,5 +81,28 @@ fn native_graphics_dependencies_stay_in_their_backend() {
             !source.contains("crate::core::"),
             "{relative} still depends on MattMC core"
         );
+    }
+}
+
+#[test]
+fn backends_do_not_reference_each_other() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/backends");
+    for backend in BACKENDS {
+        for path in files(&root.join(backend)) {
+            let source = fs::read_to_string(&path).unwrap();
+            for other in BACKENDS.iter().filter(|other| *other != backend) {
+                for reference in [
+                    format!("backends::{other}"),
+                    format!("super::{other}::"),
+                    format!("super::super::{other}"),
+                ] {
+                    assert!(
+                        !source.contains(&reference),
+                        "{} references the {other} backend ({reference}); share code below backends/ instead",
+                        path.display()
+                    );
+                }
+            }
+        }
     }
 }

@@ -19,12 +19,15 @@ gal/            VulkanicGal, one module per concern:
 resources.rs    descriptors, formats, usages, BackendCapabilities
 commands.rs     CommandOp, command lists, submission batches
 frame.rs, handles.rs, sync.rs, error.rs, metrics.rs
-backends/       private Vulkan and OpenGL backends (+ mock for tests)
+backends/       private Vulkan, OpenGL and wgpu backends (+ mock for tests)
+  spirv/          Shaderc and SPIRV-Tools, shared by the SPIR-V backends
 tests/          GAL tests by concern; test_support.rs builds GALs for others
 ```
 
 Rules, enforced by `architecture_boundary.rs`:
-- `ash`/`shaderc` stay in `backends/vulkan`, `glow` in `backends/opengl`.
+- `ash` stays in `backends/vulkan`, `glow` in `backends/opengl`, `wgpu` and
+  `naga` in `backends/wgpu`; `shaderc` and SPIRV-Tools are shared through
+  `backends/spirv`. Backends never reference each other.
 - Nothing outside `backends/` names a backend. A backend is chosen once, at
   creation (`VulkanicGal::create*` with `BackendChoice`), and only the bridge
   creates GALs; afterwards behavior differences are capabilities

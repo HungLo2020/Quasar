@@ -10,6 +10,7 @@ publish.workspace = true
 default = ["vulkan"]
 vulkan = ["vulkanic-gal/vulkan"]
 opengl = ["vulkanic-gal/opengl"]
+wgpu = ["vulkanic-gal/wgpu"]
 
 [dependencies]
 vulkanic-gal = { workspace = true }

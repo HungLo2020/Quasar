@@ -3,13 +3,17 @@
 // Java rule that non-Vulkanic code cannot import net.vulkanic.backends.*.
 #[cfg(feature = "opengl")]
 pub(super) mod opengl;
+#[cfg(any(feature = "vulkan", feature = "wgpu"))]
+mod spirv;
 #[cfg(feature = "vulkan")]
 pub(super) mod vulkan;
+#[cfg(feature = "wgpu")]
+pub(super) mod wgpu;
 
 #[cfg(all(test, feature = "vulkan", feature = "opengl"))]
 mod graphics_storage_conformance;
 
-#[cfg(any(feature = "vulkan", feature = "opengl"))]
+#[cfg(any(feature = "vulkan", feature = "opengl", feature = "wgpu"))]
 use std::sync::{Mutex, OnceLock};
 
 use super::commands::ValidatedSubmissionBatch;
@@ -144,14 +148,14 @@ pub(crate) fn set_gpu_timestamps_requested(requested: bool) {
     vulkan::set_gpu_timestamps_requested(requested);
 }
 
-#[cfg(any(feature = "vulkan", feature = "opengl"))]
+#[cfg(any(feature = "vulkan", feature = "opengl", feature = "wgpu"))]
 pub(super) fn graphics_backend_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
 pub(crate) fn create_backend(choice: BackendChoice, label: &str) -> GalResult<Box<dyn Backend>> {
-    #[cfg(not(any(feature = "vulkan", feature = "opengl")))]
+    #[cfg(not(any(feature = "vulkan", feature = "opengl", feature = "wgpu")))]
     let _ = label;
     match choice {
         #[cfg(feature = "vulkan")]
@@ -166,7 +170,47 @@ pub(crate) fn create_backend(choice: BackendChoice, label: &str) -> GalResult<Bo
         BackendChoice::OpenGl => Err(GalError::unsupported_feature(
             "OpenGL backend support is disabled in this build",
         )),
+        #[cfg(feature = "wgpu")]
+        BackendChoice::Wgpu => Ok(Box::new(self::wgpu::WgpuBackend::new(label)?)),
+        #[cfg(not(feature = "wgpu"))]
+        BackendChoice::Wgpu => Err(GalError::unsupported_feature(
+            "wgpu backend support is disabled in this build",
+        )),
     }
+}
+
+#[cfg(feature = "wgpu")]
+pub(crate) fn create_owned_windowed_wgpu_backend<
+    W: raw_window_handle::HasDisplayHandle + raw_window_handle::HasWindowHandle + 'static,
+>(
+    label: &str,
+    window: std::sync::Arc<W>,
+    surface: FrameSurfaceDesc,
+) -> GalResult<Box<dyn Backend>> {
+    Ok(Box::new(self::wgpu::WgpuBackend::new_owned_window(
+        label, window, surface,
+    )?))
+}
+
+/// # Safety
+/// The native handles must be valid for `platform` and outlive the backend.
+#[cfg(feature = "wgpu")]
+pub(crate) unsafe fn create_native_windowed_wgpu_backend(
+    label: &str,
+    platform: u32,
+    native_display: u64,
+    native_window: u64,
+    surface_desc: FrameSurfaceDesc,
+) -> GalResult<Box<dyn Backend>> {
+    Ok(Box::new(unsafe {
+        self::wgpu::WgpuBackend::new_native_windowed(
+            label,
+            platform,
+            native_display,
+            native_window,
+            surface_desc,
+        )?
+    }))
 }
 
 #[cfg(feature = "opengl")]
@@ -335,7 +379,7 @@ pub(super) fn vulkan_capabilities() -> BackendCapabilities {
     }
 }
 
-#[cfg(any(feature = "vulkan", feature = "opengl", test))]
+#[cfg(any(feature = "vulkan", feature = "opengl", feature = "wgpu", test))]
 pub(super) fn presentation_capabilities(
     mut capabilities: BackendCapabilities,
 ) -> BackendCapabilities {

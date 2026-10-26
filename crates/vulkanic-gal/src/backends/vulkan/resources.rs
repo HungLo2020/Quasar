@@ -7,8 +7,8 @@ use std::sync::{Arc, OnceLock, Weak};
 use ash::vk;
 
 use super::device::VulkanContext;
-use super::shaderc_spirv_compiler::compile_glsl_for_backend;
 use super::trace;
+use crate::backends::spirv::compiler::compile_glsl_for_backend;
 use crate::backends::{BackendCreateDesc, BackendToken};
 use crate::error::{GalError, GalResult};
 use crate::handles::{Handle, HandleKind};
@@ -1364,8 +1364,8 @@ impl VulkanObjects {
                     ));
                 }
                 let kind = shaderc_kind(desc.stage)?;
-                let disk_cache = super::spirv_disk_cache::cache_dir();
-                let compiled = super::spirv_disk_cache::compile_with_disk_cache(
+                let disk_cache = crate::backends::spirv::disk_cache::cache_dir();
+                let compiled = crate::backends::spirv::disk_cache::compile_with_disk_cache(
                     disk_cache.as_deref(),
                     kind,
                     &desc.entry_point,
