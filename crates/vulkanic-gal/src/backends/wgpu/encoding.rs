@@ -822,9 +822,7 @@ impl Lowering<'_> {
                     .forget_lifetime(),
             );
             self.applied_compute = None;
-            for applied in &mut self.compute_sets.applied {
-                *applied = None;
-            }
+            self.compute_sets.applied.fill(None);
         }
         let key = {
             let pipeline = self
