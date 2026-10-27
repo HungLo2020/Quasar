@@ -86,9 +86,7 @@ fn gl_device_info(gl: &glow::Context) -> crate::create::DeviceInfo {
 impl OpenGlBackend {
     pub(crate) fn new(label: &str) -> GalResult<Self> {
         let _zone = trace::Zone::new("opengl.backend.create");
-        let global_lock = graphics_backend_lock()
-            .lock()
-            .map_err(|_| GalError::backend("OpenGL backend global lock poisoned"))?;
+        let global_lock = graphics_backend_lock();
         let context = OpenGlContext::new(label)?;
         let objects = OpenGlObjects::new(context.gl().clone());
         Ok(Self {
@@ -109,9 +107,7 @@ impl OpenGlBackend {
         desc: ExistingOpenGlContextDesc,
     ) -> GalResult<Self> {
         let _zone = trace::Zone::new("opengl.backend.borrow-existing-context");
-        let global_lock = graphics_backend_lock()
-            .lock()
-            .map_err(|_| GalError::backend("OpenGL backend global lock poisoned"))?;
+        let global_lock = graphics_backend_lock();
         let context = OpenGlContext::from_existing_context(desc)?;
         let objects = OpenGlObjects::new(context.gl().clone());
         Ok(Self {

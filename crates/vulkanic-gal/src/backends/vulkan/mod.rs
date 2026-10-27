@@ -113,9 +113,7 @@ pub(crate) struct VulkanBackend {
 
 impl VulkanBackend {
     pub(crate) fn new(label: &str) -> GalResult<Self> {
-        let global_lock = graphics_backend_lock().lock().map_err(|_| {
-            crate::error::GalError::backend("graphics backend global lock poisoned")
-        })?;
+        let global_lock = graphics_backend_lock();
         let context = VulkanContext::new(label, ValidationMode::from_env())?;
         Ok(Self {
             objects: VulkanObjects::new(context.clone()),
@@ -133,9 +131,7 @@ impl VulkanBackend {
         surface_owner: &dyn SurfaceOwner,
         surface_desc: FrameSurfaceDesc,
     ) -> GalResult<Self> {
-        let global_lock = graphics_backend_lock().lock().map_err(|_| {
-            crate::error::GalError::backend("graphics backend global lock poisoned")
-        })?;
+        let global_lock = graphics_backend_lock();
         let context = VulkanContext::new_with_surface(
             label,
             ValidationMode::from_env(),
@@ -379,26 +375,24 @@ impl Backend for VulkanBackend {
             .lowerer
             .lock()
             .map_err(|_| crate::error::GalError::backend("Vulkan lowerer lock poisoned"))?;
-        let present_image_index = lowerer.pending_present_image_index();
-        let acquire_wait = present_image_index
-            .map(|image_index| {
+        // The first submission that touches an acquired image waits on its
+        // acquire semaphore, whatever the op (a capture copy reads the image
+        // too). Later submissions are ordered after it on the queue.
+        let images: smallvec::SmallVec<[u32; 1]> =
+            lowerer.pending_acquired_images().iter().copied().collect();
+        let acquire_waits: smallvec::SmallVec<[ash::vk::Semaphore; 1]> = images
+            .iter()
+            .filter_map(|&image_index| {
                 self.swapchain
-                    .as_ref()
-                    .and_then(|swapchain| swapchain.acquire_semaphore_for_image(image_index))
-                    .ok_or_else(|| {
-                        GalError::backend(format!(
-                            "Vulkan presentation submission for image {image_index} has no acquisition semaphore"
-                        ))
-                    })
+                    .as_ref()?
+                    .acquire_semaphore_for_image(image_index)
             })
-            .transpose()?;
-        lowerer.submit(id, acquire_wait)?;
-        if let Some(image_index) = present_image_index {
-            let consumed = self
-                .swapchain
-                .as_mut()
-                .and_then(|swapchain| swapchain.take_acquire_semaphore_for_image(image_index));
-            debug_assert_eq!(consumed, acquire_wait);
+            .collect();
+        lowerer.submit(id, acquire_waits)?;
+        if let Some(swapchain) = self.swapchain.as_mut() {
+            for image_index in images {
+                swapchain.take_acquire_semaphore_for_image(image_index);
+            }
         }
         Ok(())
     }

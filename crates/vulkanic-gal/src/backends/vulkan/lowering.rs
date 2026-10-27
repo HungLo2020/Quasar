@@ -544,6 +544,18 @@ impl SubmissionLowerer {
             self.metrics.command_buffers_freed += command_buffers.len() as u64;
             return Err(error);
         }
+        // Every op that touches an acquired swapchain image records its
+        // layout here; the first submission to touch one waits on its acquire.
+        let mut acquired_images = SmallVec::new();
+        for target in state.frame_target_layouts.keys() {
+            // Encoding just resolved each of these targets.
+            let Ok(frame) = objects.frame_target(*target) else {
+                continue;
+            };
+            if !acquired_images.contains(&frame.image_index) {
+                acquired_images.push(frame.image_index);
+            }
+        }
         self.pending.push_back(EncodedSubmission {
             command_buffers,
             host_reads: state.host_reads,
@@ -551,6 +563,7 @@ impl SubmissionLowerer {
             timestamp_set: state.timestamp_set,
             pipeline_statistics_set: state.pipeline_statistics_set,
             present_image_index,
+            acquired_images,
         });
         Ok(())
     }
@@ -558,7 +571,7 @@ impl SubmissionLowerer {
     pub(super) fn submit(
         &mut self,
         id: SubmissionId,
-        acquire_wait_semaphore: Option<vk::Semaphore>,
+        acquire_wait_semaphores: SmallVec<[vk::Semaphore; 1]>,
     ) -> GalResult<()> {
         if let Some(oldest) = self
             .in_flight
@@ -600,13 +613,13 @@ impl SubmissionLowerer {
                     .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS),
             );
         }
-        let wait_infos: SmallVec<[vk::SemaphoreSubmitInfo; 1]> = acquire_wait_semaphore
+        let wait_infos: SmallVec<[vk::SemaphoreSubmitInfo; 1]> = acquire_wait_semaphores
+            .iter()
             .map(|semaphore| {
                 vk::SemaphoreSubmitInfo::default()
-                    .semaphore(semaphore)
+                    .semaphore(*semaphore)
                     .stage_mask(ACQUIRE_WAIT_STAGES)
             })
-            .into_iter()
             .collect();
         let submit = vk::SubmitInfo2::default()
             .command_buffer_infos(&command_buffer_infos)
@@ -652,7 +665,7 @@ impl SubmissionLowerer {
             timestamp_set: encoded.timestamp_set,
             pipeline_statistics_set: encoded.pipeline_statistics_set,
             present_image_index: encoded.present_image_index,
-            acquire_wait_semaphore,
+            acquire_wait_semaphores,
         });
         if let (Some(image_index), Some(semaphore)) =
             (encoded.present_image_index, present_semaphore)
@@ -740,7 +753,9 @@ impl SubmissionLowerer {
                     complete.id.0
                 )),
             }
-            self.recycle_acquire_semaphore(complete.acquire_wait_semaphore);
+            for semaphore in complete.acquire_wait_semaphores {
+                self.recycle_acquire_semaphore(semaphore);
+            }
         }
         self.completed
     }
@@ -773,7 +788,9 @@ impl SubmissionLowerer {
             self.complete_host_reads(&complete);
             self.complete_gpu_timestamps(&complete);
             self.complete_pipeline_statistics(&complete);
-            self.recycle_acquire_semaphore(complete.acquire_wait_semaphore);
+            for semaphore in complete.acquire_wait_semaphores {
+                self.recycle_acquire_semaphore(semaphore);
+            }
             self.completed = complete.id;
         }
         Ok(())
@@ -794,10 +811,11 @@ impl SubmissionLowerer {
         self.retire(latest)
     }
 
-    pub(super) fn pending_present_image_index(&self) -> Option<u32> {
+    /// The swapchain images the next submission touches.
+    pub(super) fn pending_acquired_images(&self) -> &[u32] {
         self.pending
             .front()
-            .and_then(|submission| submission.present_image_index)
+            .map_or(&[], |submission| submission.acquired_images.as_slice())
     }
 
     pub(super) fn checkout_acquire_semaphore(&mut self) -> GalResult<vk::Semaphore> {
@@ -836,7 +854,7 @@ impl SubmissionLowerer {
     }
 
     pub(super) fn release_unsubmitted_acquire_semaphore(&mut self, semaphore: vk::Semaphore) {
-        self.recycle_acquire_semaphore(Some(semaphore));
+        self.recycle_acquire_semaphore(semaphore);
     }
 
     /// Destroy an acquisition semaphore whose signal was never consumed by a
@@ -855,12 +873,10 @@ impl SubmissionLowerer {
         }
     }
 
-    fn recycle_acquire_semaphore(&mut self, semaphore: Option<vk::Semaphore>) {
-        if let Some(semaphore) = semaphore {
-            debug_assert!(self.acquire_semaphores.contains(&semaphore));
-            debug_assert!(!self.available_acquire_semaphores.contains(&semaphore));
-            self.available_acquire_semaphores.push(semaphore);
-        }
+    fn recycle_acquire_semaphore(&mut self, semaphore: vk::Semaphore) {
+        debug_assert!(self.acquire_semaphores.contains(&semaphore));
+        debug_assert!(!self.available_acquire_semaphores.contains(&semaphore));
+        self.available_acquire_semaphores.push(semaphore);
     }
 
     /// Return the binary semaphore signaled by `submission` for the acquired
@@ -2139,11 +2155,15 @@ impl SubmissionLowerer {
                         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                         &[copy],
                     );
-                    if old_layout == vk::ImageLayout::PRESENT_SRC_KHR {
-                        // A capture of an already presentation-ready frame
-                        // (e.g. a screenshot after the frame submission) runs
-                        // in its own submission with no pending present; give
-                        // the image back in the layout presentation expects.
+                    if matches!(
+                        old_layout,
+                        vk::ImageLayout::PRESENT_SRC_KHR | vk::ImageLayout::UNDEFINED
+                    ) {
+                        // A capture with no render pass before it in this
+                        // submission (a screenshot after the frame submission,
+                        // or the first use of a fresh or re-acquired image)
+                        // has no pending present; give the image back in the
+                        // layout presentation and later submissions expect.
                         let restore = vk::ImageMemoryBarrier2::default()
                             .src_stage_mask(vk::PipelineStageFlags2::COPY)
                             .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
@@ -3279,6 +3299,8 @@ struct EncodedSubmission {
     timestamp_set: GpuTimestampSet,
     pipeline_statistics_set: PipelineStatisticsSet,
     present_image_index: Option<u32>,
+    /// Swapchain images any op in the submission touches.
+    acquired_images: SmallVec<[u32; 1]>,
 }
 
 struct InFlightSubmission {
@@ -3289,7 +3311,7 @@ struct InFlightSubmission {
     timestamp_set: GpuTimestampSet,
     pipeline_statistics_set: PipelineStatisticsSet,
     present_image_index: Option<u32>,
-    acquire_wait_semaphore: Option<vk::Semaphore>,
+    acquire_wait_semaphores: SmallVec<[vk::Semaphore; 1]>,
 }
 
 #[derive(Clone, Debug)]

@@ -104,12 +104,6 @@ pub(crate) struct WgpuBackend {
     _window_owner: Option<Box<dyn std::any::Any>>,
 }
 
-fn lock_graphics() -> GalResult<MutexGuard<'static, ()>> {
-    graphics_backend_lock()
-        .lock()
-        .map_err(|_| GalError::backend("graphics backend global lock poisoned"))
-}
-
 impl WgpuBackend {
     fn from_context(
         context: WgpuContext,
@@ -136,7 +130,7 @@ impl WgpuBackend {
 
     /// A headless backend on the default adapter of `api`.
     pub(crate) fn new(label: &str, api: WgpuApi) -> GalResult<Self> {
-        let global_lock = lock_graphics()?;
+        let global_lock = graphics_backend_lock();
         let context = WgpuContext::new(label, device::new_instance(api), None)?;
         Ok(Self::from_context(context, None, global_lock))
     }
@@ -150,7 +144,7 @@ impl WgpuBackend {
         window: raw_window_handle::RawWindowHandle,
         desc: FrameSurfaceDesc,
     ) -> GalResult<Self> {
-        let global_lock = lock_graphics()?;
+        let global_lock = graphics_backend_lock();
         let instance = device::new_instance(api);
         let surface = unsafe {
             instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {

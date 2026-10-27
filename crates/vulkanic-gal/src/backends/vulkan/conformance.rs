@@ -1811,3 +1811,144 @@ fn large_unaligned_host_writes_execute_in_command_order() {
         assert_eq!(read.bytes, vec![value; size as usize]);
     }
 }
+
+/// A re-acquired swapchain image is already in the presentation layout, so a
+/// capture copy as its first use looks like a screenshot of a presented
+/// frame. It must still wait on the image's acquire, and the frame's later
+/// submissions must not need that (already consumed) semaphore. Run with
+/// `VULKANIC_VULKAN_VALIDATE=1` and check for SYNC-HAZARD-WRITE-AFTER-PRESENT.
+#[cfg(target_os = "linux")]
+#[test]
+fn reacquired_frames_accept_a_capture_first_and_several_submissions() {
+    use crate::frame::*;
+    if crate::env::var("VULKANIC_RUN_WINDOWED_CONFORMANCE")
+        .map(|value| value != "1" && !value.eq_ignore_ascii_case("true"))
+        .unwrap_or(true)
+    {
+        return;
+    }
+    let event_loop = crate::test_support::winit_event_loop().unwrap();
+    let window = crate::test_support::winit_test_window(&event_loop, 64, 48, 77).unwrap();
+    let extent = Extent3d {
+        width: 64,
+        height: 48,
+        depth: 1,
+    };
+    let surface = FrameSurfaceDesc {
+        label: "reacquired-capture".to_string(),
+        extent,
+        color_format: TextureFormat::Bgra8Unorm,
+        present_mode: PresentMode::Fifo,
+        max_frames_in_flight: 2,
+    };
+    let mut gal =
+        match crate::test_support::windowed_vulkan_gal("reacquired capture", &window, surface) {
+            Ok(gal) => gal,
+            Err(error) => {
+                crate::test_support::environment_gap("Vulkan", &error);
+                return;
+            }
+        };
+    let snapshot = gal
+        .create_texture(TextureDesc {
+            label: "reacquired-capture.snapshot".to_string(),
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Bgra8Unorm,
+            extent,
+            mip_levels: 1,
+            array_layers: 1,
+            usages: vec![TextureUsage::TransferDst, TextureUsage::TransferSrc],
+        })
+        .unwrap();
+    let submit = |gal: &mut VulkanicGal, label: &str, operations: Vec<CommandOp>| {
+        let list = gal
+            .create_command_list(CommandListDesc {
+                label: label.to_string(),
+                operations,
+            })
+            .unwrap();
+        gal.submit(SubmissionBatch {
+            label: label.to_string(),
+            command_lists: vec![list],
+        })
+        .unwrap()
+    };
+    // More frames than swapchain images, so images are re-acquired.
+    for frame_index in 0..6 {
+        let acquired = gal
+            .acquire_frame(FrameAcquireDesc {
+                correlation_id: FrameCorrelationId(frame_index + 1),
+                expected_extent: extent,
+            })
+            .unwrap();
+        let frame = gal
+            .create_frame_target(FrameTargetDesc {
+                label: format!("reacquired-capture.frame.{frame_index}"),
+                frame_id: acquired.frame.0,
+                render_target: acquired.render_target,
+                extent: acquired.extent,
+                color_format: acquired.color_format,
+            })
+            .unwrap();
+        let pass = gal
+            .create_render_pass(RenderPassDesc {
+                label: format!("reacquired-capture.pass.{frame_index}"),
+                target: frame,
+                color_formats: vec![acquired.color_format],
+                depth_format: None,
+            })
+            .unwrap();
+        let before = if frame_index == 0 {
+            TextureUsageState::Undefined
+        } else {
+            TextureUsageState::TransferDst
+        };
+        submit(
+            &mut gal,
+            "reacquired-capture.copy",
+            vec![
+                texture_barrier(snapshot, before, TextureUsageState::TransferDst),
+                CommandOp::CopyFrameTargetToTexture {
+                    src: frame,
+                    dst: snapshot,
+                    extent,
+                },
+            ],
+        );
+        let token = submit(
+            &mut gal,
+            "reacquired-capture.clear",
+            vec![
+                CommandOp::BeginPass {
+                    pass,
+                    target: frame,
+                    colors: vec![PassAttachment {
+                        view: frame,
+                        load_op: AttachmentLoadOp::Clear,
+                        store_op: AttachmentStoreOp::Store,
+                        clear_color: Some(ClearColor {
+                            r: 0.1,
+                            g: 0.6,
+                            b: 0.2,
+                            a: 1.0,
+                        }),
+                    }],
+                    depth_stencil: None,
+                },
+                CommandOp::EndPass,
+            ],
+        );
+        gal.present_frame(PresentFrameDesc {
+            frame: acquired.frame,
+            correlation_id: acquired.correlation_id,
+            wait_for: token.submission,
+        })
+        .unwrap();
+        gal.retire_through(token.submission).unwrap();
+        gal.destroy(pass).unwrap();
+        gal.destroy(frame).unwrap();
+    }
+    gal.destroy(snapshot).unwrap();
+    gal.shutdown_frame_surface().unwrap();
+    assert_eq!(gal.metrics().validation_failures, 0);
+}

@@ -1602,9 +1602,7 @@ mod tests {
 
     #[test]
     fn borrowed_state_guard_restores_indexed_buffer_bindings() {
-        let _graphics_lock = crate::backends::graphics_backend_lock()
-            .lock()
-            .expect("OpenGL test lock");
+        let _graphics_lock = crate::backends::graphics_backend_lock();
         let context = match OpenGlContext::new("borrowed-state-indexed-bindings-test") {
             Ok(context) => context,
             Err(error) => {
@@ -1721,9 +1719,7 @@ mod tests {
 
     #[test]
     fn borrowed_state_guard_restores_d3_texture_and_image_bindings() {
-        let _graphics_lock = crate::backends::graphics_backend_lock()
-            .lock()
-            .expect("OpenGL test lock");
+        let _graphics_lock = crate::backends::graphics_backend_lock();
         let context = match OpenGlContext::new("borrowed-state-d3-image-test") {
             Ok(context) => context,
             Err(error) => {
@@ -1804,9 +1800,7 @@ mod tests {
 
     #[test]
     fn borrowed_state_guard_restores_outline_sensitive_pipeline_state() {
-        let _graphics_lock = crate::backends::graphics_backend_lock()
-            .lock()
-            .expect("OpenGL test lock");
+        let _graphics_lock = crate::backends::graphics_backend_lock();
         let context = match OpenGlContext::new("borrowed-state-outline-pipeline-test") {
             Ok(context) => context,
             Err(error) => {

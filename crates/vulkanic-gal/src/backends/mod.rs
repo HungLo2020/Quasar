@@ -174,9 +174,14 @@ pub(crate) fn set_gpu_timestamps_requested(requested: bool) {
 }
 
 #[cfg(any(feature = "vulkan", feature = "opengl", feature = "wgpu"))]
-pub(super) fn graphics_backend_lock() -> &'static Mutex<()> {
+/// Serializes backend creation and teardown across the process. The lock
+/// guards no data, so a holder that panicked (a failed test) leaves nothing
+/// inconsistent: recover the guard instead of failing every later GAL.
+pub(super) fn graphics_backend_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Creates the concrete (never `Auto`) headless backend `backend` names.
@@ -750,5 +755,19 @@ pub(crate) mod mock {
         fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
             self
         }
+    }
+}
+
+#[cfg(all(test, any(feature = "vulkan", feature = "opengl", feature = "wgpu")))]
+mod lock_tests {
+    #[test]
+    fn a_panicking_holder_does_not_block_later_backends() {
+        let failed = std::thread::spawn(|| {
+            let _guard = super::graphics_backend_lock();
+            panic!("a test failed while holding the backend lock");
+        })
+        .join();
+        assert!(failed.is_err());
+        drop(super::graphics_backend_lock());
     }
 }
