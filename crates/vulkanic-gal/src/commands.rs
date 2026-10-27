@@ -28,6 +28,16 @@ impl DynamicOffsets {
         self.0.clear();
         self.0.extend_from_slice(offsets);
     }
+
+    /// Appends the offset of the set's next dynamic binding.
+    pub fn push(&mut self, offset: u64) {
+        self.0.push(offset);
+    }
+
+    /// The offsets as a slice.
+    pub fn as_slice(&self) -> &[u64] {
+        &self.0
+    }
 }
 
 impl std::ops::Deref for DynamicOffsets {
@@ -35,6 +45,12 @@ impl std::ops::Deref for DynamicOffsets {
 
     fn deref(&self) -> &[u64] {
         &self.0
+    }
+}
+
+impl std::ops::DerefMut for DynamicOffsets {
+    fn deref_mut(&mut self) -> &mut [u64] {
+        &mut self.0
     }
 }
 
@@ -83,6 +99,12 @@ impl PartialEq<Vec<u64>> for DynamicOffsets {
     }
 }
 
+impl PartialEq<DynamicOffsets> for Vec<u64> {
+    fn eq(&self, other: &DynamicOffsets) -> bool {
+        self.as_slice() == other.0.as_slice()
+    }
+}
+
 /// CPU lifetime receipt for transient storage referenced by prepared commands.
 /// The allocator retains one owner; each command copy retains another. GAL
 /// records accepted use before releasing its command references. Discarding
@@ -111,8 +133,8 @@ impl SubmissionUsage {
     }
     /// Marks this storage as used by `id` without submitting, for tests of
     /// renderer-side reclamation outside the GAL.
-    #[cfg(test)]
-    pub(crate) fn accept_for_test(&self, id: SubmissionId) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn accept_for_test(&self, id: SubmissionId) {
         self.accept(id);
     }
 }

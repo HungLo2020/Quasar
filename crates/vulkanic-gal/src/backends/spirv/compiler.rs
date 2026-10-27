@@ -145,7 +145,7 @@ pub(in crate::backends) fn compile_glsl_for_target(
     Ok(spirv)
 }
 
-#[cfg(all(test, feature = "vulkan"))]
+#[cfg(all(any(test, feature = "test-support"), feature = "vulkan"))]
 pub(crate) fn compile_glsl_for_backend_test(
     stage: shaderc::ShaderKind,
     source: &str,

@@ -32,6 +32,7 @@ mod test_hooks;
 use self::arena::*;
 pub(crate) use self::buffers_textures::*;
 pub(crate) use self::hazards::*;
+pub use self::hazards::{AccessHashBuilder, AccessHasher};
 pub(crate) use self::normalization::*;
 use self::profiling::*;
 pub(crate) use self::submission::per_frame_validation;

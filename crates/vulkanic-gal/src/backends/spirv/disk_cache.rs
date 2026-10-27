@@ -22,10 +22,13 @@ pub(in crate::backends) fn cache_dir() -> Option<PathBuf> {
     if crate::env::var_os("VULKANIC_SHADER_DUMP_DIR").is_some() {
         return None;
     }
-    // A library must not pick a game's storage location or write into HOME.
-    crate::env::var_os("VULKANIC_SPIRV_CACHE_DIR")
-        .filter(|value| value != "off")
-        .map(PathBuf::from)
+    // A library must not pick a game's storage location or write into HOME;
+    // the application may name one (`set_default_spirv_cache_dir`).
+    match crate::env::var_os("VULKANIC_SPIRV_CACHE_DIR") {
+        Some(value) if value == "off" => None,
+        Some(value) => Some(PathBuf::from(value)),
+        None => crate::create::default_spirv_cache_dir(),
+    }
 }
 
 #[cfg(test)]

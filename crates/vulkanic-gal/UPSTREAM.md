@@ -10,9 +10,14 @@ surface creation for independent applications; Vulkan portability enumeration;
 raw-handle constructor safety contract; additive source-dimension metadata in
 `TextureViewInfo` for shared-image shader compatibility checks; mechanical formatting/lint fixes.
 
-The shaderpack/world-renderer integration suites (backend `conformance.rs`,
-`conformance_matrix.rs`, and `terrain_interpolation_observation.rs`) remain in
-MattMC; they require game code. GAL unit tests and storage conformance are retained.
+The backend conformance suites were split by what they test. Backend-only tests
+from MattMC's `vulkan/conformance.rs`, `opengl/conformance.rs`,
+`conformance_matrix.rs` and `terrain_interpolation_observation.rs` live here
+(`backends/{vulkan,opengl}/conformance.rs`, `backends/conformance_matrix.rs`,
+`backends/interpolation_observation.rs`) and write their reports under
+`target/vulkanic-conformance/`. The shaderpack/world-renderer tests from those
+files stay in MattMC, which builds its test GALs through the `test-support`
+feature. GAL unit tests and storage conformance are retained.
 Driver-required tests are opt-in (`--include-ignored`). The OpenGL state restoration
 test creates a stencil attachment instead of assuming the default target has
 stencil storage. Test helpers and diagnostics retained for upstream compatibility

@@ -51,6 +51,11 @@ vulkanic-gal = { path = "...", default-features = false, features = ["wgpu"] }
   `create*` constructor uses, including `create_windowed_vulkan` and
   `create_native_windowed_vulkan`, so an unmodified application can run on
   another compiled-in backend.
+- `test-support` exports the `test_support` module (mock, Vulkan, wgpu and
+  OpenGL test GALs, the recording `MockBackend`, test windows and a GLSL
+  compile helper) and the `*_for_test` hooks on `VulkanicGal`, for renderer
+  tests in dependent crates. Enable it only from `[dev-dependencies]`:
+  `vulkanic-gal = { ..., features = ["test-support"] }`.
 - The OpenGL backend was previously compiled unconditionally. It is now opt-in:
   enable `opengl` when calling `BackendChoice::OpenGl` or
   `create_borrowed_opengl`.
@@ -169,8 +174,10 @@ environment gap without an adapter unless `VULKANIC_REQUIRE_GPU=1`.
 
 Use `quasar-render-2d` for a ready-made pixel framebuffer presenter or 2D
 renderer, or build a renderer against the GAL directly. Disk caches are off by
-default; set `VULKANIC_SPIRV_CACHE_DIR` to application-owned storage to keep
-compiled SPIR-V and the native Vulkan pipeline cache across launches.
+default; an application keeps compiled SPIR-V and the native Vulkan pipeline
+cache across launches by naming its own storage with
+`create::set_default_spirv_cache_dir`. `VULKANIC_SPIRV_CACHE_DIR` overrides that
+directory, and `off` disables the caches.
 Diagnostic switches are named `VULKANIC_*` (for example `VULKANIC_TRACY`,
 `VULKANIC_VULKAN_VALIDATE`, `VULKANIC_TRACE_SUBMISSIONS`); the `MATTMC_*` names
 they had in MattMC still work and print a one-time deprecation notice.

@@ -5,8 +5,8 @@ use super::*;
 impl VulkanicGal {
     /// Backend-neutral debug capture for tests: the active backend starts a
     /// RenderDoc capture if requested, ending when the guard drops.
-    #[cfg(test)]
-    pub(crate) fn begin_debug_capture(&self) -> Option<Box<dyn std::any::Any>> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn begin_debug_capture(&self) -> Option<Box<dyn std::any::Any>> {
         self.backend.begin_debug_capture()
     }
 

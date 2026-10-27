@@ -13,6 +13,30 @@ pub(super) mod disk_cache;
 #[cfg(feature = "wgpu")]
 pub(super) mod tools;
 
+/// The Shaderc kind that compiles `stage`.
+#[cfg(any(feature = "wgpu", test, feature = "test-support"))]
+pub(super) fn shader_kind(stage: crate::resources::ShaderStage) -> shaderc::ShaderKind {
+    use crate::resources::ShaderStage;
+    match stage {
+        ShaderStage::Vertex => shaderc::ShaderKind::Vertex,
+        ShaderStage::Fragment => shaderc::ShaderKind::Fragment,
+        ShaderStage::Compute => shaderc::ShaderKind::Compute,
+        ShaderStage::Geometry => shaderc::ShaderKind::Geometry,
+        ShaderStage::TessControl => shaderc::ShaderKind::TessControl,
+        ShaderStage::TessEvaluation => shaderc::ShaderKind::TessEvaluation,
+    }
+}
+
+/// Compiles GLSL for `stage` to the SPIR-V the Vulkan backend consumes.
+#[cfg(all(any(test, feature = "test-support"), feature = "vulkan"))]
+pub(crate) fn compile_glsl_stage_for_test(
+    stage: crate::resources::ShaderStage,
+    source: &str,
+    source_name: &str,
+) -> Result<Vec<u8>, String> {
+    compiler::compile_glsl_for_backend_test(shader_kind(stage), source, source_name)
+}
+
 /// Compiles GLSL for `stage` to SPIR-V 1.3 (the version naga reads) through
 /// Shaderc and the opt-in disk cache.
 #[cfg(feature = "wgpu")]
@@ -22,15 +46,7 @@ pub(super) fn compile_glsl_cached(
     label: &str,
     entry_point: &str,
 ) -> Result<Vec<u8>, String> {
-    use crate::resources::ShaderStage;
-    let kind = match stage {
-        ShaderStage::Vertex => shaderc::ShaderKind::Vertex,
-        ShaderStage::Fragment => shaderc::ShaderKind::Fragment,
-        ShaderStage::Compute => shaderc::ShaderKind::Compute,
-        ShaderStage::Geometry => shaderc::ShaderKind::Geometry,
-        ShaderStage::TessControl => shaderc::ShaderKind::TessControl,
-        ShaderStage::TessEvaluation => shaderc::ShaderKind::TessEvaluation,
-    };
+    let kind = shader_kind(stage);
     disk_cache::compile_variant_with_disk_cache(
         disk_cache::cache_dir().as_deref(),
         "vulkan1.1",

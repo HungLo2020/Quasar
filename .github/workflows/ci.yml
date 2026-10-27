@@ -190,6 +190,7 @@ jobs:
           cargo check --locked -p vulkanic-gal --no-default-features --features vulkan
           cargo check --locked -p vulkanic-gal --no-default-features --features opengl
           cargo check --locked -p vulkanic-gal --no-default-features --features wgpu
+          cargo check --locked -p vulkanic-gal --no-default-features --features test-support
           cargo check --locked -p quasar-frame --no-default-features
           cargo check --locked -p quasar-render-2d --no-default-features --features gpu
           cargo check --locked -p quasar-render-2d --no-default-features --features gpu,vulkan
@@ -225,6 +226,7 @@ jobs:
           cargo clippy --locked -p vulkanic-gal --all-targets --no-default-features --features opengl -- -D warnings
           cargo clippy --locked -p vulkanic-gal --all-targets --no-default-features --features wgpu -- -D warnings
           cargo clippy --locked -p vulkanic-gal --all-targets --features opengl,wgpu -- -D warnings
+          cargo clippy --locked -p vulkanic-gal --all-targets --features opengl,test-support -- -D warnings
           cargo clippy --locked -p quasar-render-2d --all-targets --no-default-features --features gpu -- -D warnings
           cargo clippy --locked -p quasar-render-2d --all-targets --no-default-features --features gpu,opengl -- -D warnings
           cargo clippy --locked -p quasar-render-3d --all-targets --no-default-features --features opengl -- -D warnings

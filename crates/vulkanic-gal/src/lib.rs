@@ -18,6 +18,10 @@
 //!
 //! Backends live in the private `backends` module; nothing outside this
 //! module names them (enforced by `architecture_boundary.rs`).
+//!
+//! The `test-support` feature exports `test_support` (mock and real test
+//! GALs) and the `*_for_test` hooks on `VulkanicGal`, for renderer tests in
+//! dependent crates. Enable it only from `[dev-dependencies]`.
 #![warn(missing_docs)]
 // Imported test helpers also serve the renderer suites retained in MattMC.
 #![cfg_attr(test, allow(dead_code, unused_imports))]
@@ -36,8 +40,8 @@ pub mod handles;
 pub mod metrics;
 pub mod resources;
 pub mod sync;
-#[cfg(test)]
-pub(crate) mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 pub use commands::DynamicOffsets;
 pub use commands::{
@@ -46,8 +50,8 @@ pub use commands::{
     TextureUsageState,
 };
 pub use create::{
-    set_gpu_timestamps_requested, BackendChoice, BackendInfo, DeviceInfo, DeviceKind, GalOptions,
-    GraphicsBackend, NativeWindow, SelectionNote, WgpuApi,
+    set_default_spirv_cache_dir, set_gpu_timestamps_requested, BackendChoice, BackendInfo,
+    DeviceInfo, DeviceKind, GalOptions, GraphicsBackend, NativeWindow, SelectionNote, WgpuApi,
 };
 pub use error::{GalError, GalResult, StatusCode};
 pub use frame::{

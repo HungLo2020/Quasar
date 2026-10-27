@@ -679,7 +679,7 @@ impl VulkanSwapchain {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl VulkanSwapchain {
     pub(super) fn clear_acquired_for_test(
         &mut self,

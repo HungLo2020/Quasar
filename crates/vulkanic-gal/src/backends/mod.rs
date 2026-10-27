@@ -11,9 +11,17 @@ mod spirv;
 pub(super) mod vulkan;
 #[cfg(feature = "wgpu")]
 pub(super) mod wgpu;
+#[cfg(all(any(test, feature = "test-support"), feature = "vulkan"))]
+pub(crate) use spirv::compile_glsl_stage_for_test;
+#[cfg(all(test, feature = "vulkan"))]
+pub(crate) use spirv::compiler::compile_glsl_for_backend_test;
 
 #[cfg(all(test, feature = "vulkan", feature = "opengl"))]
+mod conformance_matrix;
+#[cfg(all(test, feature = "vulkan", feature = "opengl"))]
 mod graphics_storage_conformance;
+#[cfg(all(test, feature = "vulkan", feature = "opengl"))]
+mod interpolation_observation;
 
 #[cfg(any(feature = "vulkan", feature = "opengl", feature = "wgpu"))]
 use std::sync::{Mutex, OnceLock};
@@ -34,12 +42,13 @@ use super::resources::{
     RenderTargetDesc, ResourceLayoutDesc, ResourceSetDesc, SamplerDesc, ShaderModuleDesc,
     TextureDesc, TextureViewDesc, GPU_PROFILE_SCOPE_COUNT,
 };
-#[cfg(any(feature = "vulkan", feature = "opengl", test))]
+#[cfg(any(feature = "vulkan", feature = "opengl", test, feature = "test-support"))]
 use super::resources::{BackendFeatureFlags, BackendLimits, GlslDialect, ShaderConventions};
 use super::sync::SubmissionId;
 
+/// A backend's private identifier for a live object.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct BackendToken(pub u64);
+pub struct BackendToken(pub u64);
 
 /// Bytes a completed submission read back from a buffer to the host.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -337,19 +346,19 @@ pub(super) trait Backend {
 
     /// Starts a RenderDoc frame capture when the environment requests one;
     /// the capture ends when the returned guard drops.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn begin_debug_capture(&self) -> Option<Box<dyn std::any::Any>> {
         None
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn as_any(&self) -> &dyn std::any::Any;
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
-#[cfg(any(feature = "vulkan", test))]
+#[cfg(any(feature = "vulkan", test, feature = "test-support"))]
 pub(super) fn vulkan_capabilities() -> BackendCapabilities {
     BackendCapabilities {
         shader_conventions: ShaderConventions {
@@ -404,7 +413,13 @@ pub(super) fn vulkan_capabilities() -> BackendCapabilities {
     }
 }
 
-#[cfg(any(feature = "vulkan", feature = "opengl", feature = "wgpu", test))]
+#[cfg(any(
+    feature = "vulkan",
+    feature = "opengl",
+    feature = "wgpu",
+    test,
+    feature = "test-support"
+))]
 pub(super) fn presentation_capabilities(
     mut capabilities: BackendCapabilities,
 ) -> BackendCapabilities {
@@ -412,7 +427,7 @@ pub(super) fn presentation_capabilities(
     capabilities
 }
 
-#[cfg(any(feature = "opengl", test))]
+#[cfg(any(feature = "opengl", test, feature = "test-support"))]
 pub(super) fn opengl_capabilities() -> BackendCapabilities {
     BackendCapabilities {
         shader_conventions: ShaderConventions {
@@ -484,7 +499,7 @@ pub(crate) fn create_owned_windowed_vulkan_backend<
     )?))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod mock {
     use std::collections::{BTreeMap, VecDeque};
 
@@ -493,43 +508,66 @@ pub(crate) mod mock {
     use crate::frame::{FrameAcquireStatus, FrameId, FramePresentStatus, FrameRenderTargetId};
 
     #[derive(Default)]
-    pub(crate) struct MockBackend {
-        pub(crate) creates: Vec<(Handle, HandleKind)>,
-        pub(crate) destroys: Vec<(Handle, HandleKind)>,
-        pub(crate) submissions: Vec<SubmissionId>,
-        pub(crate) encoded_batches: usize,
-        pub(crate) completed: SubmissionId,
-        pub(crate) fail_next_create: bool,
-        pub(crate) fail_create_after: Option<usize>,
-        pub(crate) fail_next_submit: bool,
-        pub(crate) fail_retire_at: Option<SubmissionId>,
-        pub(crate) retire_requests: Vec<SubmissionId>,
-        pub(crate) capabilities: Option<BackendCapabilities>,
-        pub(crate) live: BTreeMap<Handle, BackendToken>,
+    /// A recording backend for tests: it stores what the GAL asks of it and
+    /// can be told to fail creates, submissions and completion waits.
+    pub struct MockBackend {
+        /// Every object created, in order.
+        pub creates: Vec<(Handle, HandleKind)>,
+        /// Every object destroyed, in order.
+        pub destroys: Vec<(Handle, HandleKind)>,
+        /// Every submission accepted, in order.
+        pub submissions: Vec<SubmissionId>,
+        /// How many batches were encoded.
+        pub encoded_batches: usize,
+        /// The newest submission the mock reports complete.
+        pub completed: SubmissionId,
+        /// Fails the next create.
+        pub fail_next_create: bool,
+        /// Fails the create made once this many have succeeded.
+        pub fail_create_after: Option<usize>,
+        /// Fails the next submission.
+        pub fail_next_submit: bool,
+        /// Fails retiring through this submission.
+        pub fail_retire_at: Option<SubmissionId>,
+        /// Every completed submission the GAL asked the mock to retire.
+        pub retire_requests: Vec<SubmissionId>,
+        /// Capabilities to report; Vulkan-like when unset.
+        pub capabilities: Option<BackendCapabilities>,
+        /// Objects created and not yet destroyed.
+        pub live: BTreeMap<Handle, BackendToken>,
         next_token: u64,
-        pub(crate) submitted_labels: VecDeque<String>,
-        pub(crate) frame_surface: Option<FrameSurfaceDesc>,
-        pub(crate) acquired_frames: Vec<FrameId>,
-        pub(crate) presented_frames: Vec<FrameId>,
-        pub(crate) next_frame: u64,
-        pub(crate) minimized: bool,
+        /// Labels of submitted batches.
+        pub submitted_labels: VecDeque<String>,
+        /// The configured presentation surface, if any.
+        pub frame_surface: Option<FrameSurfaceDesc>,
+        /// Frames acquired and not yet presented or cancelled.
+        pub acquired_frames: Vec<FrameId>,
+        /// Frames presented, in order.
+        pub presented_frames: Vec<FrameId>,
+        /// The id the next acquired frame takes.
+        pub next_frame: u64,
+        /// Whether acquire reports a minimized surface.
+        pub minimized: bool,
     }
 
     impl MockBackend {
-        pub(crate) fn fail_next_create(&mut self) {
+        /// Fails the next create.
+        pub fn fail_next_create(&mut self) {
             self.fail_next_create = true;
         }
 
-        #[cfg(test)]
-        pub(crate) fn fail_next_submit(&mut self) {
+        /// Fails the next submission.
+        pub fn fail_next_submit(&mut self) {
             self.fail_next_submit = true;
         }
 
-        pub(crate) fn complete_through(&mut self, id: SubmissionId) {
+        /// Reports every submission through `id` complete.
+        pub fn complete_through(&mut self, id: SubmissionId) {
             self.completed = id;
         }
 
-        pub(crate) fn with_capabilities(capabilities: BackendCapabilities) -> Self {
+        /// A mock reporting `capabilities`.
+        pub fn with_capabilities(capabilities: BackendCapabilities) -> Self {
             Self {
                 capabilities: Some(capabilities),
                 ..Self::default()

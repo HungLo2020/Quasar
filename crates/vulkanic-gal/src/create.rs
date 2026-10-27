@@ -547,6 +547,28 @@ pub fn set_gpu_timestamps_requested(requested: bool) {
     let _ = requested;
 }
 
+static DEFAULT_SPIRV_CACHE_DIR: std::sync::RwLock<Option<std::path::PathBuf>> =
+    std::sync::RwLock::new(None);
+
+/// Sets the application's directory for the persistent GLSL→SPIR-V cache.
+/// `VULKANIC_SPIRV_CACHE_DIR` still overrides it (`off` disables the cache);
+/// with neither set, shaders are compiled on every run. The GAL never picks a
+/// location itself. Call before creating GALs.
+pub fn set_default_spirv_cache_dir(dir: Option<std::path::PathBuf>) {
+    *DEFAULT_SPIRV_CACHE_DIR
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = dir;
+}
+
+/// The directory set by `set_default_spirv_cache_dir`.
+#[cfg(any(feature = "vulkan", feature = "wgpu"))]
+pub(crate) fn default_spirv_cache_dir() -> Option<std::path::PathBuf> {
+    DEFAULT_SPIRV_CACHE_DIR
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 /// The error for a backend that cannot create a window surface.
 #[cfg(any(feature = "vulkan", feature = "wgpu"))]
 fn windowless(backend: GraphicsBackend) -> GalError {

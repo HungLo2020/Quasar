@@ -1,7 +1,9 @@
+#[cfg(test)]
+pub(in crate::backends) mod conformance;
 mod device;
 mod lowering;
 pub(crate) use lowering::set_gpu_timestamps_requested;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod renderdoc;
 mod resources;
 mod swapchain;
@@ -153,7 +155,7 @@ impl VulkanBackend {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn new_windowed_for_test(
         label: &str,
         surface_owner: &dyn SurfaceOwner,
@@ -248,7 +250,7 @@ impl VulkanBackend {
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn clear_acquired_frame_for_test(
         &mut self,
         frame: crate::frame::FrameId,
@@ -282,7 +284,7 @@ impl Backend for VulkanBackend {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn begin_debug_capture(&self) -> Option<Box<dyn std::any::Any>> {
         renderdoc::RenderDocFrame::start_if_requested()
             .map(|frame| Box::new(frame) as Box<dyn std::any::Any>)
@@ -580,12 +582,12 @@ impl Backend for VulkanBackend {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -610,15 +612,16 @@ impl Drop for VulkanBackend {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
-pub(crate) struct WinitTestWindow {
+/// A native winit window that a test Vulkan GAL presents to.
+#[cfg(all(any(test, feature = "test-support"), target_os = "linux"))]
+pub struct WinitTestWindow {
     _window: winit::window::Window,
     raw_display: raw_window_handle::RawDisplayHandle,
     raw_window: raw_window_handle::RawWindowHandle,
     stable_window_id: u64,
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(any(test, feature = "test-support"), target_os = "linux"))]
 impl SurfaceOwner for WinitTestWindow {
     fn required_instance_extensions(&self) -> Vec<&'static std::ffi::CStr> {
         match self.raw_display {
@@ -700,8 +703,9 @@ impl SurfaceOwner for WinitTestWindow {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
-pub(crate) fn winit_event_loop() -> GalResult<winit::event_loop::EventLoop<()>> {
+/// An event loop for test windows, usable from any test thread.
+#[cfg(all(any(test, feature = "test-support"), target_os = "linux"))]
+pub fn winit_event_loop() -> GalResult<winit::event_loop::EventLoop<()>> {
     use winit::event_loop::EventLoop;
 
     let mut builder = EventLoop::builder();
@@ -714,8 +718,10 @@ pub(crate) fn winit_event_loop() -> GalResult<winit::event_loop::EventLoop<()>> 
     })
 }
 
-#[cfg(all(test, target_os = "linux"))]
-pub(crate) fn winit_test_window(
+/// A visible `width`×`height` test window; `stable_window_id` names its
+/// surface in diagnostics.
+#[cfg(all(any(test, feature = "test-support"), target_os = "linux"))]
+pub fn winit_test_window(
     event_loop: &winit::event_loop::EventLoop<()>,
     width: u32,
     height: u32,

@@ -19,9 +19,11 @@ naga = { version = "30.0.1", features = ["spv-in"], optional = true }
 smallvec = "1.15.2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 tracy-client = { version = "0.18.4", default-features = false, features = ["enable", "manual-lifetime", "only-localhost"], optional = true }
+winit = { workspace = true, optional = true }
 
 [dev-dependencies]
 winit.workspace = true
+xxhash-rust = { version = "0.8", features = ["xxh32"] }
 
 [features]
 default = ["vulkan"]
@@ -41,3 +43,6 @@ wgpu = [
     "dep:shaderc",
 ]
 tracy = ["dep:tracy-client"]
+# Test GAL constructors and hooks for renderer tests in dependent crates;
+# enable from [dev-dependencies] only.
+test-support = ["dep:winit"]

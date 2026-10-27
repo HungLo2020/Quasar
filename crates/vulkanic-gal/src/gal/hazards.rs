@@ -99,6 +99,8 @@ impl hashing::Hasher for AccessHasher {
     }
 }
 
+/// Builds `AccessHasher`s, for `HashMap`/`HashSet` keyed by small
+/// fixed-width values the program controls.
 pub type AccessHashBuilder = hashing::BuildHasherDefault<AccessHasher>;
 
 /// Per-submission access state. The GAL keeps one tracker between

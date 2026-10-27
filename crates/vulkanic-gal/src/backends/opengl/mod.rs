@@ -1,6 +1,8 @@
+#[cfg(test)]
+pub(in crate::backends) mod conformance;
 mod context;
 mod lowering;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod renderdoc;
 mod resources;
 mod trace;
@@ -218,7 +220,7 @@ impl Backend for OpenGlBackend {
         self.device.clone()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn begin_debug_capture(&self) -> Option<Box<dyn std::any::Any>> {
         renderdoc::RenderDocFrame::start_if_requested()
             .map(|frame| Box::new(frame) as Box<dyn std::any::Any>)
@@ -471,12 +473,12 @@ impl Backend for OpenGlBackend {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }

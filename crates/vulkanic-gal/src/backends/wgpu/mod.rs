@@ -682,12 +682,12 @@ impl Backend for WgpuBackend {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
