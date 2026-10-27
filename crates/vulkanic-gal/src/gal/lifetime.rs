@@ -104,7 +104,7 @@ impl VulkanicGal {
         };
         if let Some((depth_texture, depth_view)) = owned_frame_depth {
             // The view owns the dependency edge to the texture, so retire it
-            // first. Both remain private Rust GAL resources.
+            // first. Both are private GAL resources.
             let _ = self.destroy(depth_view);
             let _ = self.destroy(depth_texture);
         }

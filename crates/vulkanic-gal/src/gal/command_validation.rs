@@ -11,7 +11,7 @@ impl VulkanicGal {
         let count = self.metrics.validation_failures;
         if count <= 32 || count.is_power_of_two() {
             crate::diagnostics::stderr(format_args!(
-                "rust_gal_validation_failure count={count} {error}"
+                "vulkanic_gal_validation_failure count={count} {error}"
             ));
         }
         Err(error)
@@ -37,108 +37,20 @@ impl VulkanicGal {
                     colors,
                     depth_stencil,
                 } => {
-                    if in_pass {
-                        return self.validation_error(GalError::command(
-                            StatusCode::InvalidArgument,
-                            "nested passes are invalid",
-                        ));
-                    }
-                    let pass_target = self.render_pass_desc(*pass)?.target;
-                    let frame_target = match target.kind() {
-                        Some(HandleKind::FrameTarget) => {
-                            self.frame_targets.get(*target)?;
-                            true
-                        }
-                        Some(HandleKind::RenderTarget) => false,
-                        _ => {
-                            return self.validation_error(GalError::command(
-                                StatusCode::WrongHandleType,
-                                "pass target must be a render target or frame target",
-                            ))
-                        }
-                    };
-                    let (expected_colors, expected_depth) = if frame_target {
-                        let pass_desc = self.render_pass_desc(*pass)?;
-                        let expected_colors = if pass_desc.color_formats.is_empty() {
-                            Vec::new()
-                        } else {
-                            vec![*target]
-                        };
-                        let pass_depth = pass_desc.depth_format;
-                        if let Some(format) = pass_depth {
-                            let attachment = depth_stencil.as_ref().ok_or_else(|| {
-                                GalError::command(
-                                    StatusCode::InvalidArgument,
-                                    format!(
-                                        "frame-target pass '{}' with depth format requires a depth attachment",
-                                        pass_desc.label
-                                    ),
-                                )
-                            })?;
-                            let info = self.texture_view_info(attachment.view)?;
-                            if info.format != format {
-                                return self.validation_error(GalError::command(
-                                    StatusCode::InvalidArgument,
-                                    "frame-target pass depth attachment format does not match render pass",
-                                ));
-                            }
-                            (expected_colors, Some(attachment.view))
-                        } else {
-                            (expected_colors, None)
-                        }
-                    } else {
-                        let target_record = self.render_targets.get(*target)?;
-                        (
-                            target_record.desc.color_views.clone(),
-                            if self.render_pass_desc(*pass)?.depth_format.is_some() {
-                                target_record.desc.depth_stencil_view
-                            } else {
-                                None
-                            },
-                        )
-                    };
-                    if pass_target != *target {
-                        return self.validation_error(GalError::command(
-                            StatusCode::InvalidArgument,
-                            "pass target does not match command target",
-                        ));
-                    }
-                    if colors.len() != expected_colors.len() {
-                        return self.validation_error(GalError::command(
-                            StatusCode::InvalidArgument,
-                            "pass color attachment count does not match target",
-                        ));
-                    }
-                    for (index, color) in colors.iter().enumerate() {
-                        if color.view != expected_colors[index] {
-                            return self.validation_error(GalError::command(
-                                StatusCode::InvalidArgument,
-                                "pass color attachment view does not match target",
-                            ));
-                        }
-                    }
-                    if depth_stencil.is_some() != expected_depth.is_some() {
-                        return self.validation_error(GalError::command(
-                            StatusCode::InvalidArgument,
-                            "pass depth attachment presence does not match target",
-                        ));
-                    }
-                    if let (Some(depth), Some(expected_depth)) = (depth_stencil, expected_depth) {
-                        if depth.view != expected_depth {
-                            return self.validation_error(GalError::command(
-                                StatusCode::InvalidArgument,
-                                "pass depth attachment view does not match target",
-                            ));
-                        }
-                    }
+                    self.validate_begin_pass(in_pass, pass, target, colors, depth_stencil)?;
                     in_pass = true;
                     active_pass = Some(*pass);
                 }
                 CommandOp::BindGraphicsPipeline(handle) => {
                     let layout = self.graphics_pipelines.get(*handle)?.desc.layout;
-                    if let Some(pass) = active_pass {
-                        self.validate_pipeline_pass_compatibility(*handle, pass)?;
-                    }
+                    // Its viewport and pass compatibility depend on the pass.
+                    let Some(pass) = active_pass else {
+                        return self.validation_error(GalError::command(
+                            StatusCode::InvalidArgument,
+                            "graphics pipeline must be bound inside a render pass",
+                        ));
+                    };
+                    self.validate_pipeline_pass_compatibility(*handle, pass)?;
                     graphics_pipeline = Some(*handle);
                     compute_pipeline = None;
                     active_pipeline_layout = Some(layout);
@@ -161,98 +73,15 @@ impl VulkanicGal {
                     set,
                     dynamic_offsets,
                 } => {
-                    if active_pipeline_layout != Some(*pipeline_layout) {
-                        return self.validation_error(GalError::command(
-                            StatusCode::InvalidArgument,
-                            "resource set pipeline layout does not match active pipeline",
-                        ));
-                    }
-                    let layout = self.pipeline_layouts.get(*pipeline_layout)?;
-                    let set_record = match self.resource_sets.get(*set) {
-                        Ok(record) => record,
-                        Err(mut error) => {
-                            let replacement = self
-                                .resource_sets
-                                .slots
-                                .get(set.index() as usize)
-                                .and_then(|slot| {
-                                    slot.value.as_ref().map(|record| (slot.generation, record))
-                                })
-                                .map(|(generation, record)| {
-                                    format!(
-                                        "generation={} label='{}'",
-                                        generation, record.desc.label
-                                    )
-                                })
-                                .unwrap_or_else(|| "none".to_owned());
-                            error.message = format!(
-                                "command list '{label}' op {op_index} BindResourceSet set={set:?} live_slot={replacement}: {}",
-                                error.message
-                            );
-                            return Err(error);
-                        }
-                    };
-                    let Some(expected_layout) =
-                        layout.desc.resource_layouts.get(*set_index as usize)
-                    else {
-                        return self.validation_error(GalError::command(
-                            StatusCode::InvalidArgument,
-                            "resource set index is outside pipeline layout",
-                        ));
-                    };
-                    if *expected_layout != set_record.desc.layout {
-                        return self.validation_error(GalError::command(
-                            StatusCode::InvalidArgument,
-                            "resource set layout is not compatible with pipeline layout",
-                        ));
-                    }
-                    let set_bindings = &set_record.desc.bindings;
-                    let expected_dynamic_offsets: usize = set_bindings
-                        .iter()
-                        .map(|binding| binding.dynamic_offsets.len())
-                        .sum();
-                    if !dynamic_offsets.is_empty()
-                        && dynamic_offsets.len() != expected_dynamic_offsets
-                    {
-                        return self.validation_error(GalError::command(
-                            StatusCode::InvalidArgument,
-                            format!(
-                                "resource set bind dynamic offset count {} does not match expected {}",
-                                dynamic_offsets.len(),
-                                expected_dynamic_offsets
-                            ),
-                        ));
-                    }
-                    // Borrow the set's bindings; the pure checker needs no
-                    // mutable GAL state, so no per-bind clone is required.
-                    let mut offset_index = 0usize;
-                    let mut range_error = None;
-                    for binding in set_bindings {
-                        let count = binding.dynamic_offsets.len();
-                        if count == 0 {
-                            continue;
-                        }
-                        let offsets = if dynamic_offsets.is_empty() {
-                            binding.dynamic_offsets.as_slice()
-                        } else {
-                            let end = offset_index + count;
-                            let slice = &dynamic_offsets[offset_index..end];
-                            offset_index = end;
-                            slice
-                        };
-                        if let Err(error) =
-                            self.check_resource_binding_buffer_range(binding, offsets)
-                        {
-                            range_error = Some(error);
-                            break;
-                        }
-                    }
-                    if let Some(error) = range_error {
-                        return match error.code {
-                            StatusCode::InvalidArgument => self.validation_error(error),
-                            _ => Err(error),
-                        };
-                    }
+                    self.validate_bind_resource_set(
+                        label,
+                        op_index,
+                        active_pipeline_layout,
+                        pipeline_layout,
+                        set_index,
+                        set,
+                        dynamic_offsets,
+                    )?;
                 }
                 CommandOp::SetVertexBuffer { buffer, offset, .. } => {
                     let record = self.buffers.get(*buffer)?;
@@ -810,7 +639,7 @@ impl VulkanicGal {
                 && pipeline_record.desc.depth_format == pass_record.desc.depth_format
         };
         if !compatible {
-            if std::env::var_os("MATTMC_TRACE_PIPELINE_PASS_COMPAT").is_some() {
+            if crate::env::var_os("VULKANIC_TRACE_PIPELINE_PASS_COMPAT").is_some() {
                 let pipeline_record = self.graphics_pipelines.get(pipeline)?;
                 let pass_record = self.render_passes.get(pass)?;
                 crate::diagnostics::stderr(format_args!(
@@ -1021,6 +850,209 @@ impl VulkanicGal {
                     "texture copy buffer size overflows",
                 )
             })
+    }
+
+    /// Checks a pass begin against its render pass and target.
+    fn validate_begin_pass(
+        &mut self,
+        in_pass: bool,
+        pass: &Handle,
+        target: &Handle,
+        colors: &[crate::commands::PassAttachment],
+        depth_stencil: &Option<crate::commands::PassAttachment>,
+    ) -> GalResult<()> {
+        if in_pass {
+            return self.validation_error(GalError::command(
+                StatusCode::InvalidArgument,
+                "nested passes are invalid",
+            ));
+        }
+        let pass_target = self.render_pass_desc(*pass)?.target;
+        let frame_target = match target.kind() {
+            Some(HandleKind::FrameTarget) => {
+                self.frame_targets.get(*target)?;
+                true
+            }
+            Some(HandleKind::RenderTarget) => false,
+            _ => {
+                return self.validation_error(GalError::command(
+                    StatusCode::WrongHandleType,
+                    "pass target must be a render target or frame target",
+                ))
+            }
+        };
+        let (expected_colors, expected_depth) = if frame_target {
+            let pass_desc = self.render_pass_desc(*pass)?;
+            let expected_colors = if pass_desc.color_formats.is_empty() {
+                Vec::new()
+            } else {
+                vec![*target]
+            };
+            let pass_depth = pass_desc.depth_format;
+            if let Some(format) = pass_depth {
+                let attachment = depth_stencil.as_ref().ok_or_else(|| {
+                    GalError::command(
+                        StatusCode::InvalidArgument,
+                        format!(
+                            "frame-target pass '{}' with depth format requires a depth attachment",
+                            pass_desc.label
+                        ),
+                    )
+                })?;
+                let info = self.texture_view_info(attachment.view)?;
+                if info.format != format {
+                    return self.validation_error(GalError::command(
+                        StatusCode::InvalidArgument,
+                        "frame-target pass depth attachment format does not match render pass",
+                    ));
+                }
+                (expected_colors, Some(attachment.view))
+            } else {
+                (expected_colors, None)
+            }
+        } else {
+            let target_record = self.render_targets.get(*target)?;
+            (
+                target_record.desc.color_views.clone(),
+                if self.render_pass_desc(*pass)?.depth_format.is_some() {
+                    target_record.desc.depth_stencil_view
+                } else {
+                    None
+                },
+            )
+        };
+        if pass_target != *target {
+            return self.validation_error(GalError::command(
+                StatusCode::InvalidArgument,
+                "pass target does not match command target",
+            ));
+        }
+        if colors.len() != expected_colors.len() {
+            return self.validation_error(GalError::command(
+                StatusCode::InvalidArgument,
+                "pass color attachment count does not match target",
+            ));
+        }
+        for (index, color) in colors.iter().enumerate() {
+            if color.view != expected_colors[index] {
+                return self.validation_error(GalError::command(
+                    StatusCode::InvalidArgument,
+                    "pass color attachment view does not match target",
+                ));
+            }
+        }
+        if depth_stencil.is_some() != expected_depth.is_some() {
+            return self.validation_error(GalError::command(
+                StatusCode::InvalidArgument,
+                "pass depth attachment presence does not match target",
+            ));
+        }
+        if let (Some(depth), Some(expected_depth)) = (depth_stencil, expected_depth) {
+            if depth.view != expected_depth {
+                return self.validation_error(GalError::command(
+                    StatusCode::InvalidArgument,
+                    "pass depth attachment view does not match target",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks a set bind against the active pipeline layout and the set's
+    /// dynamic buffer ranges.
+    #[allow(clippy::too_many_arguments)]
+    fn validate_bind_resource_set(
+        &mut self,
+        label: &str,
+        op_index: usize,
+        active_pipeline_layout: Option<Handle>,
+        pipeline_layout: &Handle,
+        set_index: &u32,
+        set: &Handle,
+        dynamic_offsets: &[u64],
+    ) -> GalResult<()> {
+        if active_pipeline_layout != Some(*pipeline_layout) {
+            return self.validation_error(GalError::command(
+                StatusCode::InvalidArgument,
+                "resource set pipeline layout does not match active pipeline",
+            ));
+        }
+        let layout = self.pipeline_layouts.get(*pipeline_layout)?;
+        let set_record = match self.resource_sets.get(*set) {
+            Ok(record) => record,
+            Err(mut error) => {
+                let replacement = self
+                    .resource_sets
+                    .slots
+                    .get(set.index() as usize)
+                    .and_then(|slot| slot.value.as_ref().map(|record| (slot.generation, record)))
+                    .map(|(generation, record)| {
+                        format!("generation={} label='{}'", generation, record.desc.label)
+                    })
+                    .unwrap_or_else(|| "none".to_owned());
+                error.message = format!(
+                    "command list '{label}' op {op_index} BindResourceSet set={set:?} live_slot={replacement}: {}",
+                    error.message
+                );
+                return Err(error);
+            }
+        };
+        let Some(expected_layout) = layout.desc.resource_layouts.get(*set_index as usize) else {
+            return self.validation_error(GalError::command(
+                StatusCode::InvalidArgument,
+                "resource set index is outside pipeline layout",
+            ));
+        };
+        if *expected_layout != set_record.desc.layout {
+            return self.validation_error(GalError::command(
+                StatusCode::InvalidArgument,
+                "resource set layout is not compatible with pipeline layout",
+            ));
+        }
+        let set_bindings = &set_record.desc.bindings;
+        let expected_dynamic_offsets: usize = set_bindings
+            .iter()
+            .map(|binding| binding.dynamic_offsets.len())
+            .sum();
+        if !dynamic_offsets.is_empty() && dynamic_offsets.len() != expected_dynamic_offsets {
+            return self.validation_error(GalError::command(
+                StatusCode::InvalidArgument,
+                format!(
+                    "resource set bind dynamic offset count {} does not match expected {}",
+                    dynamic_offsets.len(),
+                    expected_dynamic_offsets
+                ),
+            ));
+        }
+        // Borrow the set's bindings; the pure checker needs no
+        // mutable GAL state, so no per-bind clone is required.
+        let mut offset_index = 0usize;
+        let mut range_error = None;
+        for binding in set_bindings {
+            let count = binding.dynamic_offsets.len();
+            if count == 0 {
+                continue;
+            }
+            let offsets = if dynamic_offsets.is_empty() {
+                binding.dynamic_offsets.as_slice()
+            } else {
+                let end = offset_index + count;
+                let slice = &dynamic_offsets[offset_index..end];
+                offset_index = end;
+                slice
+            };
+            if let Err(error) = self.check_resource_binding_buffer_range(binding, offsets) {
+                range_error = Some(error);
+                break;
+            }
+        }
+        if let Some(error) = range_error {
+            return match error.code {
+                StatusCode::InvalidArgument => self.validation_error(error),
+                _ => Err(error),
+            };
+        }
+        Ok(())
     }
 
     pub(super) fn validate_texture_copy_region(

@@ -552,7 +552,7 @@ fn resource_set_binding_requires_the_active_pipeline_layout() {
                     pipeline_layout,
                     set_index: 0,
                     set,
-                    dynamic_offsets: Vec::new(),
+                    dynamic_offsets: Vec::new().into(),
                 },
                 CommandOp::EndPass,
             ],

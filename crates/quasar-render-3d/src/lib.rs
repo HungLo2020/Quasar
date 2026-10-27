@@ -502,7 +502,7 @@ impl RenderState3D {
                     pipeline_layout: self.layout,
                     set_index: 0,
                     set,
-                    dynamic_offsets: vec![(i * self.stride) as u64],
+                    dynamic_offsets: [(i * self.stride) as u64].into(),
                 },
                 CommandOp::SetIndexBuffer {
                     buffer: draw.mesh.indices,

@@ -137,7 +137,7 @@ impl VulkanSwapchain {
                 color_format: self.desc.color_format,
             });
         }
-        // A frame is recorded for the window size Java saw when it built the
+        // A frame is recorded for the window size the caller saw when it built the
         // frame. On X11 a resize (for example the startup switch to
         // fullscreen) need not make acquisition fail with OUT_OF_DATE, and a
         // recreation sized from the surface can land on an intermediate size
@@ -237,7 +237,7 @@ impl VulkanSwapchain {
         self.metrics.images_in_flight = self.acquired.len() as u64;
         self.metrics.available_frame_slots =
             self.images.len().saturating_sub(self.acquired.len()) as u64;
-        trace::message(&format!(
+        trace::message(format_args!(
             "gal.frame.acquire backend=vulkan correlation={} frame={} image={} target={} generation={} window={}",
             desc.correlation_id.0,
             frame.0,
@@ -382,7 +382,7 @@ impl VulkanSwapchain {
         self.metrics.images_in_flight = self.acquired.len() as u64;
         self.metrics.available_frame_slots =
             self.images.len().saturating_sub(self.acquired.len()) as u64;
-        trace::message(&format!(
+        trace::message(format_args!(
             "gal.frame.present backend=vulkan correlation={} frame={} image={} submission={} status={:?} window={}",
             desc.correlation_id.0,
             desc.frame.0,
@@ -570,8 +570,8 @@ impl VulkanSwapchain {
         let present_policy = choose_present_mode(&present_modes, self.desc.present_mode);
         let present_mode = present_policy.selected;
         let image_count = choose_image_count(capabilities, self.desc.max_frames_in_flight);
-        // Fabulous's explicit handoff snapshots the acquired image into a
-        // private Rust-owned attachment before it composes translucent work.
+        // A renderer may snapshot the acquired image into its own texture
+        // (`CopyFrameTargetToTexture`) before composing translucent work.
         // That makes the acquired image a real copy source; declare the
         // capability on the swapchain itself instead of relying on an
         // invalid layout transition succeeding on a permissive driver.
@@ -643,7 +643,7 @@ impl VulkanSwapchain {
         self.metrics.configured_frames_in_flight = u64::from(self.desc.max_frames_in_flight);
         self.metrics.images_in_flight = 0;
         self.metrics.available_frame_slots = self.images.len() as u64;
-        trace::message(&format!(
+        trace::message(format_args!(
             "gal.swapchain.recreate backend=vulkan count={} extent={}x{} images={} min_images={} max_images={} requested_present={} supported_present_mask=0x{:x} selected_present={} fallback_reason={} format={} window={}",
             self.recreate_count,
             self.extent.width,

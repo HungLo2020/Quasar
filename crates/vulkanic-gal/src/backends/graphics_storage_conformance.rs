@@ -338,7 +338,7 @@ void main() {{
                     pipeline_layout: layout,
                     set_index: 0,
                     set,
-                    dynamic_offsets: vec![],
+                    dynamic_offsets: vec![].into(),
                 },
                 CommandOp::Draw {
                     vertices: 3,

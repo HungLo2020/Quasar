@@ -8,7 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// Bump when compile options or key material change.
+/// Bump when compile options or key material change. (The name predates
+/// VulkanicGAL's move into Quasar; renaming it would discard every cache.)
 const SCHEMA: &str = "mattmc-spirv-cache-v1;shaderc-0.10.1;vulkan1.3;auto-bind;auto-map";
 const MAX_ENTRIES: usize = 8192;
 const SPIRV_MAGIC: u32 = 0x0723_0203;
@@ -18,11 +19,11 @@ const SPIRV_MAGIC: u32 = 0x0723_0203;
 /// also disable caching so a cache hit cannot bypass the requested output.
 pub(in crate::backends) fn cache_dir() -> Option<PathBuf> {
     // Source dumps happen inside the compiler; never skip them with a hit.
-    if std::env::var_os("MATTMC_RUST_SHADER_DUMP_DIR").is_some() {
+    if crate::env::var_os("VULKANIC_SHADER_DUMP_DIR").is_some() {
         return None;
     }
     // A library must not pick a game's storage location or write into HOME.
-    std::env::var_os("VULKANIC_SPIRV_CACHE_DIR")
+    crate::env::var_os("VULKANIC_SPIRV_CACHE_DIR")
         .filter(|value| value != "off")
         .map(PathBuf::from)
 }
@@ -59,9 +60,21 @@ fn valid_spirv(bytes: &[u8]) -> bool {
         && u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) == SPIRV_MAGIC
 }
 
+/// Entries in the cache directory: counted once per process, then kept up
+/// to date by this process's stores (another process's stores may let the
+/// directory exceed the bound slightly, which only costs disk).
+static ENTRIES: std::sync::OnceLock<std::sync::atomic::AtomicUsize> = std::sync::OnceLock::new();
+
 fn store(dir: &Path, path: &Path, spirv: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::Ordering;
     std::fs::create_dir_all(dir)?;
-    if std::fs::read_dir(dir)?.take(MAX_ENTRIES + 1).count() > MAX_ENTRIES {
+    let entries = ENTRIES.get_or_init(|| {
+        let count = std::fs::read_dir(dir)
+            .map(|entries| entries.take(MAX_ENTRIES + 1).count())
+            .unwrap_or(0);
+        std::sync::atomic::AtomicUsize::new(count)
+    });
+    if entries.load(Ordering::Relaxed) > MAX_ENTRIES {
         return Ok(());
     }
     let temporary = dir.join(format!(
@@ -74,7 +87,9 @@ fn store(dir: &Path, path: &Path, spirv: &[u8]) -> std::io::Result<()> {
     std::fs::write(&temporary, spirv)?;
     std::fs::rename(&temporary, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&temporary);
-    })
+    })?;
+    entries.fetch_add(1, Ordering::Relaxed);
+    Ok(())
 }
 
 /// Returns cached SPIR-V for this exact input, or compiles and stores it.

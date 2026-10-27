@@ -42,7 +42,7 @@ fn bind(set: Handle) -> CommandOp {
         pipeline_layout: handle(HandleKind::PipelineLayout, 1),
         set_index: 0,
         set,
-        dynamic_offsets: Vec::new(),
+        dynamic_offsets: Vec::new().into(),
     }
 }
 

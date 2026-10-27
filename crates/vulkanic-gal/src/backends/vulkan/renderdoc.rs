@@ -46,13 +46,13 @@ pub(crate) struct RenderDocFrame {
 
 impl RenderDocFrame {
     pub(crate) fn start_if_requested() -> Option<Self> {
-        if !std::env::var("MATTMC_RENDERDOC_CAPTURE")
+        if !crate::env::var("VULKANIC_RENDERDOC_CAPTURE")
             .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
         {
             return None;
         }
-        if !std::env::var("MATTMC_RENDERDOC_BACKEND")
+        if !crate::env::var("VULKANIC_RENDERDOC_BACKEND")
             .map(|value| value.is_empty() || value.eq_ignore_ascii_case("vulkan"))
             .unwrap_or(true)
         {
@@ -63,7 +63,7 @@ impl RenderDocFrame {
         }
         eprintln!("RenderDoc capture requested for Rust Vulkan test");
         unsafe {
-            let library_name = std::env::var("MATTMC_RENDERDOC_LIBRARY_PATH")
+            let library_name = crate::env::var("VULKANIC_RENDERDOC_LIBRARY_PATH")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "librenderdoc.so".to_string());
@@ -91,7 +91,7 @@ impl RenderDocFrame {
             }
             let api = api.cast::<RenderDocApiV1_0_0>();
             eprintln!("RenderDoc API initialized for Rust Vulkan test capture");
-            if let Ok(template) = std::env::var("MATTMC_RENDERDOC_CAPTURE_TEMPLATE") {
+            if let Ok(template) = crate::env::var("VULKANIC_RENDERDOC_CAPTURE_TEMPLATE") {
                 if let Ok(c_template) = CString::new(template) {
                     ((*api).set_capture_file_path_template)(c_template.as_ptr());
                 }

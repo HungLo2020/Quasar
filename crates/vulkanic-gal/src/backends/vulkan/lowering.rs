@@ -12,6 +12,7 @@ use staging::{StagingChunk, StagingCursor};
 use super::device::VulkanContext;
 use super::resources::VulkanObjects;
 use super::trace;
+use crate::backends::CompletedHostRead;
 use crate::commands::{
     AttachmentLoadOp, AttachmentStoreOp, BufferImageCopyRegion, CommandOp, TextureImageCopyRegion,
     TextureRowOrder, TextureUsageState, ValidatedSubmissionBatch,
@@ -73,7 +74,7 @@ pub(super) struct SubmissionLowerer {
     // consumed, so semaphore ownership remains independent of frame count.
     present_semaphores: HashMap<u32, vk::Semaphore>,
     // Keep the submission receipt until queuePresent consumes its wait. A
-    // timeline retirement can happen before the Java present callback arrives.
+    // timeline retirement can happen before the caller presents the frame.
     pending_present_semaphores: BTreeMap<SubmissionId, (u32, vk::Semaphore)>,
 }
 
@@ -376,7 +377,7 @@ impl SubmissionLowerer {
                         if matches!(list.operations[op_index], CommandOp::Barrier(_)) {
                             let start = op_index;
                             let mut end = op_index;
-                            let mut resources = HashSet::new();
+                            let mut resources: SmallVec<[Handle; 16]> = SmallVec::new();
                             while end < list.operations.len() {
                                 let CommandOp::Barrier(barrier) = &list.operations[end] else {
                                     break;
@@ -389,9 +390,10 @@ impl SubmissionLowerer {
                                 if barrier.resource.kind() == Some(HandleKind::TextureView) {
                                     break;
                                 }
-                                if !resources.insert(barrier.resource) {
+                                if resources.contains(&barrier.resource) {
                                     break;
                                 }
+                                resources.push(barrier.resource);
                                 end += 1;
                             }
                             if end.saturating_sub(start) > 1 {
@@ -411,13 +413,14 @@ impl SubmissionLowerer {
                         if matches!(list.operations[op_index], CommandOp::HostWriteBuffer { .. }) {
                             let start = op_index;
                             let mut end = op_index;
-                            let mut buffers = HashSet::new();
+                            let mut buffers: SmallVec<[Handle; 16]> = SmallVec::new();
                             while let Some(CommandOp::HostWriteBuffer { buffer, .. }) =
                                 list.operations.get(end)
                             {
-                                if !buffers.insert(*buffer) {
+                                if buffers.contains(buffer) {
                                     break;
                                 }
+                                buffers.push(*buffer);
                                 end += 1;
                             }
                             if end - start > 1 {
@@ -483,6 +486,22 @@ impl SubmissionLowerer {
                         ));
                     }
                     self.transition_pending_frame_targets_to_present(command_buffer, &mut state);
+                    if !state.host_reads.is_empty() {
+                        // Timeline completion does not make device writes
+                        // visible to the host; this dependency does.
+                        let to_host = vk::MemoryBarrier2::default()
+                            .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
+                            .src_access_mask(vk::AccessFlags2::MEMORY_WRITE)
+                            .dst_stage_mask(vk::PipelineStageFlags2::HOST)
+                            .dst_access_mask(vk::AccessFlags2::HOST_READ);
+                        unsafe {
+                            self.context.device.cmd_pipeline_barrier2(
+                                command_buffer,
+                                &vk::DependencyInfo::default()
+                                    .memory_barriers(std::slice::from_ref(&to_host)),
+                            );
+                        }
+                    }
                     if timestamp_set.active {
                         unsafe {
                             self.write_timestamp(
@@ -541,12 +560,12 @@ impl SubmissionLowerer {
         id: SubmissionId,
         acquire_wait_semaphore: Option<vk::Semaphore>,
     ) -> GalResult<()> {
-        if self.in_flight.len() >= MAX_IN_FLIGHT_SUBMISSIONS {
-            let oldest = self
-                .in_flight
-                .front()
-                .map(|submission| submission.id)
-                .expect("in-flight window is non-empty at its limit");
+        if let Some(oldest) = self
+            .in_flight
+            .front()
+            .map(|submission| submission.id)
+            .filter(|_| self.in_flight.len() >= MAX_IN_FLIGHT_SUBMISSIONS)
+        {
             // Wait only for the oldest timeline value. This preserves
             // explicit asynchronous ownership without allowing unbounded
             // command buffers or descriptor-backed resources to accumulate.
@@ -564,15 +583,16 @@ impl SubmissionLowerer {
             .map(|command_buffer| {
                 vk::CommandBufferSubmitInfo::default().command_buffer(*command_buffer)
             })
-            .collect::<Vec<_>>();
+            .collect::<SmallVec<[_; 4]>>();
         let present_semaphore = encoded
             .present_image_index
             .map(|image_index| self.ensure_present_semaphore(image_index))
             .transpose()?;
-        let mut signal_info = vec![vk::SemaphoreSubmitInfo::default()
-            .semaphore(self.context.timeline)
-            .value(id.0)
-            .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)];
+        let mut signal_info: SmallVec<[vk::SemaphoreSubmitInfo; 2]> =
+            smallvec::smallvec![vk::SemaphoreSubmitInfo::default()
+                .semaphore(self.context.timeline)
+                .value(id.0)
+                .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)];
         if let Some(semaphore) = present_semaphore {
             signal_info.push(
                 vk::SemaphoreSubmitInfo::default()
@@ -580,12 +600,14 @@ impl SubmissionLowerer {
                     .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS),
             );
         }
-        let wait_info = acquire_wait_semaphore.map(|semaphore| {
-            vk::SemaphoreSubmitInfo::default()
-                .semaphore(semaphore)
-                .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        });
-        let wait_infos = wait_info.into_iter().collect::<Vec<_>>();
+        let wait_infos: SmallVec<[vk::SemaphoreSubmitInfo; 1]> = acquire_wait_semaphore
+            .map(|semaphore| {
+                vk::SemaphoreSubmitInfo::default()
+                    .semaphore(semaphore)
+                    .stage_mask(ACQUIRE_WAIT_STAGES)
+            })
+            .into_iter()
+            .collect();
         let submit = vk::SubmitInfo2::default()
             .command_buffer_infos(&command_buffer_infos)
             .wait_semaphore_infos(&wait_infos)
@@ -604,13 +626,14 @@ impl SubmissionLowerer {
             // queue_submit2 did not take ownership of these command buffers.
             // Release them immediately so a failed submission cannot leak
             // live ownership or exhaust the bounded command-buffer pool.
-            let failure_bytes = format!("Vulkan queue submit failed: {error:?}").into_bytes();
+            let failure = format!("Vulkan queue submit failed: {error:?}");
             for request in &encoded.host_reads {
                 self.completed_host_reads.push(CompletedHostRead {
                     submission: id,
                     buffer: request.buffer,
                     offset: request.offset,
-                    bytes: failure_bytes.clone(),
+                    bytes: Vec::new(),
+                    error: Some(failure.clone()),
                 });
             }
             let command_buffer_count = encoded.command_buffers.len() as u64;
@@ -619,9 +642,7 @@ impl SubmissionLowerer {
                 .metrics
                 .command_buffers_freed
                 .saturating_add(command_buffer_count);
-            return Err(GalError::backend(
-                String::from_utf8_lossy(&failure_bytes).into_owned(),
-            ));
+            return Err(GalError::backend(failure));
         }
         self.in_flight.push_back(InFlightSubmission {
             id,
@@ -698,7 +719,9 @@ impl SubmissionLowerer {
             if front.id > self.completed {
                 break;
             }
-            let mut complete = self.in_flight.pop_front().expect("front existed");
+            let Some(mut complete) = self.in_flight.pop_front() else {
+                break;
+            };
             staging::recycle_chunks(
                 &mut self.idle_staging,
                 std::mem::take(&mut complete.uploads),
@@ -706,9 +729,17 @@ impl SubmissionLowerer {
             self.complete_host_reads(&complete);
             self.complete_gpu_timestamps(&complete);
             self.complete_pipeline_statistics(&complete);
-            self.free_command_buffers(&complete.command_buffers)
-                .expect("retiring a Vulkan submission must own its command buffers");
-            self.metrics.command_buffers_freed += complete.command_buffers.len() as u64;
+            // Polling has no error path; a failed reset leaks the buffers
+            // (reported) instead of aborting the frame.
+            match self.free_command_buffers(&complete.command_buffers) {
+                Ok(()) => {
+                    self.metrics.command_buffers_freed += complete.command_buffers.len() as u64
+                }
+                Err(error) => trace::stderr(format_args!(
+                    "vulkan.retire.command-buffers-leaked id={} error={error}",
+                    complete.id.0
+                )),
+            }
             self.recycle_acquire_semaphore(complete.acquire_wait_semaphore);
         }
         self.completed
@@ -722,10 +753,12 @@ impl SubmissionLowerer {
             let _zone = trace::Zone::new("vulkan.backend.wait-timeline");
             let wait_started = std::time::Instant::now();
             let context = &self.context;
-            let mut complete = wait_then_pop_front(&mut self.in_flight, |entry| {
+            let Some(mut complete) = wait_then_pop_front(&mut self.in_flight, |entry| {
                 wait_timeline(context, entry.id)
             })?
-            .expect("front existed");
+            else {
+                break;
+            };
             staging::recycle_chunks(
                 &mut self.idle_staging,
                 std::mem::take(&mut complete.uploads),
@@ -872,8 +905,13 @@ impl SubmissionLowerer {
         Ok(semaphore)
     }
 
-    pub(super) fn completed_host_reads_snapshot(&self) -> &[CompletedHostRead] {
-        &self.completed_host_reads
+    pub(super) fn completed_host_reads_since(
+        &self,
+        after: SubmissionId,
+    ) -> impl Iterator<Item = &CompletedHostRead> {
+        self.completed_host_reads
+            .iter()
+            .filter(move |read| read.submission > after)
     }
 
     pub(super) fn metrics(&self) -> VulkanLoweringMetrics {
@@ -1085,17 +1123,8 @@ impl SubmissionLowerer {
     }
 
     fn allocate_command_buffer(&mut self) -> GalResult<vk::CommandBuffer> {
+        // Recycled buffers were reset when they retired.
         if let Some(command_buffer) = self.recycled_command_buffers.pop() {
-            unsafe {
-                self.context
-                    .device
-                    .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
-            }
-            .map_err(|error| {
-                GalError::backend(format!(
-                    "failed to reset recycled Vulkan command buffer: {error:?}"
-                ))
-            })?;
             return Ok(command_buffer);
         }
         let allocate_info = vk::CommandBufferAllocateInfo::default()
@@ -1114,9 +1143,14 @@ impl SubmissionLowerer {
     }
 
     fn free_command_buffers(&mut self, command_buffers: &[vk::CommandBuffer]) -> GalResult<()> {
-        let requested = command_buffers.iter().copied().collect::<HashSet<_>>();
-        if requested.len() != command_buffers.len()
-            || requested
+        // A batch holds at most a few dozen buffers; check them all before
+        // releasing any so a bad request changes nothing.
+        let duplicated = command_buffers
+            .iter()
+            .enumerate()
+            .any(|(index, buffer)| command_buffers[..index].contains(buffer));
+        if duplicated
+            || command_buffers
                 .iter()
                 .any(|command_buffer| !self.live_command_buffers.contains(command_buffer))
         {
@@ -1177,8 +1211,8 @@ impl SubmissionLowerer {
                         && barrier.after == TextureUsageState::ShaderRead
                 })
         };
-        let mut before = Vec::with_capacity(writes.len());
-        let mut after = Vec::with_capacity(writes.len());
+        let mut before: SmallVec<[vk::BufferMemoryBarrier2<'_>; 16]> = SmallVec::new();
+        let mut after: SmallVec<[vk::BufferMemoryBarrier2<'_>; 16]> = SmallVec::new();
         for op in writes {
             let CommandOp::HostWriteBuffer {
                 buffer: handle,
@@ -1194,30 +1228,10 @@ impl SubmissionLowerer {
                 continue;
             }
             let buffer = objects.buffer(*handle)?;
-            // Order reuse against reads/writes in earlier submissions too.
-            before.push(
-                vk::BufferMemoryBarrier2::default()
-                    .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                    .src_access_mask(vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE)
-                    .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                    .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                    .buffer(buffer.buffer)
-                    .offset(*offset)
-                    .size(data.len() as u64),
-            );
+            let (write_before, write_after) = host_write_barriers(buffer, *offset, data.len());
+            before.push(write_before);
             if !published(*handle) {
-                after.push(
-                    vk::BufferMemoryBarrier2::default()
-                        .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                        .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                        .dst_access_mask(
-                            vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
-                        )
-                        .buffer(buffer.buffer)
-                        .offset(*offset)
-                        .size(data.len() as u64),
-                );
+                after.push(write_after);
             }
         }
         unsafe {
@@ -1393,6 +1407,268 @@ impl SubmissionLowerer {
         Ok(())
     }
 
+    /// Begins dynamic rendering for a GAL pass: frame-target layout
+    /// transitions, attachments, viewport and scissor, and pass-scoped
+    /// queries.
+    ///
+    /// # Safety
+    /// `command_buffer` is recording and not inside a render pass, and every
+    /// handle the op names was validated against `objects`.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn encode_begin_pass(
+        &self,
+        objects: &VulkanObjects,
+        command_buffer: vk::CommandBuffer,
+        state: &mut EncodingState,
+        pass: &Handle,
+        target: &Handle,
+        colors: &[crate::commands::PassAttachment],
+        depth_stencil: &Option<crate::commands::PassAttachment>,
+    ) -> GalResult<()> {
+        unsafe {
+            if trace_submissions_enabled() {
+                trace::stdout(format_args!(
+                    "vulkan.begin-pass target=0x{:016x} colors={} depth={}",
+                    target.raw(),
+                    colors.len(),
+                    depth_stencil.is_some()
+                ));
+            }
+            let pass_object = objects.render_pass(*pass)?;
+            let timestamp_pass = TimingSpan::from_tag(pass_object.profile_tag);
+            let pass_statistics_scope = pass_object
+                .profile_tag
+                .statistics_scope
+                .filter(|scope| usize::from(*scope) < GPU_PROFILE_SCOPE_COUNT);
+            self.switch_timestamp_pass(command_buffer, state, timestamp_pass);
+            if self.context.command_labels {
+                self.context
+                    .begin_label(command_buffer, &format!("gal.pass.0x{:016x}", pass.raw()));
+            }
+            if pass_object.target != *target {
+                return Err(GalError::backend(
+                    "render pass target mismatch during lowering",
+                ));
+            }
+            let (color_attachments, depth_attachment, extent, frame_present) = if target.kind()
+                == Some(HandleKind::FrameTarget)
+            {
+                let frame = objects.frame_target(*target)?;
+                let old_layout = state
+                    .frame_target_layouts
+                    .get(target)
+                    .copied()
+                    .unwrap_or(frame.image_layout);
+                let range = vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                };
+                let to_attachment = vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(frame_source_stage_mask(
+                        old_layout,
+                        vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                    ))
+                    .src_access_mask(frame_layout_access_mask(old_layout))
+                    .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                    .dst_access_mask(
+                        vk::AccessFlags2::COLOR_ATTACHMENT_READ
+                            | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                    )
+                    .old_layout(old_layout)
+                    .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                    .image(frame.image)
+                    .subresource_range(range);
+                self.context.device.cmd_pipeline_barrier2(
+                    command_buffer,
+                    &vk::DependencyInfo::default()
+                        .image_memory_barriers(std::slice::from_ref(&to_attachment)),
+                );
+                stdout_trace("vulkan.begin-pass.frame-barrier");
+                state
+                    .frame_target_layouts
+                    .insert(*target, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+                let clear = colors
+                    .first()
+                    .and_then(|attachment| attachment.clear_color)
+                    .map(|color| [color.r, color.g, color.b, color.a])
+                    .unwrap_or([0.0; 4]);
+                // The GAL pass declares preservation/clearing. A prior
+                // image copy is as real a writer as a render pass; do
+                // not replace an explicit Load with backend policy.
+                let load = if colors.is_empty() {
+                    vk::AttachmentLoadOp::LOAD
+                } else {
+                    load_op(colors[0].load_op)
+                };
+                trace::message(format_args!(
+                        "gal.frame.target.begin backend=vulkan frame={} image={} view=0x{:016x} extent={}x{} layout={} load={} clear={:.3},{:.3},{:.3},{:.3}",
+                        frame.frame_id,
+                        frame.image_index,
+                        frame.image_view.as_raw(),
+                        frame.extent.width,
+                        frame.extent.height,
+                        old_layout.as_raw(),
+                        load.as_raw(),
+                        clear[0],
+                        clear[1],
+                        clear[2],
+                        clear[3]
+                    ));
+                let depth_attachment = depth_stencil
+                    .as_ref()
+                    .map(|attachment| {
+                        let view = objects.texture_view(attachment.view)?;
+                        Ok(vk::RenderingAttachmentInfo::default()
+                            .image_view(view.view)
+                            .image_layout(if view.format == vk::Format::D24_UNORM_S8_UINT {
+                                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                            } else {
+                                vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
+                            })
+                            .load_op(load_op(attachment.load_op))
+                            .store_op(store_op(attachment.store_op))
+                            .clear_value(vk::ClearValue {
+                                depth_stencil: vk::ClearDepthStencilValue {
+                                    depth: 1.0,
+                                    stencil: 0,
+                                },
+                            }))
+                    })
+                    .transpose()?;
+                (
+                    vec![vk::RenderingAttachmentInfo::default()
+                        .image_view(frame.image_view)
+                        .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                        .load_op(load)
+                        .store_op(if colors.is_empty() {
+                            vk::AttachmentStoreOp::STORE
+                        } else {
+                            store_op(colors[0].store_op)
+                        })
+                        .clear_value(vk::ClearValue {
+                            color: vk::ClearColorValue { float32: clear },
+                        })],
+                    depth_attachment,
+                    frame.extent,
+                    Some(FramePresentTransition {
+                        target: *target,
+                        image: frame.image,
+                        image_index: frame.image_index,
+                        frame_id: frame.frame_id,
+                        range,
+                    }),
+                )
+            } else {
+                let target_object = objects.render_target(*target)?;
+                let color_attachments = colors
+                    .iter()
+                    .map(|attachment| {
+                        let view = objects.texture_view(attachment.view)?;
+                        Ok(vk::RenderingAttachmentInfo::default()
+                            .image_view(view.view)
+                            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                            .load_op(load_op(attachment.load_op))
+                            .store_op(store_op(attachment.store_op))
+                            .clear_value(vk::ClearValue {
+                                color: vk::ClearColorValue {
+                                    float32: attachment
+                                        .clear_color
+                                        .map(|color| [color.r, color.g, color.b, color.a])
+                                        .unwrap_or([0.0, 0.0, 0.0, 0.0]),
+                                },
+                            }))
+                    })
+                    .collect::<GalResult<Vec<_>>>()?;
+                let depth_attachment = depth_stencil
+                    .as_ref()
+                    .map(|attachment| {
+                        let view = objects.texture_view(attachment.view)?;
+                        Ok(vk::RenderingAttachmentInfo::default()
+                            .image_view(view.view)
+                            .image_layout(if view.format == vk::Format::D24_UNORM_S8_UINT {
+                                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                            } else {
+                                vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
+                            })
+                            .load_op(load_op(attachment.load_op))
+                            .store_op(store_op(attachment.store_op))
+                            .clear_value(vk::ClearValue {
+                                depth_stencil: vk::ClearDepthStencilValue {
+                                    depth: 1.0,
+                                    stencil: 0,
+                                },
+                            }))
+                    })
+                    .transpose()?;
+                (
+                    color_attachments,
+                    depth_attachment,
+                    target_object.extent,
+                    None,
+                )
+            };
+            let mut rendering = vk::RenderingInfo::default()
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: vk::Extent2D {
+                        width: extent.width,
+                        height: extent.height,
+                    },
+                })
+                .layer_count(1)
+                .color_attachments(&color_attachments);
+            if let Some(depth_attachment) = depth_attachment.as_ref() {
+                rendering = rendering.depth_attachment(depth_attachment);
+                if let Some(attachment) = depth_stencil {
+                    if objects.texture_view(attachment.view)?.format
+                        == vk::Format::D24_UNORM_S8_UINT
+                    {
+                        rendering = rendering.stencil_attachment(depth_attachment);
+                    }
+                }
+            }
+            self.context
+                .device
+                .cmd_begin_rendering(command_buffer, &rendering);
+            stdout_trace("vulkan.begin-pass.cmd-begin-rendering");
+            let viewport = vk::Viewport {
+                x: 0.0,
+                y: extent.height as f32,
+                width: extent.width as f32,
+                height: -(extent.height as f32),
+                min_depth: 0.0,
+                max_depth: 1.0,
+            };
+            state.pass_extent = Some(extent);
+            state.raster_y_direction = Some(crate::resources::RasterYDirection::Up);
+            let scissor = vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: vk::Extent2D {
+                    width: extent.width,
+                    height: extent.height,
+                },
+            };
+            self.context
+                .device
+                .cmd_set_viewport(command_buffer, 0, &[viewport]);
+            self.context
+                .device
+                .cmd_set_scissor(command_buffer, 0, &[scissor]);
+            // Dynamic-rendering validation requires a pipeline query
+            // to begin after vkCmdBeginRendering and end before
+            // vkCmdEndRendering. Timestamp writes remain outside the
+            // render pass and are intentionally handled separately.
+            self.switch_pipeline_statistics_pass(command_buffer, state, pass_statistics_scope);
+            state.in_pass = true;
+            state.provoking_vertex = None;
+            state.frame_present = frame_present;
+        }
+        Ok(())
+    }
+
     fn encode_op(
         &self,
         objects: &VulkanObjects,
@@ -1401,6 +1677,11 @@ impl SubmissionLowerer {
         op: &CommandOp,
         following_publication_barrier: bool,
     ) -> GalResult<()> {
+        // SAFETY: `encode` calls this between begin and end of
+        // `command_buffer`'s recording, with ops the GAL validated (at least
+        // structurally: pass nesting, draws inside passes, copies outside);
+        // every native handle comes from `objects`, which outlives the
+        // submission through deferred retirement.
         unsafe {
             match op {
                 CommandOp::TrackSubmission(_) => {
@@ -1414,249 +1695,15 @@ impl SubmissionLowerer {
                     colors,
                     depth_stencil,
                 } => {
-                    if trace_submissions_enabled() {
-                        trace::stdout(format_args!(
-                            "vulkan.begin-pass target=0x{:016x} colors={} depth={}",
-                            target.raw(),
-                            colors.len(),
-                            depth_stencil.is_some()
-                        ));
-                    }
-                    let pass_object = objects.render_pass(*pass)?;
-                    let timestamp_pass = TimingSpan::from_tag(pass_object.profile_tag);
-                    let pass_statistics_scope = pass_object
-                        .profile_tag
-                        .statistics_scope
-                        .filter(|scope| usize::from(*scope) < GPU_PROFILE_SCOPE_COUNT);
-                    self.switch_timestamp_pass(command_buffer, state, timestamp_pass);
-                    if self.context.command_labels {
-                        self.context.begin_label(
-                            command_buffer,
-                            &format!("gal.pass.0x{:016x}", pass.raw()),
-                        );
-                    }
-                    if pass_object.target != *target {
-                        return Err(GalError::backend(
-                            "render pass target mismatch during lowering",
-                        ));
-                    }
-                    let (color_attachments, depth_attachment, extent, frame_present) = if target
-                        .kind()
-                        == Some(HandleKind::FrameTarget)
-                    {
-                        let frame = objects.frame_target(*target)?;
-                        let old_layout = state
-                            .frame_target_layouts
-                            .get(target)
-                            .copied()
-                            .unwrap_or(frame.image_layout);
-                        let range = vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        };
-                        let to_attachment = vk::ImageMemoryBarrier2::default()
-                            .src_stage_mask(frame_layout_stage_mask(old_layout))
-                            .src_access_mask(frame_layout_access_mask(old_layout))
-                            .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                            .dst_access_mask(
-                                vk::AccessFlags2::COLOR_ATTACHMENT_READ
-                                    | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                            )
-                            .old_layout(old_layout)
-                            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                            .image(frame.image)
-                            .subresource_range(range);
-                        self.context.device.cmd_pipeline_barrier2(
-                            command_buffer,
-                            &vk::DependencyInfo::default()
-                                .image_memory_barriers(std::slice::from_ref(&to_attachment)),
-                        );
-                        stdout_trace("vulkan.begin-pass.frame-barrier");
-                        state
-                            .frame_target_layouts
-                            .insert(*target, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-                        let clear = colors
-                            .first()
-                            .and_then(|attachment| attachment.clear_color)
-                            .map(|color| [color.r, color.g, color.b, color.a])
-                            .unwrap_or([0.0; 4]);
-                        // The GAL pass declares preservation/clearing. A prior
-                        // image copy is as real a writer as a render pass; do
-                        // not replace an explicit Load with backend policy.
-                        let load = if colors.is_empty() {
-                            vk::AttachmentLoadOp::LOAD
-                        } else {
-                            load_op(colors[0].load_op)
-                        };
-                        trace::message(&format!(
-                                "gal.frame.target.begin backend=vulkan frame={} image={} view=0x{:016x} extent={}x{} layout={} load={} clear={:.3},{:.3},{:.3},{:.3}",
-                                frame.frame_id,
-                                frame.image_index,
-                                frame.image_view.as_raw(),
-                                frame.extent.width,
-                                frame.extent.height,
-                                old_layout.as_raw(),
-                                load.as_raw(),
-                                clear[0],
-                                clear[1],
-                                clear[2],
-                                clear[3]
-                            ));
-                        let depth_attachment = depth_stencil
-                            .as_ref()
-                            .map(|attachment| {
-                                let view = objects.texture_view(attachment.view)?;
-                                Ok(vk::RenderingAttachmentInfo::default()
-                                    .image_view(view.view)
-                                    .image_layout(if view.format == vk::Format::D24_UNORM_S8_UINT {
-                                        vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-                                    } else {
-                                        vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
-                                    })
-                                    .load_op(load_op(attachment.load_op))
-                                    .store_op(store_op(attachment.store_op))
-                                    .clear_value(vk::ClearValue {
-                                        depth_stencil: vk::ClearDepthStencilValue {
-                                            depth: 1.0,
-                                            stencil: 0,
-                                        },
-                                    }))
-                            })
-                            .transpose()?;
-                        (
-                            vec![vk::RenderingAttachmentInfo::default()
-                                .image_view(frame.image_view)
-                                .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                                .load_op(load)
-                                .store_op(if colors.is_empty() {
-                                    vk::AttachmentStoreOp::STORE
-                                } else {
-                                    store_op(colors[0].store_op)
-                                })
-                                .clear_value(vk::ClearValue {
-                                    color: vk::ClearColorValue { float32: clear },
-                                })],
-                            depth_attachment,
-                            frame.extent,
-                            Some(FramePresentTransition {
-                                target: *target,
-                                image: frame.image,
-                                image_index: frame.image_index,
-                                frame_id: frame.frame_id,
-                                range,
-                            }),
-                        )
-                    } else {
-                        let target_object = objects.render_target(*target)?;
-                        let color_attachments = colors
-                            .iter()
-                            .map(|attachment| {
-                                let view = objects.texture_view(attachment.view)?;
-                                Ok(vk::RenderingAttachmentInfo::default()
-                                    .image_view(view.view)
-                                    .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                                    .load_op(load_op(attachment.load_op))
-                                    .store_op(store_op(attachment.store_op))
-                                    .clear_value(vk::ClearValue {
-                                        color: vk::ClearColorValue {
-                                            float32: attachment
-                                                .clear_color
-                                                .map(|color| [color.r, color.g, color.b, color.a])
-                                                .unwrap_or([0.0, 0.0, 0.0, 0.0]),
-                                        },
-                                    }))
-                            })
-                            .collect::<GalResult<Vec<_>>>()?;
-                        let depth_attachment = depth_stencil
-                            .as_ref()
-                            .map(|attachment| {
-                                let view = objects.texture_view(attachment.view)?;
-                                Ok(vk::RenderingAttachmentInfo::default()
-                                    .image_view(view.view)
-                                    .image_layout(if view.format == vk::Format::D24_UNORM_S8_UINT {
-                                        vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-                                    } else {
-                                        vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL
-                                    })
-                                    .load_op(load_op(attachment.load_op))
-                                    .store_op(store_op(attachment.store_op))
-                                    .clear_value(vk::ClearValue {
-                                        depth_stencil: vk::ClearDepthStencilValue {
-                                            depth: 1.0,
-                                            stencil: 0,
-                                        },
-                                    }))
-                            })
-                            .transpose()?;
-                        (
-                            color_attachments,
-                            depth_attachment,
-                            target_object.extent,
-                            None,
-                        )
-                    };
-                    let mut rendering = vk::RenderingInfo::default()
-                        .render_area(vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: vk::Extent2D {
-                                width: extent.width,
-                                height: extent.height,
-                            },
-                        })
-                        .layer_count(1)
-                        .color_attachments(&color_attachments);
-                    if let Some(depth_attachment) = depth_attachment.as_ref() {
-                        rendering = rendering.depth_attachment(depth_attachment);
-                        if let Some(attachment) = depth_stencil {
-                            if objects.texture_view(attachment.view)?.format
-                                == vk::Format::D24_UNORM_S8_UINT
-                            {
-                                rendering = rendering.stencil_attachment(depth_attachment);
-                            }
-                        }
-                    }
-                    self.context
-                        .device
-                        .cmd_begin_rendering(command_buffer, &rendering);
-                    stdout_trace("vulkan.begin-pass.cmd-begin-rendering");
-                    let viewport = vk::Viewport {
-                        x: 0.0,
-                        y: extent.height as f32,
-                        width: extent.width as f32,
-                        height: -(extent.height as f32),
-                        min_depth: 0.0,
-                        max_depth: 1.0,
-                    };
-                    state.pass_extent = Some(extent);
-                    state.raster_y_direction = Some(crate::resources::RasterYDirection::Up);
-                    let scissor = vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: vk::Extent2D {
-                            width: extent.width,
-                            height: extent.height,
-                        },
-                    };
-                    self.context
-                        .device
-                        .cmd_set_viewport(command_buffer, 0, &[viewport]);
-                    self.context
-                        .device
-                        .cmd_set_scissor(command_buffer, 0, &[scissor]);
-                    // Dynamic-rendering validation requires a pipeline query
-                    // to begin after vkCmdBeginRendering and end before
-                    // vkCmdEndRendering. Timestamp writes remain outside the
-                    // render pass and are intentionally handled separately.
-                    self.switch_pipeline_statistics_pass(
+                    self.encode_begin_pass(
+                        objects,
                         command_buffer,
                         state,
-                        pass_statistics_scope,
-                    );
-                    state.in_pass = true;
-                    state.provoking_vertex = None;
-                    state.frame_present = frame_present;
+                        pass,
+                        target,
+                        colors,
+                        depth_stencil,
+                    )?;
                 }
                 CommandOp::EndPass => {
                     self.switch_pipeline_statistics_pass(command_buffer, state, None);
@@ -2047,7 +2094,10 @@ impl SubmissionLowerer {
                         layer_count: 1,
                     };
                     let source_barrier = vk::ImageMemoryBarrier2::default()
-                        .src_stage_mask(frame_layout_stage_mask(old_layout))
+                        .src_stage_mask(frame_source_stage_mask(
+                            old_layout,
+                            vk::PipelineStageFlags2::COPY,
+                        ))
                         .src_access_mask(frame_layout_access_mask(old_layout))
                         .dst_stage_mask(vk::PipelineStageFlags2::COPY)
                         .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
@@ -2141,7 +2191,10 @@ impl SubmissionLowerer {
                         layer_count: 1,
                     };
                     let to_transfer = vk::ImageMemoryBarrier2::default()
-                        .src_stage_mask(frame_layout_stage_mask(old_layout))
+                        .src_stage_mask(frame_source_stage_mask(
+                            old_layout,
+                            vk::PipelineStageFlags2::COPY,
+                        ))
                         .src_access_mask(frame_layout_access_mask(old_layout))
                         .dst_stage_mask(vk::PipelineStageFlags2::COPY)
                         .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
@@ -2297,17 +2350,7 @@ impl SubmissionLowerer {
                     if data.is_empty() {
                         return Ok(());
                     }
-                    // Order reuse against reads/writes in earlier submissions too.
-                    let before = vk::BufferMemoryBarrier2::default()
-                        .src_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                        .src_access_mask(
-                            vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
-                        )
-                        .dst_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                        .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                        .buffer(buffer.buffer)
-                        .offset(*offset)
-                        .size(data.len() as u64);
+                    let (before, after) = host_write_barriers(buffer, *offset, data.len());
                     self.context.device.cmd_pipeline_barrier2(
                         command_buffer,
                         &vk::DependencyInfo::default()
@@ -2334,16 +2377,6 @@ impl SubmissionLowerer {
                         );
                     }
                     if !following_publication_barrier {
-                        let after = vk::BufferMemoryBarrier2::default()
-                            .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
-                            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                            .dst_stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-                            .dst_access_mask(
-                                vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE,
-                            )
-                            .buffer(buffer.buffer)
-                            .offset(*offset)
-                            .size(data.len() as u64);
                         self.context.device.cmd_pipeline_barrier2(
                             command_buffer,
                             &vk::DependencyInfo::default()
@@ -2408,7 +2441,7 @@ impl SubmissionLowerer {
             state
                 .frame_target_layouts
                 .insert(target, vk::ImageLayout::PRESENT_SRC_KHR);
-            trace::message(&format!(
+            trace::message(format_args!(
                 "gal.frame.target.present-ready backend=vulkan frame={} image={}",
                 present.frame_id, present.image_index
             ));
@@ -2426,20 +2459,17 @@ impl SubmissionLowerer {
                     self.context
                         .read_mapped_memory(request.memory, offset, request.size)
                 });
-            match result {
-                Ok(bytes) => self.completed_host_reads.push(CompletedHostRead {
-                    submission: complete.id,
-                    buffer: request.buffer,
-                    offset: request.offset,
-                    bytes,
-                }),
-                Err(error) => self.completed_host_reads.push(CompletedHostRead {
-                    submission: complete.id,
-                    buffer: request.buffer,
-                    offset: request.offset,
-                    bytes: error.to_string().into_bytes(),
-                }),
-            }
+            let (bytes, error) = match result {
+                Ok(bytes) => (bytes, None),
+                Err(error) => (Vec::new(), Some(error.to_string())),
+            };
+            self.completed_host_reads.push(CompletedHostRead {
+                submission: complete.id,
+                buffer: request.buffer,
+                offset: request.offset,
+                bytes,
+                error,
+            });
         }
         self.prune_completed_host_reads(complete.id);
     }
@@ -2513,7 +2543,7 @@ impl SubmissionLowerer {
             // the same retired frame again while newer GPU work is in flight.
             result.status = complete.id.0;
             if matches!(
-                std::env::var("MATTMC_RUST_VULKAN_SCOPE_TIMESTAMPS").as_deref(),
+                crate::env::var("VULKANIC_VULKAN_SCOPE_TIMESTAMPS").as_deref(),
                 Ok("1" | "true" | "TRUE")
             ) {
                 trace::stdout(format_args!(
@@ -2707,7 +2737,7 @@ pub(crate) fn set_gpu_timestamps_requested(requested: bool) {
 fn gpu_timestamps_enabled() -> bool {
     GPU_TIMESTAMPS_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
         || matches!(
-            std::env::var("MATTMC_RUST_VULKAN_GPU_TIMESTAMPS")
+            crate::env::var("VULKANIC_VULKAN_GPU_TIMESTAMPS")
                 .ok()
                 .as_deref(),
             Some("1" | "true" | "TRUE" | "yes" | "on")
@@ -2723,13 +2753,13 @@ fn pipeline_statistics_mode() -> PipelineStatisticsMode {
 fn pipeline_statistics_mode_from_env() -> PipelineStatisticsMode {
     let enabled = |name: &str| {
         matches!(
-            std::env::var(name).ok().as_deref(),
+            crate::env::var(name).ok().as_deref(),
             Some("1" | "true" | "TRUE" | "yes" | "on")
         )
     };
-    if enabled("MATTMC_RUST_VULKAN_PIPELINE_PASS_STATS") {
+    if enabled("VULKANIC_VULKAN_PIPELINE_PASS_STATS") {
         PipelineStatisticsMode::PerPass
-    } else if enabled("MATTMC_RUST_VULKAN_PIPELINE_STATS") {
+    } else if enabled("VULKANIC_VULKAN_PIPELINE_STATS") {
         PipelineStatisticsMode::WholeFrame
     } else {
         PipelineStatisticsMode::Disabled
@@ -3271,14 +3301,6 @@ struct HostReadRequest {
     size: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CompletedHostRead {
-    pub(super) submission: SubmissionId,
-    pub(super) buffer: Handle,
-    pub(super) offset: u64,
-    pub(super) bytes: Vec<u8>,
-}
-
 fn load_op(op: AttachmentLoadOp) -> vk::AttachmentLoadOp {
     match op {
         AttachmentLoadOp::Load => vk::AttachmentLoadOp::LOAD,
@@ -3345,6 +3367,60 @@ fn frame_layout_stage_mask(layout: vk::ImageLayout) -> vk::PipelineStageFlags2 {
         }
         _ => vk::PipelineStageFlags2::TOP_OF_PIPE,
     }
+}
+
+/// The source stage of a barrier that moves an acquired swapchain image
+/// out of `layout` into `destination`. The acquire semaphore waits at the
+/// frame's attachment and transfer stages, so a transition out of the
+/// presentation (or undefined) layout must start at the destination stage
+/// to chain with that wait.
+fn frame_source_stage_mask(
+    layout: vk::ImageLayout,
+    destination: vk::PipelineStageFlags2,
+) -> vk::PipelineStageFlags2 {
+    match layout {
+        vk::ImageLayout::PRESENT_SRC_KHR | vk::ImageLayout::UNDEFINED => destination,
+        other => frame_layout_stage_mask(other),
+    }
+}
+
+/// Stages the acquire semaphore blocks: every first use of an acquired
+/// image (attachment output, copies and blits).
+const ACQUIRE_WAIT_STAGES: vk::PipelineStageFlags2 = vk::PipelineStageFlags2::from_raw(
+    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT.as_raw()
+        | vk::PipelineStageFlags2::ALL_TRANSFER.as_raw(),
+);
+
+/// The dependencies around a host write of `len` bytes at `offset`: before
+/// it, earlier accesses through any stage the buffer's usages allow
+/// (including earlier submissions); after it, the transfer write made
+/// visible to those stages.
+fn host_write_barriers(
+    buffer: &super::resources::BufferObject,
+    offset: u64,
+    len: usize,
+) -> (
+    vk::BufferMemoryBarrier2<'static>,
+    vk::BufferMemoryBarrier2<'static>,
+) {
+    let any_access = vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE;
+    let before = vk::BufferMemoryBarrier2::default()
+        .src_stage_mask(buffer.stages)
+        .src_access_mask(any_access)
+        .dst_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+        .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+        .buffer(buffer.buffer)
+        .offset(offset)
+        .size(len as u64);
+    let after = vk::BufferMemoryBarrier2::default()
+        .src_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+        .dst_stage_mask(buffer.stages)
+        .dst_access_mask(any_access)
+        .buffer(buffer.buffer)
+        .offset(offset)
+        .size(len as u64);
+    (before, after)
 }
 
 fn frame_layout_access_mask(layout: vk::ImageLayout) -> vk::AccessFlags2 {
@@ -3661,27 +3737,27 @@ fn command_op_kind(op: &CommandOp) -> &'static str {
 /// launch settings, so read the environment once instead of per command.
 fn trace_submissions_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("MATTMC_TRACE_SUBMISSIONS").is_some())
+    *ENABLED.get_or_init(|| crate::env::var_os("VULKANIC_TRACE_SUBMISSIONS").is_some())
 }
 
 /// Focused ownership/timeline output without the verbose per-command trace.
 fn trace_gpu_overlap_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("MATTMC_TRACE_GPU_OVERLAP").is_some())
+    *ENABLED.get_or_init(|| crate::env::var_os("VULKANIC_TRACE_GPU_OVERLAP").is_some())
 }
 
 fn trace_resource_binding_ops_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("MATTMC_TRACE_RESOURCE_BINDING_OPS").is_some())
+    *ENABLED.get_or_init(|| crate::env::var_os("VULKANIC_TRACE_RESOURCE_BINDING_OPS").is_some())
 }
 
 /// Label substring selecting textures whose barriers are traced
-/// (`MATTMC_TRACE_BARRIER_LABEL`); unset disables barrier tracing.
+/// (`VULKANIC_TRACE_BARRIER_LABEL`); unset disables barrier tracing.
 fn trace_barrier_label_filter() -> Option<&'static str> {
     static FILTER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     FILTER
         .get_or_init(|| {
-            std::env::var("MATTMC_TRACE_BARRIER_LABEL")
+            crate::env::var("VULKANIC_TRACE_BARRIER_LABEL")
                 .ok()
                 .filter(|value| !value.is_empty())
         })

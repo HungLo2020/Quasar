@@ -95,7 +95,7 @@ impl Handle {
         })
     }
 
-    /// A handle from its raw 64-bit value (for example from the bridge).
+    /// A handle from its raw 64-bit value (for example across a C ABI).
     pub fn from_raw(raw: u64) -> Self {
         Self { raw }
     }

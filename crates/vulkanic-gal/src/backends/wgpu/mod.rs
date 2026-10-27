@@ -62,6 +62,7 @@ struct InFlight {
     id: SubmissionId,
     index: wgpu::SubmissionIndex,
     host_reads: Vec<PendingRead>,
+    transients: Vec<wgpu::Buffer>,
 }
 
 #[derive(Default)]
@@ -69,6 +70,8 @@ struct Completion {
     in_flight: VecDeque<InFlight>,
     completed: SubmissionId,
     host_reads: Vec<CompletedHostRead>,
+    /// Scratch buffers of completed submissions, for the transient pool.
+    recycled: Vec<wgpu::Buffer>,
 }
 
 #[derive(Default)]
@@ -89,6 +92,7 @@ pub(crate) struct WgpuBackend {
     objects: WgpuObjects,
     utility: Utility,
     indices: encoding::IndexCache,
+    pool: encoding::TransientPool,
     belt: wgpu::util::StagingBelt,
     completion: Mutex<Completion>,
     /// Highest submission id the queue reported done.
@@ -119,6 +123,7 @@ impl WgpuBackend {
             objects: WgpuObjects::default(),
             utility: Utility::new(),
             indices: encoding::IndexCache::default(),
+            pool: encoding::TransientPool::default(),
             belt,
             completion: Mutex::new(Completion::default()),
             done: Arc::new(AtomicU64::new(0)),
@@ -244,16 +249,31 @@ impl WgpuBackend {
     }
 
     fn complete(&self, completion: &mut Completion, complete: InFlight) {
-        for read in complete.host_reads {
-            let bytes = read_back(&self.context, &complete.index, &read)
-                .unwrap_or_else(|error| error.to_string().into_bytes());
-            completion.host_reads.push(CompletedHostRead {
-                submission: complete.id,
-                buffer: read.buffer,
-                offset: read.offset,
-                bytes,
-            });
+        if !complete.host_reads.is_empty() {
+            let results = read_back(&self.context, &complete.index, &complete.host_reads);
+            for (read, result) in complete.host_reads.into_iter().zip(results) {
+                let (bytes, error) = match result {
+                    Ok(bytes) => (bytes, None),
+                    Err(error) => (Vec::new(), Some(error.to_string())),
+                };
+                completion.host_reads.push(CompletedHostRead {
+                    submission: complete.id,
+                    buffer: read.buffer,
+                    offset: read.offset,
+                    bytes,
+                    error,
+                });
+                // A failed map leaves the buffer unusable for the pool.
+                if completion
+                    .host_reads
+                    .last()
+                    .is_some_and(|read| read.error.is_none())
+                {
+                    completion.recycled.push(read.staging);
+                }
+            }
         }
+        completion.recycled.extend(complete.transients);
         if complete.id > completion.completed {
             completion.completed = complete.id;
         }
@@ -305,41 +325,57 @@ impl WgpuBackend {
     }
 }
 
-/// Maps a completed host read's staging buffer and copies its bytes.
+/// Maps the staging buffers of a completed submission's host reads (one
+/// wait for all of them) and copies their bytes out.
 fn read_back(
     context: &WgpuContext,
     index: &wgpu::SubmissionIndex,
-    read: &PendingRead,
-) -> GalResult<Vec<u8>> {
-    let slice = read.staging.slice(..);
-    let mapped = Arc::new(Mutex::new(None));
-    let result = mapped.clone();
-    slice.map_async(wgpu::MapMode::Read, move |outcome| {
-        if let Ok(mut slot) = result.lock() {
-            *slot = Some(outcome);
-        }
-    });
-    context
-        .device
-        .poll(wgpu::PollType::Wait {
-            submission_index: Some(index.clone()),
-            timeout: None,
+    reads: &[PendingRead],
+) -> Vec<GalResult<Vec<u8>>> {
+    type Outcome = Arc<Mutex<Option<Result<(), wgpu::BufferAsyncError>>>>;
+    let outcomes: Vec<Outcome> = reads
+        .iter()
+        .map(|read| {
+            let outcome: Outcome = Arc::new(Mutex::new(None));
+            let slot = outcome.clone();
+            read.staging
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    if let Ok(mut slot) = slot.lock() {
+                        *slot = Some(result);
+                    }
+                });
+            outcome
         })
-        .map_err(|error| GalError::backend(format!("wgpu host read wait failed: {error}")))?;
-    let outcome = mapped
-        .lock()
-        .ok()
-        .and_then(|mut slot| slot.take())
-        .ok_or_else(|| GalError::backend("wgpu host read was not mapped"))?;
-    outcome.map_err(|error| GalError::backend(format!("wgpu host read map failed: {error}")))?;
-    let start = read.staging_offset as usize;
-    let bytes = slice
-        .get_mapped_range()
-        .map_err(|error| GalError::backend(format!("wgpu host read map failed: {error}")))?
-        [start..start + read.size as usize]
-        .to_vec();
-    read.staging.unmap();
-    Ok(bytes)
+        .collect();
+    let waited = context.device.poll(wgpu::PollType::Wait {
+        submission_index: Some(index.clone()),
+        timeout: None,
+    });
+    reads
+        .iter()
+        .zip(outcomes)
+        .map(|(read, outcome)| {
+            waited.as_ref().map_err(|error| {
+                GalError::backend(format!("wgpu host read wait failed: {error}"))
+            })?;
+            let outcome = outcome
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take())
+                .ok_or_else(|| GalError::backend("wgpu host read was not mapped"))?;
+            outcome.map_err(|error| {
+                GalError::backend(format!("wgpu host read map failed: {error}"))
+            })?;
+            let start = read.staging_offset as usize;
+            let bytes = read.staging.slice(..).get_mapped_range().map_err(|error| {
+                GalError::backend(format!("wgpu host read map failed: {error}"))
+            })?[start..start + read.size as usize]
+                .to_vec();
+            read.staging.unmap();
+            Ok(bytes)
+        })
+        .collect()
 }
 
 fn prune_completed_host_reads(reads: &mut Vec<CompletedHostRead>, newest: SubmissionId) {
@@ -462,12 +498,16 @@ impl Backend for WgpuBackend {
 
     fn encode_passes(&mut self, batch: &ValidatedSubmissionBatch) -> GalResult<()> {
         let started = std::time::Instant::now();
+        if let Ok(mut completion) = self.completion.lock() {
+            self.pool.recycle(completion.recycled.drain(..));
+        }
         let inputs = EncodeInputs {
             context: &self.context,
             objects: &mut self.objects,
             utility: &mut self.utility,
             belt: &mut self.belt,
             indices: &mut self.indices,
+            pool: &mut self.pool,
             surface: self
                 .surface
                 .as_ref()
@@ -504,11 +544,15 @@ impl Backend for WgpuBackend {
         let Encoded {
             command_buffer,
             host_reads,
+            transients,
+            rotations,
             ..
         } = encoded;
         let index = self.context.scoped("queue submission", || {
             self.context.queue.submit([command_buffer])
         })?;
+        // The rotated copies are written by this submission's commands.
+        self.indices.publish(rotations);
         let done = self.done.clone();
         self.context.queue.on_submitted_work_done(move || {
             done.fetch_max(id.0, Ordering::AcqRel);
@@ -518,6 +562,7 @@ impl Backend for WgpuBackend {
             id,
             index,
             host_reads,
+            transients,
         });
         self.counters.submit_nanos = self
             .counters
@@ -543,9 +588,20 @@ impl Backend for WgpuBackend {
     }
 
     fn completed_host_reads(&self) -> Vec<CompletedHostRead> {
+        self.completed_host_reads_since(SubmissionId(0))
+    }
+
+    fn completed_host_reads_since(&self, after: SubmissionId) -> Vec<CompletedHostRead> {
         self.completion
             .lock()
-            .map(|completion| completion.host_reads.clone())
+            .map(|completion| {
+                completion
+                    .host_reads
+                    .iter()
+                    .filter(|read| read.submission > after)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -649,6 +705,11 @@ impl WgpuBackend {
     #[cfg(test)]
     pub(crate) fn adapter_name_for_test(&self) -> String {
         self.context.adapter_name()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rotated_index_copies_for_test(&self) -> usize {
+        self.indices.rotated_len()
     }
 }
 

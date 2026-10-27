@@ -13,6 +13,8 @@ pub(super) struct Slot<T> {
 pub(super) struct Arena<T> {
     pub(super) kind: HandleKind,
     pub(super) slots: Vec<Slot<T>>,
+    /// Empty slot indices, most recently freed last.
+    free: Vec<u32>,
 }
 
 impl<T> Arena<T> {
@@ -21,20 +23,17 @@ impl<T> Arena<T> {
         Self {
             kind,
             slots: Vec::new(),
+            free: Vec::new(),
         }
     }
 
+    /// The handle the next `insert_at` should use: a freed slot's next
+    /// generation, or a new slot.
     pub(super) fn next_handle(&self) -> GalResult<Handle> {
-        for (index, slot) in self.slots.iter().enumerate() {
-            if slot.value.is_none() {
-                let index = u32::try_from(index).map_err(|_| {
-                    GalError::handle(
-                        StatusCode::GenerationExhausted,
-                        "handle index space exhausted",
-                    )
-                })?;
-                return Handle::new(self.kind, index, slot.generation);
-            }
+        if let Some(&index) = self.free.last() {
+            let slot = &self.slots[index as usize];
+            debug_assert!(slot.value.is_none(), "free list names a live slot");
+            return Handle::new(self.kind, index, slot.generation);
         }
         if self.slots.len() >= MAX_ARENA_SLOTS {
             return Err(GalError::handle(
@@ -78,6 +77,10 @@ impl<T> Arena<T> {
         }
         slot.last_destroyed_generation = None;
         slot.value = Some(value);
+        // Normally the slot `next_handle` named, at the end of the list.
+        if let Some(position) = self.free.iter().rposition(|&free| free as usize == index) {
+            self.free.swap_remove(position);
+        }
         Ok(handle)
     }
 
@@ -144,6 +147,7 @@ impl<T> Arena<T> {
         }
         slot.last_destroyed_generation = Some(slot.generation);
         slot.generation += 1;
+        self.free.push(index as u32);
         Ok(value)
     }
 

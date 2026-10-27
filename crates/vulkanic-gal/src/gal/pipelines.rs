@@ -264,7 +264,7 @@ impl VulkanicGal {
     /// layout and fixed-function state, checked against the target formats
     /// it will render to.
     pub fn create_graphics_pipeline(&mut self, desc: GraphicsPipelineDesc) -> GalResult<Handle> {
-        if trace_label_matches("MATTMC_GAL_TRACE_PIPELINE_LABEL", &desc.label) {
+        if trace_label_matches("VULKANIC_GAL_TRACE_PIPELINE_LABEL", &desc.label) {
             crate::diagnostics::stderr(format_args!(
                 "[MattMC pipeline-depth-trace] label={} depth_format={:?} depth_compare={:?} depth_write={} colors={:?}",
                 desc.label, desc.depth_format, desc.depth_compare, desc.depth_write, desc.color_formats

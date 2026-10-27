@@ -1,6 +1,7 @@
 //! Command normalization: removing redundant binds and fusing identical adjacent passes.
 
 use super::*;
+use crate::commands::DynamicOffsets;
 
 #[derive(Default)]
 pub(crate) struct CommandNormalizationStats {
@@ -12,96 +13,163 @@ pub(crate) struct CommandNormalizationStats {
     pub(crate) index_buffer_binds_removed: u64,
 }
 
+/// The binds a list has made since the last state boundary.
 #[derive(Default)]
-pub(super) struct CommandStateTracker {
-    pub(super) graphics_pipeline: Option<Handle>,
-    pub(super) compute_pipeline: Option<Handle>,
-    pub(super) pipeline_layout: Option<Handle>,
-    pub(super) pipeline_layout_known: bool,
-    pub(super) resource_sets: BTreeMap<(Handle, u32), (Handle, Vec<u64>)>,
-    pub(super) vertex_buffers: BTreeMap<u32, (Handle, u64)>,
-    pub(super) index_buffer: Option<(Handle, u64, IndexType)>,
+struct CommandStateTracker {
+    graphics_pipeline: Option<Handle>,
+    compute_pipeline: Option<Handle>,
+    pipeline_layout: Option<Handle>,
+    /// By set index: the layout it was bound against, the set, offsets.
+    resource_sets: Vec<Option<(Handle, Handle, DynamicOffsets)>>,
+    /// By slot: buffer and offset.
+    vertex_buffers: Vec<Option<(Handle, u64)>>,
+    index_buffer: Option<(Handle, u64, IndexType)>,
 }
 
 impl CommandStateTracker {
-    pub(super) fn invalidate(&mut self) {
+    fn invalidate(&mut self) {
         self.graphics_pipeline = None;
         self.compute_pipeline = None;
         self.pipeline_layout = None;
-        self.pipeline_layout_known = false;
         self.resource_sets.clear();
         self.vertex_buffers.clear();
         self.index_buffer = None;
     }
+
+    /// Records a pipeline switch to one with `layout`. Sets are bound
+    /// against a layout: if the new one is unknown or different, every set
+    /// is replayed (this keeps a four-binding set from being reused by a
+    /// two-binding pipeline).
+    fn switch_layout(&mut self, layout: Option<Handle>) {
+        if layout.is_none() || self.pipeline_layout != layout {
+            self.resource_sets.clear();
+        }
+        self.pipeline_layout = layout;
+    }
+}
+
+/// Whether a pass begun with `begin` keeps its attachments' contents, so a
+/// following identical pass can continue it.
+fn preserves_contents(begin: &CommandOp) -> bool {
+    match begin {
+        CommandOp::BeginPass {
+            colors,
+            depth_stencil,
+            ..
+        } => colors.iter().chain(depth_stencil.iter()).all(|attachment| {
+            attachment.load_op == AttachmentLoadOp::Load
+                && attachment.store_op == AttachmentStoreOp::Store
+        }),
+        _ => false,
+    }
+}
+
+/// What normalization takes out of a batch besides redundant binds.
+#[derive(Default)]
+pub(crate) struct NormalizedExtracts {
+    /// The submission receipts, removed from the lists.
+    pub(crate) usages: Vec<crate::commands::SubmissionUsage>,
+    /// Every handle the kept ops name, with repeats.
+    pub(crate) handles: Vec<Handle>,
 }
 
 #[cfg(test)]
 pub(crate) fn normalize_submission_batch(batch: &mut SubmissionBatch) -> CommandNormalizationStats {
-    normalize_submission_batch_with_pipeline_layouts(batch, &BTreeMap::new(), &BTreeMap::new())
+    normalize_submission_batch_with(
+        batch,
+        &mut NormalizedExtracts::default(),
+        |_| None,
+        |_| None,
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn normalize_submission_batch_with_pipeline_layouts(
     batch: &mut SubmissionBatch,
     graphics_pipeline_layouts: &BTreeMap<Handle, Handle>,
     compute_pipeline_layouts: &BTreeMap<Handle, Handle>,
 ) -> CommandNormalizationStats {
+    normalize_submission_batch_with(
+        batch,
+        &mut NormalizedExtracts::default(),
+        |pipeline| graphics_pipeline_layouts.get(&pipeline).copied(),
+        |pipeline| compute_pipeline_layouts.get(&pipeline).copied(),
+    )
+}
+
+/// Removes redundant binds and submission receipts and fuses adjacent
+/// identical passes, compacting each list in place; `extracts` receives the
+/// receipts and the handles the kept ops name. `graphics_layout` and
+/// `compute_layout` name a pipeline's layout (`None` when unknown, which
+/// never keeps sets bound across the switch).
+pub(crate) fn normalize_submission_batch_with(
+    batch: &mut SubmissionBatch,
+    extracts: &mut NormalizedExtracts,
+    graphics_layout: impl Fn(Handle) -> Option<Handle>,
+    compute_layout: impl Fn(Handle) -> Option<Handle>,
+) -> CommandNormalizationStats {
     let mut stats = CommandNormalizationStats::default();
+    let mut state = CommandStateTracker::default();
     for list in &mut batch.command_lists {
-        stats.ops_before = stats
-            .ops_before
-            .saturating_add(list.operations.len() as u64);
-        let original = fuse_adjacent_identical_passes(std::mem::take(&mut list.operations));
-        let mut normalized = Vec::with_capacity(original.len());
-        let mut state = CommandStateTracker::default();
-        for op in original {
-            let keep = match &op {
-                CommandOp::TrackSubmission(_) => true,
-                CommandOp::BeginPass { .. } | CommandOp::EndPass | CommandOp::Barrier(_) => {
+        let ops = &mut list.operations;
+        stats.ops_before = stats.ops_before.saturating_add(ops.len() as u64);
+        state.invalidate();
+        // Kept ops are moved down to `write`; `active_begin` is the kept
+        // BeginPass of the open pass.
+        let mut write = 0;
+        let mut active_begin: Option<usize> = None;
+        let mut read = 0;
+        while read < ops.len() {
+            let keep = match &ops[read] {
+                CommandOp::TrackSubmission(usage) => {
+                    extracts.usages.push(usage.clone());
+                    false
+                }
+                CommandOp::BeginPass { .. } => {
+                    state.invalidate();
+                    active_begin = Some(write);
+                    true
+                }
+                CommandOp::EndPass => {
+                    let continues = active_begin.is_some_and(|begin| {
+                        preserves_contents(&ops[begin])
+                            && ops.get(read + 1).is_some_and(|next| *next == ops[begin])
+                    });
+                    if continues {
+                        // The next pass has the same target, attachments and
+                        // load/store contract: keep this one open so ordered
+                        // draws do not get a pass boundary. Barriers, uploads
+                        // and receipts between passes prevent the adjacency.
+                        read += 2;
+                        continue;
+                    }
+                    active_begin = None;
+                    state.invalidate();
+                    true
+                }
+                CommandOp::Barrier(_) => {
                     state.invalidate();
                     true
                 }
                 CommandOp::BindGraphicsPipeline(handle) => {
                     if state.graphics_pipeline == Some(*handle) {
-                        stats.pipeline_binds_removed =
-                            stats.pipeline_binds_removed.saturating_add(1);
+                        stats.pipeline_binds_removed += 1;
                         false
                     } else {
                         state.graphics_pipeline = Some(*handle);
                         state.compute_pipeline = None;
-                        let layout = graphics_pipeline_layouts.get(handle).copied();
-                        if layout.is_none()
-                            || !state.pipeline_layout_known
-                            || state.pipeline_layout != layout
-                        {
-                            // Descriptor sets are bound against a pipeline
-                            // layout. If the identity is unknown or changes,
-                            // replay every set; this is what protects DH's
-                            // four-binding exact-atlas set from being reused
-                            // by a two-binding reduced-color pipeline.
-                            state.resource_sets.clear();
-                        }
-                        state.pipeline_layout = layout;
-                        state.pipeline_layout_known = layout.is_some();
+                        state.switch_layout(graphics_layout(*handle));
                         true
                     }
                 }
                 CommandOp::BindComputePipeline(handle) => {
                     if state.compute_pipeline == Some(*handle) {
-                        stats.pipeline_binds_removed =
-                            stats.pipeline_binds_removed.saturating_add(1);
+                        stats.pipeline_binds_removed += 1;
                         false
                     } else {
                         state.compute_pipeline = Some(*handle);
                         state.graphics_pipeline = None;
-                        let layout = compute_pipeline_layouts.get(handle).copied();
-                        if layout.is_none()
-                            || !state.pipeline_layout_known
-                            || state.pipeline_layout != layout
-                        {
-                            state.resource_sets.clear();
-                        }
-                        state.pipeline_layout = layout;
-                        state.pipeline_layout_known = layout.is_some();
+                        state.switch_layout(compute_layout(*handle));
                         true
                     }
                 }
@@ -111,15 +179,29 @@ pub(crate) fn normalize_submission_batch_with_pipeline_layouts(
                     set,
                     dynamic_offsets,
                 } => {
-                    let key = (*pipeline_layout, *set_index);
-                    let value = (*set, dynamic_offsets.clone());
-                    if state.resource_sets.get(&key) == Some(&value) {
-                        stats.resource_set_binds_removed =
-                            stats.resource_set_binds_removed.saturating_add(1);
-                        false
-                    } else {
-                        state.resource_sets.insert(key, value);
-                        true
+                    let index = *set_index as usize;
+                    if state.resource_sets.len() <= index {
+                        state.resource_sets.resize_with(index + 1, || None);
+                    }
+                    match &mut state.resource_sets[index] {
+                        Some((layout, bound, offsets))
+                            if layout == pipeline_layout
+                                && bound == set
+                                && offsets == dynamic_offsets =>
+                        {
+                            stats.resource_set_binds_removed += 1;
+                            false
+                        }
+                        Some((layout, bound, offsets)) => {
+                            *layout = *pipeline_layout;
+                            *bound = *set;
+                            offsets.set_from_slice(dynamic_offsets);
+                            true
+                        }
+                        empty => {
+                            *empty = Some((*pipeline_layout, *set, dynamic_offsets.clone()));
+                            true
+                        }
                     }
                 }
                 CommandOp::SetVertexBuffer {
@@ -127,13 +209,16 @@ pub(crate) fn normalize_submission_batch_with_pipeline_layouts(
                     buffer,
                     offset,
                 } => {
-                    let value = (*buffer, *offset);
-                    if state.vertex_buffers.get(slot).copied() == Some(value) {
-                        stats.vertex_buffer_binds_removed =
-                            stats.vertex_buffer_binds_removed.saturating_add(1);
+                    let index = *slot as usize;
+                    if state.vertex_buffers.len() <= index {
+                        state.vertex_buffers.resize(index + 1, None);
+                    }
+                    let value = Some((*buffer, *offset));
+                    if state.vertex_buffers[index] == value {
+                        stats.vertex_buffer_binds_removed += 1;
                         false
                     } else {
-                        state.vertex_buffers.insert(*slot, value);
+                        state.vertex_buffers[index] = value;
                         true
                     }
                 }
@@ -142,13 +227,12 @@ pub(crate) fn normalize_submission_batch_with_pipeline_layouts(
                     offset,
                     index_type,
                 } => {
-                    let value = (*buffer, *offset, *index_type);
-                    if state.index_buffer == Some(value) {
-                        stats.index_buffer_binds_removed =
-                            stats.index_buffer_binds_removed.saturating_add(1);
+                    let value = Some((*buffer, *offset, *index_type));
+                    if state.index_buffer == value {
+                        stats.index_buffer_binds_removed += 1;
                         false
                     } else {
-                        state.index_buffer = Some(value);
+                        state.index_buffer = value;
                         true
                     }
                 }
@@ -174,57 +258,14 @@ pub(crate) fn normalize_submission_batch_with_pipeline_layouts(
                 | CommandOp::DispatchIndirect { .. } => true,
             };
             if keep {
-                normalized.push(op);
+                super::submission::op_handles(&ops[read], |handle| extracts.handles.push(handle));
+                ops.swap(write, read);
+                write += 1;
             }
+            read += 1;
         }
-        stats.ops_after = stats.ops_after.saturating_add(normalized.len() as u64);
-        list.operations = normalized;
+        ops.truncate(write);
+        stats.ops_after = stats.ops_after.saturating_add(ops.len() as u64);
     }
     stats
-}
-
-pub(super) fn fuse_adjacent_identical_passes(original: Vec<CommandOp>) -> Vec<CommandOp> {
-    let original_capacity = original.len();
-    let mut source = original.into_iter().peekable();
-    // Pass fusion only removes operations; retain the input capacity so a
-    // steady-state frame does not grow the temporary command vector.
-    let mut fused = Vec::with_capacity(original_capacity);
-    let mut active_begin: Option<CommandOp> = None;
-    while let Some(operation) = source.next() {
-        match &operation {
-            CommandOp::BeginPass { .. } => {
-                active_begin = Some(operation.clone());
-                fused.push(operation);
-            }
-            CommandOp::EndPass => {
-                let same_pass = active_begin.as_ref().is_some_and(|begin| {
-                    let preserves_contents = match begin {
-                        CommandOp::BeginPass {
-                            colors,
-                            depth_stencil,
-                            ..
-                        } => colors.iter().chain(depth_stencil.iter()).all(|attachment| {
-                            attachment.load_op == AttachmentLoadOp::Load
-                                && attachment.store_op == AttachmentStoreOp::Store
-                        }),
-                        _ => false,
-                    };
-                    preserves_contents && source.peek().is_some_and(|next| next == begin)
-                });
-                if same_pass {
-                    // The second pass has the exact same target, attachments,
-                    // and load/store contract. Keep the first pass open so
-                    // adjacent ordered draws do not manufacture a Vulkan pass
-                    // boundary. Barriers, uploads, and ownership receipts are
-                    // hard boundaries because they prevent this adjacency.
-                    source.next();
-                } else {
-                    active_begin = None;
-                    fused.push(operation);
-                }
-            }
-            _ => fused.push(operation),
-        }
-    }
-    fused
 }

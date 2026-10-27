@@ -72,9 +72,7 @@ impl SurfaceOwner for NativeWindowSurface {
                     // 32-bit on Windows (which never takes this X11 path).
                     .window(self.native_window as ash::vk::Window);
                 unsafe { loader.create_xlib_surface(&info, None) }.map_err(|error| {
-                    GalError::backend(format!(
-                        "failed to create Rust-owned X11 Vulkan surface: {error:?}"
-                    ))
+                    GalError::backend(format!("failed to create X11 Vulkan surface: {error:?}"))
                 })
             }
             WINDOW_PLATFORM_WAYLAND => {
@@ -84,7 +82,7 @@ impl SurfaceOwner for NativeWindowSurface {
                     .surface(self.native_window as usize as *mut std::ffi::c_void);
                 unsafe { loader.create_wayland_surface(&info, None) }.map_err(|error| {
                     GalError::backend(format!(
-                        "failed to create Rust-owned Wayland Vulkan surface: {error:?}"
+                        "failed to create Wayland Vulkan surface: {error:?}"
                     ))
                 })
             }
@@ -111,7 +109,6 @@ pub(crate) struct VulkanBackend {
     _window_owner: Option<Box<dyn std::any::Any>>,
 }
 
-#[allow(dead_code)]
 impl VulkanBackend {
     pub(crate) fn new(label: &str) -> GalResult<Self> {
         let global_lock = graphics_backend_lock().lock().map_err(|_| {
@@ -236,16 +233,11 @@ impl VulkanBackend {
         Ok(backend)
     }
 
-    pub(super) fn completed_host_reads_snapshot(&self) -> Vec<lowering::CompletedHostRead> {
+    fn host_reads_since(&self, after: SubmissionId) -> Vec<CompletedHostRead> {
         self.lowerer
             .lock()
-            .map(|lowerer| lowerer.completed_host_reads_snapshot().to_vec())
+            .map(|lowerer| lowerer.completed_host_reads_since(after).cloned().collect())
             .unwrap_or_default()
-    }
-
-    #[cfg(test)]
-    pub(super) fn completed_host_reads_for_test(&self) -> Vec<lowering::CompletedHostRead> {
-        self.completed_host_reads_snapshot()
     }
 
     #[cfg(test)]
@@ -380,7 +372,7 @@ impl Backend for VulkanBackend {
 
     fn submit(&mut self, id: SubmissionId, _batch: &ValidatedSubmissionBatch) -> GalResult<()> {
         let _zone = trace::Zone::new("vulkan.backend.submit");
-        trace::message(&format!("gal.submission backend=vulkan id={}", id.0));
+        trace::message(format_args!("gal.submission backend=vulkan id={}", id.0));
         let mut lowerer = self
             .lowerer
             .lock()
@@ -427,15 +419,11 @@ impl Backend for VulkanBackend {
     }
 
     fn completed_host_reads(&self) -> Vec<CompletedHostRead> {
-        self.completed_host_reads_snapshot()
-            .into_iter()
-            .map(|read| CompletedHostRead {
-                submission: read.submission,
-                buffer: read.buffer,
-                offset: read.offset,
-                bytes: read.bytes,
-            })
-            .collect()
+        self.host_reads_since(SubmissionId(0))
+    }
+
+    fn completed_host_reads_since(&self, after: SubmissionId) -> Vec<CompletedHostRead> {
+        self.host_reads_since(after)
     }
 
     fn runtime_metrics(&self) -> BackendRuntimeMetrics {
@@ -787,7 +775,7 @@ mod tests {
 
     #[test]
     fn vulkan_backend_can_bootstrap_or_reports_environment_gap() {
-        match VulkanBackend::new("MattMC backend bootstrap test") {
+        match VulkanBackend::new("VulkanicGAL backend bootstrap test") {
             Ok(mut backend) => {
                 let capabilities = backend.capabilities();
                 let properties = unsafe {
@@ -810,6 +798,7 @@ mod tests {
                     .expect("retirement should be no-op");
             }
             Err(error) => {
+                crate::test_support::environment_gap("Vulkan", &error);
                 let message = error.to_string();
                 assert!(
                     message.contains("Vulkan")
@@ -824,7 +813,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn vulkan_windowed_conformance_acquires_presents_resizes_or_reports_environment_gap() {
-        if std::env::var("MATTMC_RUN_WINDOWED_CONFORMANCE")
+        if crate::env::var("VULKANIC_RUN_WINDOWED_CONFORMANCE")
             .map(|value| value != "1" && !value.eq_ignore_ascii_case("true"))
             .unwrap_or(true)
         {
@@ -872,6 +861,7 @@ mod tests {
         ) {
             Ok(backend) => backend,
             Err(error) => {
+                crate::test_support::environment_gap("Vulkan", &error);
                 let message = error.to_string();
                 assert!(
                     message.contains("Vulkan")
@@ -999,9 +989,10 @@ mod tests {
 
     #[test]
     fn vulkan_backend_consumes_owned_validated_submission_batch() {
-        let backend = match VulkanBackend::new("MattMC validated submission test") {
+        let backend = match VulkanBackend::new("VulkanicGAL validated submission test") {
             Ok(backend) => backend,
             Err(error) => {
+                crate::test_support::environment_gap("Vulkan", &error);
                 assert!(
                     error.to_string().contains("Vulkan")
                         || error.to_string().contains("physical device"),
@@ -1047,9 +1038,10 @@ mod tests {
 
     #[test]
     fn vulkan_backend_supports_dynamic_descriptor_offsets_and_optional_sets() {
-        let backend = match VulkanBackend::new("MattMC descriptor hardening test") {
+        let backend = match VulkanBackend::new("VulkanicGAL descriptor hardening test") {
             Ok(backend) => backend,
             Err(error) => {
+                crate::test_support::environment_gap("Vulkan", &error);
                 assert!(
                     error.to_string().contains("Vulkan")
                         || error.to_string().contains("physical device"),
@@ -1122,9 +1114,10 @@ mod tests {
 
     #[test]
     fn vulkan_backend_stresses_repeated_submissions_and_deferred_destroy() {
-        let backend = match VulkanBackend::new("MattMC lifetime stress test") {
+        let backend = match VulkanBackend::new("VulkanicGAL lifetime stress test") {
             Ok(backend) => backend,
             Err(error) => {
+                crate::test_support::environment_gap("Vulkan", &error);
                 assert!(
                     error.to_string().contains("Vulkan")
                         || error.to_string().contains("physical device"),
@@ -1185,9 +1178,10 @@ mod tests {
     fn vulkan_large_host_writes_reuse_retired_staging_chunks() {
         use crate::commands::{ResourceBarrier, TextureUsageState};
         use crate::resources::QueueClass;
-        let backend = match VulkanBackend::new("MattMC staging reuse test") {
+        let backend = match VulkanBackend::new("VulkanicGAL staging reuse test") {
             Ok(backend) => backend,
             Err(error) => {
+                crate::test_support::environment_gap("Vulkan", &error);
                 assert!(
                     error.to_string().contains("Vulkan")
                         || error.to_string().contains("physical device"),

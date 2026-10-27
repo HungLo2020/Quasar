@@ -3,8 +3,8 @@
 
 use std::fmt;
 
-/// Result codes shared with Java through the bridge. `Ok` is 0 and every
-/// failure is negative; the values are part of the C ABI.
+/// Result codes. `Ok` is 0 and every failure is negative; the values are
+/// stable so they can cross a C ABI.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StatusCode {
@@ -12,7 +12,7 @@ pub enum StatusCode {
     Ok = 0,
     /// A request or descriptor is malformed or violates a GAL rule.
     InvalidArgument = -1,
-    /// A required pointer was null (bridge only).
+    /// A required pointer was null (C ABI callers only).
     NullPointer = -2,
     /// A length or count exceeds its bound or overflows.
     LengthOverflow = -3,
@@ -54,7 +54,7 @@ pub enum ErrorDomain {
     Command = 4,
     /// Submission and hazard analysis.
     Submission = 5,
-    /// The Java bridge.
+    /// A foreign-function (C ABI) caller.
     Ffi = 6,
     /// The backend implementation.
     Backend = 7,
@@ -108,7 +108,7 @@ impl GalError {
         Self::new(ErrorDomain::Submission, code, message)
     }
 
-    /// A bridge-domain error.
+    /// A foreign-function-domain error.
     pub fn ffi(code: StatusCode, message: impl Into<String>) -> Self {
         Self::new(ErrorDomain::Ffi, code, message)
     }

@@ -20,6 +20,23 @@ use super::error::GalResult;
 use super::gal::VulkanicGal;
 use super::resources::BackendCapabilities;
 
+/// Whether GPU tests must find a device (`VULKANIC_REQUIRE_GPU=1`, as CI's
+/// GPU job sets); otherwise a missing device is an environment gap.
+pub(crate) fn require_gpu() -> bool {
+    std::env::var("VULKANIC_REQUIRE_GPU").is_ok_and(|value| value == "1")
+}
+
+/// Reports that `backend` could not start: an environment gap the test
+/// skips, or a failure when GPU tests are required.
+#[cfg_attr(not(feature = "vulkan"), allow(dead_code))]
+pub(crate) fn environment_gap(backend: &str, error: &dyn std::fmt::Display) {
+    assert!(
+        !require_gpu(),
+        "{backend} is required (VULKANIC_REQUIRE_GPU=1) but did not start: {error}"
+    );
+    eprintln!("{backend} unavailable; skipping: {error}");
+}
+
 /// A GAL over the recording mock backend with Vulkan-like capabilities.
 pub(crate) fn mock_gal() -> VulkanicGal {
     VulkanicGal::new_with_backend(Box::new(MockBackend::default()))

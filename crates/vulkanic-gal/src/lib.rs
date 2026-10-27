@@ -8,7 +8,7 @@
 //! destroying in-flight resources until their last submission completes. It knows nothing about the game: renderers decide
 //! what to draw, the GAL checks and executes it.
 //!
-//! - `create`: creating a GAL and choosing its backend (bridge only).
+//! - `create`: creating a GAL and choosing its backend.
 //! - `gal`: `VulkanicGal`, the resource, command, submission and frame API.
 //! - `resources`: descriptors, formats, usages and backend capabilities.
 //! - `commands`: command ops, command lists and submission batches.
@@ -39,6 +39,7 @@ pub mod sync;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+pub use commands::DynamicOffsets;
 pub use commands::{
     AttachmentLoadOp, AttachmentStoreOp, BufferImageCopyRegion, ClearColor, CommandList,
     CommandListDesc, CommandOp, PassAttachment, ResourceBarrier, SubmissionBatch, TextureOrigin3d,
@@ -69,8 +70,10 @@ pub use resources::{
 };
 pub use sync::{SubmissionId, SyncToken};
 
-#[cfg(all(test, feature = "vulkan"))]
+#[cfg(test)]
 mod tests;
+
+mod env;
 
 mod diagnostics {
     pub(crate) fn stderr(args: std::fmt::Arguments<'_>) {

@@ -189,6 +189,7 @@ fn texture_row_reversal_is_capability_checked_and_retains_copy_validation() {
     }
 }
 
+#[cfg(feature = "vulkan")]
 #[test]
 #[ignore = "requires Vulkan; run cargo test --workspace -- --include-ignored"]
 fn vulkan_texture_row_reversal_copies_exact_asymmetric_color_and_depth_rows() {

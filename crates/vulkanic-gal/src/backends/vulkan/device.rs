@@ -7,8 +7,8 @@ use crate::error::{GalError, GalResult};
 
 use super::swapchain::SurfaceOwner;
 
-#[allow(dead_code)]
 pub(super) struct VulkanContext {
+    /// Keeps the Vulkan loader library loaded while the instance lives.
     #[allow(dead_code)]
     pub(super) entry: ash::Entry,
     pub(super) instance: ash::Instance,
@@ -18,13 +18,16 @@ pub(super) struct VulkanContext {
     /// Per-frame command labels cost a format, an allocation and a driver
     /// call each; emit them only for debugging tools and validation runs.
     pub(super) command_labels: bool,
-    pub(super) queue_family_index: u32,
     pub(super) queue: vk::Queue,
     pub(super) memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub(super) timestamp_period: f32,
     pub(super) timestamp_valid_bits: u32,
     pub(super) command_pool: vk::CommandPool,
     pub(super) timeline: vk::Semaphore,
+    /// Native pipeline compilation results, shared by every pipeline the
+    /// device creates and saved to `pipeline_cache_path` on drop.
+    pub(super) pipeline_cache: vk::PipelineCache,
+    pipeline_cache_path: Option<std::path::PathBuf>,
     /// Whether device creation enabled Vulkan's core multiDrawIndirect feature.
     /// Packed GAL indirect lists still work without it because lowering emits
     /// one native draw per record on that fallback path.
@@ -184,6 +187,8 @@ impl VulkanContext {
         let instance = unsafe { entry.create_instance(&instance_info, None) }.map_err(|error| {
             GalError::backend(format!("failed to create Vulkan instance: {error:?}"))
         })?;
+        // From here on, a failure destroys what was created.
+        let mut guard = CreationGuard::new(instance.clone());
 
         let surface_loader =
             surface_owner.map(|_| ash::khr::surface::Instance::new(&entry, &instance));
@@ -191,6 +196,9 @@ impl VulkanContext {
             (Some(owner), Some(_)) => Some(owner.create_surface(&entry, &instance)?),
             _ => None,
         };
+        if let (Some(loader), Some(surface)) = (&surface_loader, surface) {
+            guard.surface = Some((loader.clone(), surface));
+        }
 
         let physical_devices =
             unsafe { instance.enumerate_physical_devices() }.map_err(|error| {
@@ -312,12 +320,9 @@ impl VulkanContext {
         }
         let device = unsafe { instance.create_device(physical_device, &device_info, None) }
             .map_err(|error| {
-                if let (Some(surface_loader), Some(surface)) = (&surface_loader, surface) {
-                    unsafe { surface_loader.destroy_surface(surface, None) };
-                }
-                unsafe { instance.destroy_instance(None) };
                 GalError::backend(format!("failed to create Vulkan device: {error:?}"))
             })?;
+        guard.device = Some(device.clone());
         let debug_utils = if enable_debug_utils_extension {
             Some(ash::ext::debug_utils::Device::new(&instance, &device))
         } else {
@@ -333,6 +338,7 @@ impl VulkanContext {
             .map_err(|error| {
                 GalError::backend(format!("failed to create command pool: {error:?}"))
             })?;
+        guard.command_pool = command_pool;
         let mut timeline_info = vk::SemaphoreTypeCreateInfo::default()
             .semaphore_type(vk::SemaphoreType::TIMELINE)
             .initial_value(0);
@@ -341,6 +347,9 @@ impl VulkanContext {
             unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(|error| {
                 GalError::backend(format!("failed to create timeline semaphore: {error:?}"))
             })?;
+        guard.timeline = timeline;
+        let pipeline_cache_path = pipeline_cache_path(&physical_properties);
+        let pipeline_cache = create_pipeline_cache(&device, pipeline_cache_path.as_deref())?;
         let timestamp_valid_bits =
             queue_timestamp_valid_bits(&instance, physical_device, queue_family_index);
 
@@ -351,13 +360,14 @@ impl VulkanContext {
             device,
             command_labels: debug_utils.is_some() && command_labels_requested(),
             debug_utils,
-            queue_family_index,
             queue,
             memory_properties,
             timestamp_period: physical_properties.limits.timestamp_period,
             timestamp_valid_bits,
             command_pool,
             timeline,
+            pipeline_cache,
+            pipeline_cache_path,
             multi_draw_indirect: multi_draw_indirect_supported,
             pipeline_statistics_query: pipeline_statistics_supported,
             independent_blend: independent_blend_supported,
@@ -369,6 +379,7 @@ impl VulkanContext {
             surface,
             swapchain_loader,
         });
+        guard.disarm();
         context.set_object_name(context.timeline, "gal.timeline.graphics");
         Ok(context)
     }
@@ -387,7 +398,24 @@ impl VulkanContext {
         })
     }
 
+    /// The first memory type in `type_bits` with every `required` flag.
+    /// `HOST_CACHED` is a preference: without a cached type, an uncached
+    /// one with the other flags is chosen.
     pub(super) fn find_memory_type(
+        &self,
+        type_bits: u32,
+        required: vk::MemoryPropertyFlags,
+    ) -> GalResult<u32> {
+        let cached = vk::MemoryPropertyFlags::HOST_CACHED;
+        if required.contains(cached) {
+            return self
+                .find_exact_memory_type(type_bits, required)
+                .or_else(|_| self.find_exact_memory_type(type_bits, required & !cached));
+        }
+        self.find_exact_memory_type(type_bits, required)
+    }
+
+    fn find_exact_memory_type(
         &self,
         type_bits: u32,
         required: vk::MemoryPropertyFlags,
@@ -411,35 +439,6 @@ impl VulkanContext {
         })
     }
 
-    #[allow(dead_code)] // Retained upstream backend diagnostic support.
-    pub(super) fn write_mapped_memory(
-        &self,
-        memory: vk::DeviceMemory,
-        offset: u64,
-        bytes: &[u8],
-    ) -> GalResult<()> {
-        let offset = usize::try_from(offset)
-            .map_err(|_| GalError::backend("Vulkan upload offset does not fit usize"))?;
-        let ptr = unsafe {
-            self.device
-                .map_memory(memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())
-        }
-        .map_err(|error| {
-            GalError::backend(format!("failed to map Vulkan upload memory: {error:?}"))
-        })?;
-        unsafe {
-            // Mapping from zero keeps suballocated writes valid even when a
-            // buffer's physical offset is not minMemoryMapAlignment-aligned.
-            std::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                ptr.cast::<u8>().add(offset),
-                bytes.len(),
-            );
-            self.device.unmap_memory(memory);
-        }
-        Ok(())
-    }
-
     pub(super) fn read_mapped_memory(
         &self,
         memory: vk::DeviceMemory,
@@ -450,17 +449,24 @@ impl VulkanContext {
             .map_err(|_| GalError::backend("Vulkan readback offset does not fit usize"))?;
         let size = usize::try_from(size)
             .map_err(|_| GalError::backend("Vulkan readback size does not fit usize"))?;
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        // Map only the bytes read: the page holds other buffers too.
         let ptr = unsafe {
-            self.device
-                .map_memory(memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())
+            self.device.map_memory(
+                memory,
+                offset as u64,
+                size as u64,
+                vk::MemoryMapFlags::empty(),
+            )
         }
         .map_err(|error| {
             GalError::backend(format!("failed to map Vulkan readback memory: {error:?}"))
         })?;
-        // See `write_mapped_memory`: the range starts at a suballocation
-        // offset, while Vulkan mapping itself begins at an aligned zero.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(ptr.cast::<u8>().add(offset), size).to_vec() };
+        // SAFETY: the mapping covers exactly `size` bytes from `ptr`, and the
+        // memory stays mapped until the copy below completes.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), size).to_vec() };
         unsafe { self.device.unmap_memory(memory) };
         Ok(bytes)
     }
@@ -499,13 +505,14 @@ impl VulkanContext {
 }
 
 /// Command labels are for RenderDoc/Nsight captures and validation runs:
-/// `MATTMC_VULKAN_DEBUG_LABELS=1`, RenderDoc capture (ours or RenderDoc's
+/// `VULKANIC_VULKAN_DEBUG_LABELS=1`, RenderDoc capture (ours or RenderDoc's
 /// own launcher variable) or GAL validation enables them.
 fn command_labels_requested() -> bool {
-    let set =
-        |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty() && value != "0");
-    set("MATTMC_VULKAN_DEBUG_LABELS")
-        || set("MATTMC_RENDERDOC_CAPTURE")
+    let set = |name: &str| {
+        crate::env::var_os(name).is_some_and(|value| !value.is_empty() && value != "0")
+    };
+    set("VULKANIC_VULKAN_DEBUG_LABELS")
+        || set("VULKANIC_RENDERDOC_CAPTURE")
         || set("ENABLE_VULKAN_RENDERDOC_CAPTURE")
         || crate::gal::per_frame_validation()
 }
@@ -521,10 +528,108 @@ fn queue_timestamp_valid_bits(
         .unwrap_or(0)
 }
 
+/// Destroys the objects of a partly created context when creation fails.
+struct CreationGuard {
+    instance: Option<ash::Instance>,
+    surface: Option<(ash::khr::surface::Instance, vk::SurfaceKHR)>,
+    device: Option<ash::Device>,
+    command_pool: vk::CommandPool,
+    timeline: vk::Semaphore,
+}
+
+impl CreationGuard {
+    fn new(instance: ash::Instance) -> Self {
+        Self {
+            instance: Some(instance),
+            surface: None,
+            device: None,
+            command_pool: vk::CommandPool::null(),
+            timeline: vk::Semaphore::null(),
+        }
+    }
+
+    /// Creation succeeded; the context owns everything now.
+    fn disarm(mut self) {
+        self.instance = None;
+        self.surface = None;
+        self.device = None;
+    }
+}
+
+impl Drop for CreationGuard {
+    fn drop(&mut self) {
+        // SAFETY: each object was created by this context's creation, is
+        // unused (creation failed before anything was submitted), and is
+        // destroyed before the object that created it.
+        unsafe {
+            if let Some(device) = &self.device {
+                if self.timeline != vk::Semaphore::null() {
+                    device.destroy_semaphore(self.timeline, None);
+                }
+                if self.command_pool != vk::CommandPool::null() {
+                    device.destroy_command_pool(self.command_pool, None);
+                }
+                device.destroy_device(None);
+            }
+            if let Some((loader, surface)) = &self.surface {
+                loader.destroy_surface(*surface, None);
+            }
+            if let Some(instance) = &self.instance {
+                instance.destroy_instance(None);
+            }
+        }
+    }
+}
+
+/// Where the pipeline cache persists: beside the SPIR-V cache, per device
+/// (the driver also rejects data from another device or driver version).
+fn pipeline_cache_path(properties: &vk::PhysicalDeviceProperties) -> Option<std::path::PathBuf> {
+    let dir = crate::backends::spirv::disk_cache::cache_dir()?;
+    let uuid: String = properties
+        .pipeline_cache_uuid
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Some(dir.join(format!(
+        "vulkan-pipelines-{:04x}-{:04x}-{uuid}.bin",
+        properties.vendor_id, properties.device_id
+    )))
+}
+
+fn create_pipeline_cache(
+    device: &ash::Device,
+    path: Option<&std::path::Path>,
+) -> GalResult<vk::PipelineCache> {
+    let initial = path
+        .and_then(|path| std::fs::read(path).ok())
+        .unwrap_or_default();
+    let create = |data: &[u8]| unsafe {
+        device.create_pipeline_cache(
+            &vk::PipelineCacheCreateInfo::default().initial_data(data),
+            None,
+        )
+    };
+    // A driver may refuse stale or corrupt data instead of ignoring it.
+    create(&initial)
+        .or_else(|_| create(&[]))
+        .map_err(|error| GalError::backend(format!("failed to create pipeline cache: {error:?}")))
+}
+
 impl Drop for VulkanContext {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
+            if let Some(path) = &self.pipeline_cache_path {
+                if let Ok(data) = self.device.get_pipeline_cache_data(self.pipeline_cache) {
+                    // Write then rename, so a crash never leaves a torn file.
+                    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+                    if std::fs::write(&temporary, &data).is_ok() {
+                        let _ = std::fs::rename(&temporary, path);
+                    }
+                }
+            }
+            self.device
+                .destroy_pipeline_cache(self.pipeline_cache, None);
             self.device.destroy_semaphore(self.timeline, None);
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
@@ -545,7 +650,7 @@ pub(super) enum ValidationMode {
 
 impl ValidationMode {
     pub(super) fn from_env() -> Self {
-        match std::env::var("MATTMC_VULKAN_VALIDATE") {
+        match crate::env::var("VULKANIC_VULKAN_VALIDATE") {
             Ok(value) if value.eq_ignore_ascii_case("deep") => Self::Deep,
             Ok(value)
                 if value.eq_ignore_ascii_case("1")

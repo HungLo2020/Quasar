@@ -141,7 +141,7 @@ fn command_recording_keeps_destroyed_resource_set_generation_live_until_submit()
                 pipeline_layout,
                 set_index: 0,
                 set: recorded,
-                dynamic_offsets: Vec::new(),
+                dynamic_offsets: Vec::new().into(),
             },
             CommandOp::Dispatch {
                 groups_x: 1,

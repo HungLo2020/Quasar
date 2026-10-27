@@ -1,9 +1,9 @@
 //! Creating a GAL: the one public place a backend is chosen.
 //!
-//! The composition root (the bridge) picks a backend once, from what Java
-//! requested, and gets back a `VulkanicGal`. Backend types stay private to
-//! `vulkanic`, and after creation every caller sees capabilities only
-//! (`BackendCapabilities`), never which backend is running.
+//! The composition root (the game, or an engine layer such as Quasar's
+//! renderers) picks a backend once and gets back a `VulkanicGal`. Backend
+//! types stay private to this crate, and renderers branch on capabilities
+//! (`BackendCapabilities`), never on which backend is running.
 //!
 //! Games choose through `GalOptions`: a `GraphicsBackend` (`Auto` when they do
 //! not care, native Vulkan first), whether a failed explicit choice falls back
@@ -126,7 +126,7 @@ impl GraphicsBackend {
 
     /// The backend `VULKANIC_BACKEND` names, if it is set and not empty.
     pub fn from_env() -> GalResult<Option<Self>> {
-        match std::env::var("VULKANIC_BACKEND") {
+        match crate::env::var("VULKANIC_BACKEND") {
             Ok(value) if value.trim().is_empty() => Ok(None),
             Ok(value) => Self::parse(&value).map(Some).ok_or_else(|| {
                 GalError::invalid_argument(format!(

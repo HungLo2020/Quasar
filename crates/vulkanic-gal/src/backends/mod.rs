@@ -1,6 +1,8 @@
-// This module is intentionally private to render::vulkanic. Rust backend
-// implementations must stay behind the Vulkanic frontend boundary, matching the
-// Java rule that non-Vulkanic code cannot import net.vulkanic.backends.*.
+// Private to the crate: backend implementations stay behind the GAL
+// frontend, and only this crate may depend on graphics API crates (see
+// `quasar-workspace-checks/tests/graphics_dependencies.rs`).
+#[cfg(any(feature = "vulkan", feature = "wgpu"))]
+mod handle_map;
 #[cfg(feature = "opengl")]
 pub(super) mod opengl;
 #[cfg(any(feature = "vulkan", feature = "wgpu"))]
@@ -48,8 +50,20 @@ pub struct CompletedHostRead {
     pub buffer: Handle,
     /// Byte offset of the read in the buffer.
     pub offset: u64,
-    /// The bytes read.
+    /// The bytes read; empty when the read failed.
     pub bytes: Vec<u8>,
+    /// Why the read failed, if it did (for example a failed submission).
+    pub error: Option<String>,
+}
+
+impl CompletedHostRead {
+    /// The bytes read, or the failure.
+    pub fn result(&self) -> Result<&[u8], &str> {
+        match &self.error {
+            Some(error) => Err(error),
+            None => Ok(&self.bytes),
+        }
+    }
 }
 
 /// Native work counters and timings a backend reports for the latest frame:
@@ -276,6 +290,12 @@ pub(super) trait Backend {
     fn retire(&mut self, completed: SubmissionId) -> GalResult<()>;
     fn completed_host_reads(&self) -> Vec<CompletedHostRead> {
         Vec::new()
+    }
+    /// Retained reads of submissions after `after`.
+    fn completed_host_reads_since(&self, after: SubmissionId) -> Vec<CompletedHostRead> {
+        let mut reads = self.completed_host_reads();
+        reads.retain(|read| read.submission > after);
+        reads
     }
     fn runtime_metrics(&self) -> BackendRuntimeMetrics {
         BackendRuntimeMetrics::default()

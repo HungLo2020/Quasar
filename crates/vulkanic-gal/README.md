@@ -55,6 +55,24 @@ vulkanic-gal = { path = "...", default-features = false, features = ["wgpu"] }
   enable `opengl` when calling `BackendChoice::OpenGl` or
   `create_borrowed_opengl`.
 
+## Validation
+
+Every command list gets structural checks when it is created and submitted:
+passes open and close in order, graphics pipelines are bound and draws issued
+inside a pass, dispatches, copies and barriers outside one. Full validation
+(every handle, range, format, binding and hazard) runs in debug builds, with
+`VULKANIC_GAL_VALIDATION=1`, or after `VulkanicGal::set_full_validation(true)`
+(for example from a debug setting); release builds otherwise trust their
+producers, as Vulkan does without validation layers. Graphics pipelines (and
+the sets bound against them) are bound inside the pass that draws with them;
+an index buffer set before `BeginPass` carries into the pass. `EndPass` and the
+end of a command list reset all bound state.
+
+`BindResourceSet::dynamic_offsets` is a `DynamicOffsets`, stored inline for up
+to two offsets: build it with `[offset].into()` (or `vec![..].into()`).
+`CompletedHostRead::error` reports a failed read instead of its bytes, and
+`completed_host_reads_since(id)` returns only reads newer than a submission.
+
 ## Choosing and reporting the backend
 
 Games that do not care call the existing constructors or pass
@@ -150,10 +168,12 @@ Vulkan when available and require identical pixels and bytes; they report an
 environment gap without an adapter unless `VULKANIC_REQUIRE_GPU=1`.
 
 Use `quasar-render-2d` for a ready-made pixel framebuffer presenter or 2D
-renderer, or build a renderer against the GAL directly. The default explicit
-shader cache is disabled; set `VULKANIC_SPIRV_CACHE_DIR` to opt into
-application-owned cache storage. Other inherited diagnostic environment
-variables retain their upstream names.
+renderer, or build a renderer against the GAL directly. Disk caches are off by
+default; set `VULKANIC_SPIRV_CACHE_DIR` to application-owned storage to keep
+compiled SPIR-V and the native Vulkan pipeline cache across launches.
+Diagnostic switches are named `VULKANIC_*` (for example `VULKANIC_TRACY`,
+`VULKANIC_VULKAN_VALIDATE`, `VULKANIC_TRACE_SUBMISSIONS`); the `MATTMC_*` names
+they had in MattMC still work and print a one-time deprecation notice.
 
 This crate is distributed under the MIT license; see the repository
 [root LICENSE](../../LICENSE) and [UPSTREAM.md](UPSTREAM.md) for provenance.

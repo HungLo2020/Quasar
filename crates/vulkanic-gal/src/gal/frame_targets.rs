@@ -32,7 +32,7 @@ impl VulkanicGal {
                 TextureUsage::Sampled,
                 TextureUsage::TransferDst,
                 // The opt-in whole-frame attachment audit copies the
-                // Rust-owned forward depth image once after rendering. Keep
+                // GAL-owned forward depth image once after rendering. Keep
                 // this capability on the same owned image so the diagnostic
                 // does not introduce a second depth domain or a presenter
                 // handoff.

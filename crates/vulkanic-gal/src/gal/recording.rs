@@ -66,7 +66,12 @@ impl VulkanicGal {
                 capabilities.limits.max_commands_per_list
             ));
         }
-        self.validate_command_ops(&desc.label, &desc.operations)?;
+        if self.full_validation {
+            self.validate_command_ops(&desc.label, &desc.operations)?;
+        } else {
+            command_structure::validate_command_structure(&desc.label, &desc.operations)
+                .or_else(|error| self.validation_error(error))?;
+        }
         Ok(desc.into())
     }
 }

@@ -11,7 +11,9 @@
 use std::collections::HashMap;
 
 use super::device::WgpuContext;
+use super::resources::TextureObject;
 use crate::error::{GalError, GalResult};
+use crate::resources::TextureSubresourceRange;
 
 const BYTE_COPY_SHADER: &str = r#"
 struct Params {
@@ -71,6 +73,10 @@ struct Params {
     elements: u32,
     lines: u32,
     groups_x: u32,
+    phase: u32,
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
 }
 
 @group(0) @binding(0) var<storage, read> src: array<u32>;
@@ -78,14 +84,20 @@ struct Params {
 @group(0) @binding(2) var<uniform> p: Params;
 
 // The element that moves to position `k`: each primitive's last vertex
-// first, keeping cyclic (winding) order. Incomplete trailing primitives
-// keep their elements.
+// first, keeping cyclic (winding) order. Primitives start at element
+// `phase` (where the bound offset puts the first one); elements before it
+// and incomplete trailing primitives keep their positions.
 fn source_element(k: u32) -> u32 {
-    var s = k ^ 1u;
-    if (p.lines == 0u) {
-        let corner = k % 3u;
-        s = k - corner + select(corner - 1u, 2u, corner == 0u);
+    if (k < p.phase) {
+        return k;
     }
+    let j = k - p.phase;
+    var s = j ^ 1u;
+    if (p.lines == 0u) {
+        let corner = j % 3u;
+        s = j - corner + select(corner - 1u, 2u, corner == 0u);
+    }
+    s = s + p.phase;
     return select(k, s, s < p.elements);
 }
 
@@ -208,7 +220,7 @@ impl ByteCopyPlan {
 
 /// A whole-buffer index rotation ready to record.
 pub(super) struct IndexRotationPlan {
-    params: [u32; 4],
+    params: [u32; 8],
     groups: (u32, u32),
 }
 
@@ -266,12 +278,14 @@ impl Utility {
         Ok(created)
     }
 
-    /// Plans rotating every primitive of the index buffer `src`.
+    /// Plans rotating every primitive of the index buffer `src`, with
+    /// primitives starting at element `phase`.
     pub(super) fn plan_index_rotation(
         context: &WgpuContext,
         src: &wgpu::Buffer,
         element_bytes: u32,
         lines: bool,
+        phase: u32,
     ) -> GalResult<IndexRotationPlan> {
         if src.size() > context.limits.max_storage_buffer_binding_size {
             return Err(GalError::unsupported_feature(
@@ -284,7 +298,16 @@ impl Utility {
         let groups = words.div_ceil(64).max(1);
         let groups_x = groups.min(context.limits.max_compute_workgroups_per_dimension);
         Ok(IndexRotationPlan {
-            params: [element_bytes, elements, u32::from(lines), groups_x],
+            params: [
+                element_bytes,
+                elements,
+                u32::from(lines),
+                groups_x,
+                phase,
+                0,
+                0,
+                0,
+            ],
             groups: (groups_x, groups.div_ceil(groups_x)),
         })
     }
@@ -443,15 +466,12 @@ impl Utility {
         &mut self,
         context: &WgpuContext,
         encoder: &mut wgpu::CommandEncoder,
-        texture: &wgpu::Texture,
-        format: wgpu::TextureFormat,
+        texture: &mut TextureObject,
         filterable: bool,
-        base_mip: u32,
-        mip_count: u32,
-        base_layer: u32,
-        layer_count: u32,
+        range: TextureSubresourceRange,
     ) -> GalResult<()> {
         let device = &context.device;
+        let format = texture.format;
         let module = match &self.mip_module {
             Some(module) => module.clone(),
             None => {
@@ -555,39 +575,45 @@ impl Utility {
                 })
             })
             .clone();
-        for layer in base_layer..base_layer + layer_count {
-            for mip in base_mip + 1..base_mip + mip_count {
-                let view = |level| {
-                    texture.create_view(&wgpu::TextureViewDescriptor {
-                        label: Some("vulkanic.mip-blit"),
-                        dimension: Some(wgpu::TextureViewDimension::D2),
-                        base_mip_level: level,
-                        mip_level_count: Some(1),
-                        base_array_layer: layer,
-                        array_layer_count: Some(1),
-                        ..Default::default()
-                    })
-                };
-                let source = view(mip - 1);
-                let target = view(mip);
-                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("vulkanic.mip-blit"),
-                    layout: &layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&source),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&sampler),
-                        },
-                    ],
-                });
+        for layer in range.base_layer..range.base_layer + range.layer_count {
+            for mip in range.base_mip + 1..range.base_mip + range.mip_count {
+                let native = &texture.texture;
+                let (group, target) = texture
+                    .mip_blits
+                    .entry((filterable, layer, mip))
+                    .or_insert_with(|| {
+                        let view = |level| {
+                            native.create_view(&wgpu::TextureViewDescriptor {
+                                label: Some("vulkanic.mip-blit"),
+                                dimension: Some(wgpu::TextureViewDimension::D2),
+                                base_mip_level: level,
+                                mip_level_count: Some(1),
+                                base_array_layer: layer,
+                                array_layer_count: Some(1),
+                                ..Default::default()
+                            })
+                        };
+                        let source = view(mip - 1);
+                        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("vulkanic.mip-blit"),
+                            layout: &layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(&source),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(&sampler),
+                                },
+                            ],
+                        });
+                        (group, view(mip))
+                    });
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("vulkanic.mip-blit"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &target,
+                        view: target,
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
@@ -601,7 +627,7 @@ impl Utility {
                     multiview_mask: None,
                 });
                 pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, &group, &[]);
+                pass.set_bind_group(0, &*group, &[]);
                 pass.draw(0..3, 0..1);
             }
         }

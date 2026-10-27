@@ -28,9 +28,9 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     subprocess.run(['cargo', 'build', '--release', '--locked', '-p', 'quasar-composition'], cwd=ROOT, check=True)
     env = os.environ.copy()
-    for key in ['MATTMC_TRACE_WHOLE_FRAME', 'MATTMC_TRACE_SUBMISSIONS', 'MATTMC_VULKAN_DEBUG_LABELS']:
+    for key in ['VULKANIC_TRACE_WHOLE_FRAME', 'VULKANIC_TRACE_SUBMISSIONS', 'VULKANIC_VULKAN_DEBUG_LABELS']:
         env.pop(key, None)
-    env['MATTMC_GAL_VALIDATION'] = '0'
+    env['VULKANIC_GAL_VALIDATION'] = '0'
     binary = ROOT / 'target' / 'release' / ('quasar-composition.exe' if os.name == 'nt' else 'quasar-composition')
     runs = []
     for pair in range(args.pairs):

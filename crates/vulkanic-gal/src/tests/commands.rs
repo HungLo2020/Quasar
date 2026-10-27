@@ -526,3 +526,56 @@ fn copies_and_vertex_offsets_reject_overflow_and_exact_end() {
     })
     .unwrap();
 }
+
+#[test]
+fn graphics_pipelines_bind_inside_passes_and_index_buffers_carry_in() {
+    let mut gal = gal();
+    let (color_view, target, pass, _layout, pipeline) = simple_graphics_scene(&mut gal);
+    let index = gal
+        .create_buffer(BufferDesc {
+            label: "carried-index".to_owned(),
+            size: 12,
+            memory: MemoryDomain::DeviceLocal,
+            usages: vec![BufferUsage::Index],
+        })
+        .unwrap();
+    let begin = CommandOp::BeginPass {
+        pass,
+        target,
+        colors: vec![color_attachment(color_view)],
+        depth_stencil: None,
+    };
+    assert_code(
+        gal.create_command_list(CommandListDesc {
+            label: "prebound-pipeline".to_owned(),
+            operations: vec![
+                CommandOp::BindGraphicsPipeline(pipeline),
+                begin.clone(),
+                CommandOp::Draw {
+                    vertices: 3,
+                    instances: 1,
+                },
+                CommandOp::EndPass,
+            ],
+        }),
+        super::StatusCode::InvalidArgument,
+    );
+    gal.create_command_list(CommandListDesc {
+        label: "prebound-index".to_owned(),
+        operations: vec![
+            CommandOp::SetIndexBuffer {
+                buffer: index,
+                offset: 0,
+                index_type: IndexType::U32,
+            },
+            begin,
+            CommandOp::BindGraphicsPipeline(pipeline),
+            CommandOp::DrawIndexed {
+                indices: 3,
+                instances: 1,
+            },
+            CommandOp::EndPass,
+        ],
+    })
+    .unwrap();
+}

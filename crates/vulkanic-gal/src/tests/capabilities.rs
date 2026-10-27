@@ -411,8 +411,8 @@ fn opengl_capabilities_reject_storage_images_and_layered_copies() {
 
 #[test]
 fn backend_specific_api_tokens_do_not_leak_into_gal_core() {
-    // The GAL core (everything in `vulkanic` outside `backends/`) and the
-    // bridge never name a backend API; only backend modules may.
+    // The GAL core (everything in this crate outside `backends/`) never
+    // names a backend API; only backend modules may.
     fn collect(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();

@@ -525,7 +525,7 @@ fn storage_and_subresource_hazards_are_conservative() {
                     pipeline_layout,
                     set_index: 0,
                     set,
-                    dynamic_offsets: Vec::new(),
+                    dynamic_offsets: Vec::new().into(),
                 },
                 CommandOp::Dispatch {
                     groups_x: 1,
@@ -652,7 +652,7 @@ fn texture_subresource_hazards_respect_non_overlapping_ranges() {
                     pipeline_layout,
                     set_index: 0,
                     set: disjoint,
-                    dynamic_offsets: Vec::new(),
+                    dynamic_offsets: Vec::new().into(),
                 },
                 CommandOp::Dispatch {
                     groups_x: 1,
@@ -697,7 +697,7 @@ fn texture_subresource_hazards_respect_non_overlapping_ranges() {
                     pipeline_layout,
                     set_index: 0,
                     set: overlapping,
-                    dynamic_offsets: Vec::new(),
+                    dynamic_offsets: Vec::new().into(),
                 },
                 CommandOp::Dispatch {
                     groups_x: 1,
@@ -897,7 +897,7 @@ fn storage_binding_hazards_use_explicit_ranges_and_effective_dynamic_offsets() {
                         pipeline_layout,
                         set_index: 0,
                         set,
-                        dynamic_offsets: if overrides { vec![offset] } else { vec![] },
+                        dynamic_offsets: if overrides { vec![offset] } else { vec![] }.into(),
                     });
                     operations.push(CommandOp::Dispatch {
                         groups_x: 1,
@@ -989,7 +989,7 @@ fn dispatch_accesses_are_tracked_without_rebinding_and_barriers_are_typed() {
             pipeline_layout: layout,
             set_index: 0,
             set,
-            dynamic_offsets: vec![],
+            dynamic_offsets: vec![].into(),
         },
     ];
     let mut submit = |middle: Vec<CommandOp>| {
@@ -1116,7 +1116,7 @@ fn consecutive_draws_reuse_read_bindings_but_still_reject_repeated_storage_write
                         pipeline_layout,
                         set_index: 0,
                         set,
-                        dynamic_offsets: Vec::new(),
+                        dynamic_offsets: Vec::new().into(),
                     },
                     draw.clone(),
                     draw.clone(),
@@ -1225,7 +1225,7 @@ fn rebinding_one_set_still_checks_unchanged_reads_against_new_writes() {
             pipeline_layout,
             set_index,
             set,
-            dynamic_offsets: Vec::new(),
+            dynamic_offsets: Vec::new().into(),
         };
         let draw = CommandOp::Draw {
             vertices: 3,

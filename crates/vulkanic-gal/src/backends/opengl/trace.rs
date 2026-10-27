@@ -59,7 +59,7 @@ pub(super) fn message(message: &str) {
 }
 
 fn enabled() -> bool {
-    std::env::var("MATTMC_RUST_TRACY")
+    crate::env::var("VULKANIC_TRACY")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }

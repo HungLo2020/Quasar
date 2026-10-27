@@ -14,6 +14,7 @@ mod arena;
 mod bindings;
 mod buffers_textures;
 mod capture;
+mod command_structure;
 mod command_validation;
 mod frame_targets;
 mod frames;
@@ -33,7 +34,6 @@ pub(crate) use self::buffers_textures::*;
 pub(crate) use self::hazards::*;
 pub(crate) use self::normalization::*;
 use self::profiling::*;
-#[cfg(feature = "vulkan")]
 pub(crate) use self::submission::per_frame_validation;
 use self::submission::*;
 
@@ -97,11 +97,11 @@ pub struct VulkanicGal {
     compute_pipelines: Arena<ResourceRecord<ComputePipelineDesc>>,
     render_targets: Arena<ResourceRecord<RenderTargetDesc>>,
     frame_targets: Arena<ResourceRecord<FrameTargetDesc>>,
-    /// Rust-owned depth attachments reserved for acquired frame targets.
+    /// GAL-owned depth attachments reserved for acquired frame targets.
     /// They remain private until frame-pass construction supplies them as an
     /// explicit depth attachment.
     frame_target_depth: BTreeMap<Handle, (Handle, Handle)>,
-    /// Acquired-frame depth becomes sampleable only after a Rust-owned world
+    /// Acquired-frame depth becomes sampleable only after a GAL-owned world
     /// pass has actually written it.  Allocation alone must not admit it to
     /// post-effect inputs.
     frame_target_depth_populated: BTreeSet<Handle>,
@@ -124,21 +124,25 @@ pub struct VulkanicGal {
     next_submission: u64,
     latest_accepted_submission: SubmissionId,
     buffer_upload_capture: super::buffer_upload_capture::BufferUploadCapture,
-    /// Reused per-submission hazard state and in-flight marking set.
+    /// Reused per-submission hazard state.
     hazard_tracker: hazards::AccessTracker,
-    in_flight_scratch: std::collections::HashSet<Handle, AccessHashBuilder>,
     completed_submission: SubmissionId,
     metrics: Metrics,
     /// Frontend policy tagging passes/pipelines with GPU profiling scopes.
     gpu_profile_classifier: Option<GpuProfileClassifier>,
     requested_backend: super::create::GraphicsBackend,
     selection_notes: Vec<super::create::SelectionNote>,
+    /// The backend's capabilities, fixed when it was created.
+    capabilities: BackendCapabilities,
+    /// Whether command lists get full validation (see `set_full_validation`).
+    full_validation: bool,
 }
 
 impl VulkanicGal {
     #[allow(dead_code)]
     pub(crate) fn new_with_backend(backend: Box<dyn Backend>) -> Self {
         let requested_backend = backend.selected_backend();
+        let capabilities = backend.capabilities();
         Self {
             backend,
             buffers: Arena::new(HandleKind::Buffer),
@@ -170,19 +174,33 @@ impl VulkanicGal {
             latest_accepted_submission: SubmissionId(0),
             buffer_upload_capture: Default::default(),
             hazard_tracker: Default::default(),
-            in_flight_scratch: Default::default(),
             completed_submission: SubmissionId(0),
             metrics: Metrics::default(),
             gpu_profile_classifier: None,
             requested_backend,
             selection_notes: Vec::new(),
+            capabilities,
+            full_validation: per_frame_validation(),
         }
     }
 
     /// What the backend supports: features, limits and shader conventions.
     /// Renderers branch on these facts, never on which backend is running.
     pub fn capabilities(&self) -> BackendCapabilities {
-        self.backend.capabilities()
+        self.capabilities
+    }
+
+    /// Whether command lists get full validation: every handle, range,
+    /// format and hazard checked when a list is created and submitted. On
+    /// by default in debug builds and with `VULKANIC_GAL_VALIDATION=1`;
+    /// otherwise lists get only the structural checks backends rely on.
+    pub fn full_validation(&self) -> bool {
+        self.full_validation
+    }
+
+    /// Turns full validation on or off, for example from a debug setting.
+    pub fn set_full_validation(&mut self, enabled: bool) {
+        self.full_validation = enabled;
     }
 
     /// What this GAL runs on: the requested and selected backend, any

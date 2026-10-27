@@ -318,6 +318,7 @@ impl Backend for OpenGlBackend {
                 buffer: read.buffer,
                 offset: read.offset,
                 bytes: read.bytes,
+                error: None,
             })
             .collect()
     }

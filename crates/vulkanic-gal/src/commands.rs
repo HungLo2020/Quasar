@@ -10,6 +10,79 @@ use std::sync::{
     Arc,
 };
 
+/// The dynamic buffer offsets of a `CommandOp::BindResourceSet`, in the
+/// set's binding order. Up to two are stored inline, so binding a set per
+/// draw allocates nothing; it derefs to `[u64]` and converts from vectors,
+/// arrays and slices (`vec![offset].into()`, `[offset].into()`).
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
+pub struct DynamicOffsets(smallvec::SmallVec<[u64; 2]>);
+
+impl DynamicOffsets {
+    /// No offsets: the set's own defaults apply.
+    pub fn new() -> Self {
+        Self(smallvec::SmallVec::new())
+    }
+
+    /// Replaces the offsets with `offsets`, reusing storage.
+    pub fn set_from_slice(&mut self, offsets: &[u64]) {
+        self.0.clear();
+        self.0.extend_from_slice(offsets);
+    }
+}
+
+impl std::ops::Deref for DynamicOffsets {
+    type Target = [u64];
+
+    fn deref(&self) -> &[u64] {
+        &self.0
+    }
+}
+
+impl<'a> IntoIterator for &'a DynamicOffsets {
+    type Item = &'a u64;
+    type IntoIter = std::slice::Iter<'a, u64>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl From<Vec<u64>> for DynamicOffsets {
+    fn from(offsets: Vec<u64>) -> Self {
+        Self(smallvec::SmallVec::from_vec(offsets))
+    }
+}
+
+impl From<&[u64]> for DynamicOffsets {
+    fn from(offsets: &[u64]) -> Self {
+        Self(smallvec::SmallVec::from_slice(offsets))
+    }
+}
+
+impl<const N: usize> From<[u64; N]> for DynamicOffsets {
+    fn from(offsets: [u64; N]) -> Self {
+        Self(offsets.into_iter().collect())
+    }
+}
+
+impl FromIterator<u64> for DynamicOffsets {
+    fn from_iter<I: IntoIterator<Item = u64>>(offsets: I) -> Self {
+        Self(offsets.into_iter().collect())
+    }
+}
+
+impl PartialEq<[u64]> for DynamicOffsets {
+    fn eq(&self, other: &[u64]) -> bool {
+        self.0.as_slice() == other
+    }
+}
+
+impl PartialEq<Vec<u64>> for DynamicOffsets {
+    fn eq(&self, other: &Vec<u64>) -> bool {
+        self.0.as_slice() == other.as_slice()
+    }
+}
+
 /// CPU lifetime receipt for transient storage referenced by prepared commands.
 /// The allocator retains one owner; each command copy retains another. GAL
 /// records accepted use before releasing its command references. Discarding
@@ -249,7 +322,7 @@ pub enum CommandOp {
         /// The resource set.
         set: Handle,
         /// Offsets for the set's dynamic buffer bindings, in binding order.
-        dynamic_offsets: Vec<u64>,
+        dynamic_offsets: DynamicOffsets,
     },
     /// Binds a vertex buffer to a slot.
     SetVertexBuffer {
@@ -347,7 +420,7 @@ pub enum CommandOp {
     CopyTextureToBuffer(BufferImageCopyRegion),
     /// Copies between textures.
     CopyTexture(TextureImageCopyRegion),
-    /// Copies the acquired presentation image into a Rust-owned texture.
+    /// Copies the acquired presentation image into a GAL texture.
     ///
     /// Frame targets are intentionally opaque GAL resources; this operation
     /// is the only legal way for a frontend to make their pixels sampleable
@@ -362,7 +435,7 @@ pub enum CommandOp {
         /// The region size: non-zero, depth 1, within both images.
         extent: Extent3d,
     },
-    /// Copies a Rust-owned texture into the acquired presentation image.
+    /// Copies a GAL texture into the acquired presentation image.
     /// The frame target remains opaque; this is the only legal presentation
     /// write path for offscreen Rust post-processing.
     CopyTextureToFrameTarget {

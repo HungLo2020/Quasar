@@ -12,9 +12,7 @@ use crate::gal::VulkanicGal;
 use crate::handles::Handle;
 use crate::resources::*;
 
-fn require_gpu() -> bool {
-    std::env::var("VULKANIC_REQUIRE_GPU").is_ok_and(|value| value == "1")
-}
+use crate::test_support::require_gpu;
 
 fn wgpu_gal(label: &str) -> Option<VulkanicGal> {
     match WgpuBackend::new(label, crate::create::WgpuApi::Auto) {
@@ -797,7 +795,7 @@ fn wgpu_combined_samplers_dynamic_offsets_and_tight_uploads_match_vulkan() {
                     pipeline_layout,
                     set_index: 0,
                     set,
-                    dynamic_offsets: vec![0],
+                    dynamic_offsets: vec![0].into(),
                 },
                 CommandOp::Draw {
                     vertices: 6,
@@ -807,7 +805,7 @@ fn wgpu_combined_samplers_dynamic_offsets_and_tight_uploads_match_vulkan() {
                     pipeline_layout,
                     set_index: 0,
                     set,
-                    dynamic_offsets: vec![alignment],
+                    dynamic_offsets: vec![alignment].into(),
                 },
                 CommandOp::Draw {
                     vertices: 6,
@@ -1337,7 +1335,7 @@ fn wgpu_compute_and_indirect_work_matches_vulkan() {
                 pipeline_layout: compute_pipeline_layout,
                 set_index: 0,
                 set: compute_set,
-                dynamic_offsets: Vec::new(),
+                dynamic_offsets: Vec::new().into(),
             },
             CommandOp::Dispatch {
                 groups_x: 1,
@@ -1499,7 +1497,7 @@ fn wgpu_depth_textures_sample_as_values_and_comparisons_like_vulkan() {
                     pipeline_layout,
                     set_index: 0,
                     set,
-                    dynamic_offsets: Vec::new(),
+                    dynamic_offsets: Vec::new().into(),
                 },
                 CommandOp::Draw {
                     vertices: 3,
@@ -1740,14 +1738,20 @@ fn provoking_program(
         desc.provoking_vertex = provoking;
         let pipeline = kit.pipeline(desc);
         let mut operations = Vec::new();
+        // "prebound" binds the index buffer before the pass begins; the
+        // pass inherits it.
+        let prebound = draw == "prebound";
         let mut body = vec![CommandOp::BindGraphicsPipeline(pipeline)];
         match draw {
             "direct" => body.push(CommandOp::Draw {
                 vertices: if fan { 5 } else { 6 },
                 instances: 1,
             }),
-            "u16" | "u32" | "indirect" => {
+            "u16" | "u32" | "u32-offset" | "indirect" | "prebound" => {
                 let wide = draw != "u16";
+                // "u32-offset" binds the buffer one element in, so
+                // primitives start off the buffer's triangle boundaries.
+                let lead = u32::from(draw == "u32-offset");
                 let indices = kit.buffer(
                     64,
                     MemoryDomain::Upload,
@@ -1758,6 +1762,9 @@ fn provoking_program(
                     ],
                 );
                 let mut bytes = Vec::new();
+                for _ in 0..lead {
+                    bytes.extend_from_slice(&5u32.to_le_bytes());
+                }
                 for index in 0..6u32 {
                     if wide {
                         bytes.extend_from_slice(&index.to_le_bytes());
@@ -1786,11 +1793,16 @@ fn provoking_program(
                     TextureUsageState::TransferDst,
                     TextureUsageState::IndexRead,
                 ));
-                body.push(CommandOp::SetIndexBuffer {
+                let bind_indices = CommandOp::SetIndexBuffer {
                     buffer: indices,
-                    offset: 0,
+                    offset: u64::from(lead) * 4,
                     index_type: if wide { IndexType::U32 } else { IndexType::U16 },
-                });
+                };
+                if prebound {
+                    operations.push(bind_indices);
+                } else {
+                    body.push(bind_indices);
+                }
                 body.push(if draw == "indirect" {
                     CommandOp::DrawIndexedIndirect {
                         buffer: indices,
@@ -1830,6 +1842,8 @@ fn wgpu_last_provoking_vertex_matches_vulkan_for_every_draw_kind() {
         (PrimitiveTopology::Triangles, "u16"),
         (PrimitiveTopology::Triangles, "u32"),
         (PrimitiveTopology::Triangles, "indirect"),
+        (PrimitiveTopology::Triangles, "u32-offset"),
+        (PrimitiveTopology::Triangles, "prebound"),
         (PrimitiveTopology::TriangleFan, "direct"),
     ] {
         let name = format!("provoking {topology:?} {draw}");
@@ -1913,4 +1927,276 @@ fn wgpu_rejects_indirect_fans_explicitly() {
         })
         .expect_err("indirect fans are unsupported");
     assert!(error.to_string().contains("direct or indexed"), "{error}");
+}
+
+#[test]
+fn wgpu_offset_and_prebound_indexed_draws_equal_a_plain_indexed_draw() {
+    // Same six indices, so all three must draw the same image; checked on
+    // wgpu alone so it holds without a Vulkan reference.
+    for provoking in [ProvokingVertex::First, ProvokingVertex::Last] {
+        let Some(mut gal) = wgpu_gal("wgpu indexed variants") else {
+            return;
+        };
+        let draw = |gal: &mut VulkanicGal, kind| {
+            provoking_program(provoking, PrimitiveTopology::Triangles, kind)(gal)
+        };
+        let plain = draw(&mut gal, "u32");
+        assert_eq!(plain, draw(&mut gal, "u32-offset"), "{provoking:?} offset");
+        assert_eq!(plain, draw(&mut gal, "prebound"), "{provoking:?} prebound");
+    }
+}
+
+#[test]
+fn wgpu_failed_encoding_keeps_no_rotated_index_copies() {
+    let Some(mut gal) = wgpu_gal("wgpu failed rotation") else {
+        return;
+    };
+    let size = extent(4, 4);
+    let mut kit = Kit::new(&mut gal);
+    let (texture, view) = kit.texture(
+        size,
+        TextureFormat::Rgba8Unorm,
+        1,
+        &[TextureUsage::ColorAttachment],
+    );
+    let target = kit.target(&[view], None, size);
+    let pass = kit.pass(target, &[TextureFormat::Rgba8Unorm], None);
+    let vertex = kit.shader(
+        ShaderStage::Vertex,
+        "#version 450
+        layout(location=0) flat out vec4 shade;
+        void main() {
+            shade = vec4(float(gl_VertexIndex));
+            gl_Position = vec4(float(gl_VertexIndex & 1), float(gl_VertexIndex >> 1), 0.0, 1.0);
+        }",
+    );
+    let fragment = kit.shader(
+        ShaderStage::Fragment,
+        "#version 450
+        layout(location=0) flat in vec4 shade;
+        layout(location=0) out vec4 color;
+        void main() { color = shade; }",
+    );
+    let (_, layout) = kit.layout(Vec::new());
+    let mut desc = pipeline_desc(layout, vertex, fragment, TextureFormat::Rgba8Unorm);
+    desc.provoking_vertex = ProvokingVertex::Last;
+    let last = kit.pipeline(desc.clone());
+    desc.provoking_vertex = ProvokingVertex::First;
+    desc.topology = PrimitiveTopology::TriangleFan;
+    let fan = kit.pipeline(desc);
+    let indices = kit.buffer(
+        16,
+        MemoryDomain::DeviceLocal,
+        &[BufferUsage::Index, BufferUsage::Indirect],
+    );
+    let clear = ClearColor {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
+    // The first pass records a rotated copy of `indices`; the second fails
+    // to lower, so the batch is never submitted.
+    let mut operations = color_pass_ops(
+        pass,
+        target,
+        view,
+        texture,
+        clear,
+        vec![
+            CommandOp::BindGraphicsPipeline(last),
+            CommandOp::SetIndexBuffer {
+                buffer: indices,
+                offset: 0,
+                index_type: IndexType::U32,
+            },
+            CommandOp::DrawIndexed {
+                indices: 3,
+                instances: 1,
+            },
+        ],
+    );
+    operations.push(CommandOp::BeginPass {
+        pass,
+        target,
+        colors: vec![PassAttachment {
+            view,
+            load_op: AttachmentLoadOp::Load,
+            store_op: AttachmentStoreOp::Store,
+            clear_color: None,
+        }],
+        depth_stencil: None,
+    });
+    operations.extend([
+        CommandOp::BindGraphicsPipeline(fan),
+        CommandOp::DrawIndirect {
+            buffer: indices,
+            offset: 0,
+            draw_count: 1,
+        },
+        CommandOp::EndPass,
+    ]);
+    let list = kit
+        .gal
+        .create_command_list(CommandListDesc {
+            label: "failed-rotation".into(),
+            operations,
+        })
+        .expect("validates");
+    kit.gal
+        .submit(SubmissionBatch {
+            label: "failed-rotation".into(),
+            command_lists: vec![list],
+        })
+        .expect_err("indirect fans are unsupported");
+    let backend = kit.gal.wgpu_backend().expect("wgpu GAL");
+    assert_eq!(
+        backend.rotated_index_copies_for_test(),
+        0,
+        "an unsubmitted batch published its rotated index copies"
+    );
+}
+
+/// Presents real frames through a wgpu surface: acquire, clear the frame
+/// target in a GAL pass, present, resize, minimize, shut down. Needs a
+/// display, so it runs only with `VULKANIC_RUN_WGPU_WINDOWED=1`; winit allows
+/// one event loop per process, so run it alone
+/// (`cargo test ... wgpu_windowed -- --include-ignored`).
+#[cfg(target_os = "linux")]
+#[test]
+fn wgpu_windowed_frames_acquire_render_present_and_resize() {
+    use crate::frame::*;
+    use std::sync::Arc;
+    if !crate::env::var("VULKANIC_RUN_WGPU_WINDOWED").is_ok_and(|value| value == "1") {
+        return;
+    }
+    let mut builder = winit::event_loop::EventLoop::builder();
+    winit::platform::x11::EventLoopBuilderExtX11::with_any_thread(&mut builder, true);
+    winit::platform::wayland::EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
+    let event_loop = builder.build().expect("an event loop on this display");
+    #[allow(deprecated)]
+    let window = Arc::new(
+        event_loop
+            .create_window(
+                winit::window::Window::default_attributes()
+                    .with_title("VulkanicGAL wgpu windowed test")
+                    .with_inner_size(winit::dpi::PhysicalSize::new(64, 48)),
+            )
+            .expect("a test window"),
+    );
+    let size = extent(64, 48);
+    let backend = match WgpuBackend::new_owned_window(
+        "wgpu windowed test",
+        crate::create::WgpuApi::Auto,
+        window,
+        FrameSurfaceDesc {
+            label: "wgpu-test-window".into(),
+            extent: size,
+            color_format: TextureFormat::Bgra8Unorm,
+            present_mode: PresentMode::Fifo,
+            max_frames_in_flight: 2,
+        },
+    ) {
+        Ok(backend) => backend,
+        Err(error) => {
+            crate::test_support::environment_gap("wgpu presentation", &error);
+            return;
+        }
+    };
+    let mut gal = VulkanicGal::new_with_backend(Box::new(backend));
+    let mut targets = std::collections::HashMap::new();
+    for frame in 0..4u64 {
+        let acquired = gal
+            .acquire_frame(FrameAcquireDesc {
+                correlation_id: FrameCorrelationId(frame + 1),
+                expected_extent: size,
+            })
+            .expect("acquire");
+        assert!(matches!(
+            acquired.status,
+            FrameAcquireStatus::Ready | FrameAcquireStatus::Suboptimal
+        ));
+        let target = *targets.entry(acquired.render_target).or_insert_with(|| {
+            gal.create_frame_target(FrameTargetDesc {
+                label: "wgpu-test-frame".into(),
+                frame_id: acquired.frame.0,
+                render_target: acquired.render_target,
+                extent: acquired.extent,
+                color_format: acquired.color_format,
+            })
+            .expect("frame target")
+        });
+        let pass = gal
+            .create_render_pass(RenderPassDesc {
+                label: "wgpu-test-frame-pass".into(),
+                target,
+                color_formats: vec![acquired.color_format],
+                depth_format: None,
+            })
+            .expect("frame pass");
+        let list = gal
+            .create_command_list(CommandListDesc {
+                label: "wgpu-test-frame".into(),
+                operations: vec![
+                    CommandOp::BeginPass {
+                        pass,
+                        target,
+                        colors: vec![PassAttachment {
+                            view: target,
+                            load_op: AttachmentLoadOp::Clear,
+                            store_op: AttachmentStoreOp::Store,
+                            clear_color: Some(ClearColor {
+                                r: 0.1,
+                                g: 0.2,
+                                b: frame as f32 / 4.0,
+                                a: 1.0,
+                            }),
+                        }],
+                        depth_stencil: None,
+                    },
+                    CommandOp::EndPass,
+                ],
+            })
+            .expect("frame list");
+        let token = gal
+            .submit(SubmissionBatch {
+                label: "wgpu-test-frame".into(),
+                command_lists: vec![list],
+            })
+            .expect("frame submits");
+        let presented = gal
+            .present_frame(PresentFrameDesc {
+                frame: acquired.frame,
+                correlation_id: acquired.correlation_id,
+                wait_for: token.submission,
+            })
+            .expect("present");
+        assert!(matches!(
+            presented.status,
+            FramePresentStatus::Presented | FramePresentStatus::Suboptimal
+        ));
+        gal.destroy(pass).expect("pass retires");
+    }
+    for target in targets.into_values() {
+        gal.destroy(target).expect("frame target retires");
+    }
+    let resized = gal
+        .resize_frame_surface(FrameResizeDesc {
+            correlation_id: FrameCorrelationId(10),
+            extent: extent(32, 32),
+        })
+        .expect("resize");
+    assert_eq!(resized.status, FrameAcquireStatus::Resized);
+    let minimized = gal
+        .resize_frame_surface(FrameResizeDesc {
+            correlation_id: FrameCorrelationId(11),
+            extent: Extent3d {
+                width: 0,
+                height: 0,
+                depth: 1,
+            },
+        })
+        .expect("minimize");
+    assert_eq!(minimized.status, FrameAcquireStatus::Minimized);
+    gal.shutdown_frame_surface().expect("clean shutdown");
 }

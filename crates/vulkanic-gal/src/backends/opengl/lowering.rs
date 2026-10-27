@@ -1191,7 +1191,7 @@ impl OpenGlLowerer {
 
     fn trace_draw_state(&self, phase: &str, state: &ExecutionState) {
         let limit = *GL_DRAW_TRACE_LIMIT.get_or_init(|| {
-            std::env::var("MATTMC_RUST_GAL_TRACE_GL_DRAWS")
+            crate::env::var("VULKANIC_GAL_TRACE_GL_DRAWS")
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or(0)
@@ -1212,7 +1212,7 @@ impl OpenGlLowerer {
                 String::new()
             };
             crate::diagnostics::stderr(format_args!(
-                "MATTMC_RUST_GAL_GL_DRAW_STATE phase={} current_program={} program_label={} draw_fbo={} read_fbo={} draw_buffer0={} vertex_array={} array_buffer={} element_array_buffer={} active_texture={} depth_test={} depth_write={} blend={} cull_face={} scissor={} pipeline_bound={} index_buffer_bound={}",
+                "VULKANIC_GAL_GL_DRAW_STATE phase={} current_program={} program_label={} draw_fbo={} read_fbo={} draw_buffer0={} vertex_array={} array_buffer={} element_array_buffer={} active_texture={} depth_test={} depth_write={} blend={} cull_face={} scissor={} pipeline_bound={} index_buffer_bound={}",
                 phase,
                 current_program,
                 program_label,
@@ -1351,7 +1351,7 @@ impl OpenGlLowerer {
                 .push(format!("OpenGL error 0x{error:04x} after {context}"));
         }
         if saw_error
-            && std::env::var("MATTMC_OPENGL_STRICT")
+            && crate::env::var("VULKANIC_OPENGL_STRICT")
                 .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
         {

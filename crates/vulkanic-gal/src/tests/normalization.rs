@@ -53,13 +53,13 @@ fn command_normalization_removes_redundant_state_binds() {
             pipeline_layout: layout,
             set_index: 0,
             set,
-            dynamic_offsets: Vec::new(),
+            dynamic_offsets: Vec::new().into(),
         },
         CommandOp::BindResourceSet {
             pipeline_layout: layout,
             set_index: 0,
             set,
-            dynamic_offsets: Vec::new(),
+            dynamic_offsets: Vec::new().into(),
         },
         CommandOp::SetVertexBuffer {
             slot: 0,
@@ -152,19 +152,19 @@ fn command_normalization_keeps_resource_binds_with_distinct_dynamic_offsets() {
             pipeline_layout: layout,
             set_index: 0,
             set,
-            dynamic_offsets: vec![0],
+            dynamic_offsets: vec![0].into(),
         },
         CommandOp::BindResourceSet {
             pipeline_layout: layout,
             set_index: 0,
             set,
-            dynamic_offsets: vec![256],
+            dynamic_offsets: vec![256].into(),
         },
         CommandOp::BindResourceSet {
             pipeline_layout: layout,
             set_index: 0,
             set,
-            dynamic_offsets: vec![256],
+            dynamic_offsets: vec![256].into(),
         },
         CommandOp::EndPass,
     ]);
@@ -193,7 +193,7 @@ fn command_normalization_rebinds_descriptor_sets_after_pipeline_change() {
             pipeline_layout: layout,
             set_index: 1,
             set,
-            dynamic_offsets: Vec::new(),
+            dynamic_offsets: Vec::new().into(),
         },
         CommandOp::DrawIndexed {
             indices: 6,
@@ -204,7 +204,7 @@ fn command_normalization_rebinds_descriptor_sets_after_pipeline_change() {
             pipeline_layout: layout,
             set_index: 1,
             set,
-            dynamic_offsets: Vec::new(),
+            dynamic_offsets: Vec::new().into(),
         },
         CommandOp::DrawIndexed {
             indices: 6,
@@ -237,7 +237,7 @@ fn command_normalization_retains_sets_for_pipelines_sharing_a_layout() {
                 pipeline_layout: layout,
                 set_index: 1,
                 set,
-                dynamic_offsets: Vec::new(),
+                dynamic_offsets: Vec::new().into(),
             },
             CommandOp::DrawIndexed {
                 indices: 6,
@@ -248,7 +248,7 @@ fn command_normalization_retains_sets_for_pipelines_sharing_a_layout() {
                 pipeline_layout: layout,
                 set_index: 1,
                 set,
-                dynamic_offsets: Vec::new(),
+                dynamic_offsets: Vec::new().into(),
             },
             CommandOp::DrawIndexed {
                 indices: 6,
@@ -320,13 +320,13 @@ fn command_normalization_keeps_distinct_state_changes() {
             pipeline_layout: layout,
             set_index: 0,
             set: set_a,
-            dynamic_offsets: Vec::new(),
+            dynamic_offsets: Vec::new().into(),
         },
         CommandOp::BindResourceSet {
             pipeline_layout: layout,
             set_index: 0,
             set: set_b,
-            dynamic_offsets: Vec::new(),
+            dynamic_offsets: Vec::new().into(),
         },
         CommandOp::SetIndexBuffer {
             buffer: index,

@@ -8,6 +8,7 @@ use ash::vk;
 
 use super::device::VulkanContext;
 use super::trace;
+use crate::backends::handle_map::KindedHandleMap;
 use crate::backends::spirv::compiler::compile_glsl_for_backend;
 use crate::backends::{BackendCreateDesc, BackendToken};
 use crate::error::{GalError, GalResult};
@@ -66,11 +67,11 @@ static VULKAN_RESIDENCY_TRACE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// ordinary Rust/GAL ownership from driver-side anonymous mappings without
 /// changing any resource lifetime or allocation policy.
 fn trace_glibc_allocator_checkpoint(resource_label: &str) {
-    if std::env::var_os("MATTMC_TRACE_GLIBC_ALLOCATOR").is_none() {
+    if crate::env::var_os("VULKANIC_TRACE_GLIBC_ALLOCATOR").is_none() {
         return;
     }
     let sequence = GLIBC_ALLOCATION_TRACE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    if std::env::var_os("MATTMC_TRACE_GLIBC_ALLOCATOR_VERBOSE").is_none()
+    if crate::env::var_os("VULKANIC_TRACE_GLIBC_ALLOCATOR_VERBOSE").is_none()
         && !sequence.is_multiple_of(64)
     {
         return;
@@ -92,7 +93,7 @@ fn trace_glibc_allocator_checkpoint(resource_label: &str) {
 }
 
 fn trace_native_graphics_pipeline_cache(hit: bool, resource_label: &str, key_count: usize) {
-    if std::env::var_os("MATTMC_TRACE_VK_NATIVE_PIPELINE_CACHE").is_none() {
+    if crate::env::var_os("VULKANIC_TRACE_VK_NATIVE_PIPELINE_CACHE").is_none() {
         return;
     }
     let sequence = NATIVE_GRAPHICS_PIPELINE_CACHE_TRACE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -107,7 +108,7 @@ fn trace_native_graphics_pipeline_cache(hit: bool, resource_label: &str, key_cou
 
 fn runtime_native_allocator_trim_enabled() -> bool {
     *RUNTIME_NATIVE_ALLOCATOR_TRIM_ENABLED
-        .get_or_init(|| std::env::var_os("MATTMC_VULKAN_RUNTIME_ALLOCATOR_TRIM").is_some())
+        .get_or_init(|| crate::env::var_os("VULKANIC_VULKAN_RUNTIME_ALLOCATOR_TRIM").is_some())
 }
 
 fn should_trim_native_allocator(
@@ -491,7 +492,7 @@ impl DeviceMemoryAllocator {
             offset,
             size: requirements.size,
         };
-        if std::env::var_os("MATTMC_TRACE_VULKAN_BUFFER_PAGES").is_some() {
+        if crate::env::var_os("VULKANIC_TRACE_VULKAN_BUFFER_PAGES").is_some() {
             trace::stderr(format_args!(
                 "vulkan.buffer-page.create id={} memory_type_index={} memory_property_bits={} host_visible={} page_bytes={} request_bytes={} alignment={}",
                 block.id,
@@ -594,7 +595,7 @@ pub(super) struct VulkanObjects {
     /// types or alignments.
     texture_memory: DeviceMemoryAllocator,
     descriptor_pools: DescriptorPoolAllocator,
-    objects: BTreeMap<Handle, VulkanObject>,
+    objects: KindedHandleMap<VulkanObject>,
     next_token: u64,
     /// Backend-private compiler output cache.  GAL shader handles remain
     /// distinct resources; only the expensive GLSL-to-SPIR-V translation is
@@ -614,7 +615,7 @@ impl VulkanObjects {
             texture_memory: DeviceMemoryAllocator::new(context.clone()),
             descriptor_pools: DescriptorPoolAllocator::new(context.clone()),
             context,
-            objects: BTreeMap::new(),
+            objects: KindedHandleMap::default(),
             next_token: 1,
             compiled_shader_cache: HashMap::new(),
             graphics_pipeline_cache: HashMap::new(),
@@ -692,11 +693,8 @@ impl VulkanObjects {
                 self.validate_render_pass_desc(desc)?;
                 VulkanObject::RenderPass(RenderPassObject {
                     token,
-                    label: desc.label.clone(),
                     profile_tag: GpuProfileTag::default(),
                     target: desc.target,
-                    color_formats: desc.color_formats.clone(),
-                    depth_format: desc.depth_format,
                 })
             }
         };
@@ -737,7 +735,7 @@ impl VulkanObjects {
             TextureFormat,
         ) -> GalResult<FrameTargetObject>,
     ) -> GalResult<()> {
-        let Some(VulkanObject::FrameTarget(existing)) = self.objects.get(&handle) else {
+        let Some(VulkanObject::FrameTarget(existing)) = self.objects.get(handle) else {
             return Err(GalError::backend(
                 "Vulkan frame target refresh for unknown frame target handle",
             ));
@@ -767,7 +765,7 @@ impl VulkanObjects {
         kind: HandleKind,
         token: BackendToken,
     ) -> GalResult<()> {
-        let Some(object) = self.objects.remove(&handle) else {
+        let Some(object) = self.objects.remove(handle) else {
             return Err(GalError::backend("Vulkan destroy for unknown handle"));
         };
         if object.kind() != kind || object.token() != token {
@@ -813,7 +811,7 @@ impl VulkanObjects {
                 info.fordblks,
             ) {
                 let released = unsafe { libc::malloc_trim(0) } != 0;
-                if std::env::var_os("MATTMC_TRACE_GLIBC_ALLOCATOR").is_some() {
+                if crate::env::var_os("VULKANIC_TRACE_GLIBC_ALLOCATOR").is_some() {
                     trace::stderr(format_args!(
                         "vulkan.glibc-allocator-trim retired={} free_bytes={} released={}",
                         self.native_objects_retired_since_allocator_trim, info.fordblks, released,
@@ -825,7 +823,7 @@ impl VulkanObjects {
     }
 
     pub(super) fn buffer(&self, handle: Handle) -> GalResult<&BufferObject> {
-        match self.objects.get(&handle) {
+        match self.objects.get(handle) {
             Some(VulkanObject::Buffer(object)) => Ok(object),
             _ => Err(GalError::backend(format!(
                 "expected Vulkan buffer for handle 0x{:016x}",
@@ -835,7 +833,7 @@ impl VulkanObjects {
     }
 
     pub(super) fn texture(&self, handle: Handle) -> GalResult<&TextureObject> {
-        match self.objects.get(&handle) {
+        match self.objects.get(handle) {
             Some(VulkanObject::Texture(object)) => Ok(object),
             _ => Err(GalError::backend(format!(
                 "expected Vulkan texture for handle 0x{:016x}",
@@ -845,7 +843,7 @@ impl VulkanObjects {
     }
 
     pub(super) fn texture_view(&self, handle: Handle) -> GalResult<&TextureViewObject> {
-        match self.objects.get(&handle) {
+        match self.objects.get(handle) {
             Some(VulkanObject::TextureView(object)) => Ok(object),
             _ => Err(GalError::backend(format!(
                 "expected Vulkan texture view for handle 0x{:016x}",
@@ -855,7 +853,7 @@ impl VulkanObjects {
     }
 
     pub(super) fn resource_set(&self, handle: Handle) -> GalResult<&ResourceSetObject> {
-        match self.objects.get(&handle) {
+        match self.objects.get(handle) {
             Some(VulkanObject::ResourceSet(object)) => Ok(object),
             _ => Err(GalError::backend(format!(
                 "expected Vulkan resource set for handle 0x{:016x}",
@@ -865,7 +863,7 @@ impl VulkanObjects {
     }
 
     pub(super) fn pipeline_layout(&self, handle: Handle) -> GalResult<&PipelineLayoutObject> {
-        match self.objects.get(&handle) {
+        match self.objects.get(handle) {
             Some(VulkanObject::PipelineLayout(object)) => Ok(object),
             _ => Err(GalError::backend(format!(
                 "expected Vulkan pipeline layout for handle 0x{:016x}",
@@ -876,7 +874,7 @@ impl VulkanObjects {
 
     /// Stores the frontend's profiling tag on a pass or graphics pipeline.
     pub(super) fn set_profile_tag(&mut self, handle: Handle, tag: GpuProfileTag) {
-        match self.objects.get_mut(&handle) {
+        match self.objects.get_mut(handle) {
             Some(VulkanObject::RenderPass(object)) => object.profile_tag = tag,
             Some(VulkanObject::GraphicsPipeline(object)) => object.profile_tag = tag,
             _ => {}
@@ -884,7 +882,7 @@ impl VulkanObjects {
     }
 
     pub(super) fn graphics_pipeline(&self, handle: Handle) -> GalResult<&GraphicsPipelineObject> {
-        match self.objects.get(&handle) {
+        match self.objects.get(handle) {
             Some(VulkanObject::GraphicsPipeline(object)) => Ok(object),
             _ => Err(GalError::backend(format!(
                 "expected Vulkan graphics pipeline for handle 0x{:016x}",
@@ -894,7 +892,7 @@ impl VulkanObjects {
     }
 
     pub(super) fn compute_pipeline(&self, handle: Handle) -> GalResult<&ComputePipelineObject> {
-        match self.objects.get(&handle) {
+        match self.objects.get(handle) {
             Some(VulkanObject::ComputePipeline(object)) => Ok(object),
             _ => Err(GalError::backend(format!(
                 "expected Vulkan compute pipeline for handle 0x{:016x}",
@@ -904,7 +902,7 @@ impl VulkanObjects {
     }
 
     pub(super) fn render_target(&self, handle: Handle) -> GalResult<&RenderTargetObject> {
-        match self.objects.get(&handle) {
+        match self.objects.get(handle) {
             Some(VulkanObject::RenderTarget(object)) => Ok(object),
             _ => Err(GalError::backend(format!(
                 "expected Vulkan render target for handle 0x{:016x}",
@@ -914,7 +912,7 @@ impl VulkanObjects {
     }
 
     pub(super) fn frame_target(&self, handle: Handle) -> GalResult<&FrameTargetObject> {
-        match self.objects.get(&handle) {
+        match self.objects.get(handle) {
             Some(VulkanObject::FrameTarget(object)) => Ok(object),
             _ => Err(GalError::backend(format!(
                 "expected Vulkan frame target for handle 0x{:016x}",
@@ -924,7 +922,7 @@ impl VulkanObjects {
     }
 
     pub(super) fn render_pass(&self, handle: Handle) -> GalResult<&RenderPassObject> {
-        match self.objects.get(&handle) {
+        match self.objects.get(handle) {
             Some(VulkanObject::RenderPass(object)) => Ok(object),
             _ => Err(GalError::backend(format!(
                 "expected Vulkan render pass for handle 0x{:016x}",
@@ -935,8 +933,8 @@ impl VulkanObjects {
 
     pub(super) fn destroy_all(&mut self) {
         let had_objects = !self.objects.is_empty();
-        let objects = std::mem::take(&mut self.objects);
-        for (_, object) in objects.into_iter().rev() {
+        let mut objects = std::mem::take(&mut self.objects);
+        for (_, object) in objects.drain_teardown() {
             self.destroy_object(object);
         }
         self.graphics_pipeline_cache.clear();
@@ -958,7 +956,7 @@ impl VulkanObjects {
     /// Logical GAL lifetimes remain authoritative; this reports both live
     /// suballocations and retained page capacity without changing policy.
     fn trace_memory_residency(&self, event: &str) {
-        if std::env::var_os("MATTMC_TRACE_VULKAN_RESIDENCY").is_none() {
+        if crate::env::var_os("VULKANIC_TRACE_VULKAN_RESIDENCY").is_none() {
             return;
         }
         // Resource retirement is frequent during ordinary GUI and terrain
@@ -1004,7 +1002,7 @@ impl VulkanObjects {
                 ))
             })?;
         let requirements = unsafe { self.context.device.get_buffer_memory_requirements(buffer) };
-        if std::env::var_os("MATTMC_TRACE_VULKAN_BUFFER_OBJECTS").is_some() {
+        if crate::env::var_os("VULKANIC_TRACE_VULKAN_BUFFER_OBJECTS").is_some() {
             trace::stderr(format_args!(
                 "vulkan.buffer.create label={} requested_bytes={} requirement_bytes={} alignment={} memory={:?}",
                 desc.label, desc.size, requirements.size, requirements.alignment, desc.memory,
@@ -1050,7 +1048,7 @@ impl VulkanObjects {
             memory_offset: allocation.offset,
             allocation,
             size: desc.size,
-            memory_domain: desc.memory,
+            stages: buffer_stages(&desc.usages),
         })
     }
 
@@ -1123,7 +1121,7 @@ impl VulkanObjects {
                 ))
             })?;
         let requirements = unsafe { self.context.device.get_image_memory_requirements(image) };
-        if std::env::var_os("MATTMC_TRACE_VULKAN_IMAGE_ALLOCATIONS").is_some() {
+        if crate::env::var_os("VULKANIC_TRACE_VULKAN_IMAGE_ALLOCATIONS").is_some() {
             trace::stderr(format_args!(
                 "vulkan.image.allocate label={} dimension={:?} format={:?} extent={}x{}x{} mip_levels={} array_layers={} bytes={} alignment={}",
                 desc.label,
@@ -1171,7 +1169,6 @@ impl VulkanObjects {
             token,
             label: desc.label.clone(),
             image,
-            memory: allocation.memory,
             allocation,
             format,
             copy_bytes_per_texel: desc.format.copy_bytes_per_texel().unwrap_or(0),
@@ -1272,7 +1269,7 @@ impl VulkanObjects {
     }
 
     fn validate_render_pass_desc(&self, desc: &RenderPassDesc) -> GalResult<()> {
-        let Some(VulkanObject::RenderTarget(target)) = self.objects.get(&desc.target) else {
+        let Some(VulkanObject::RenderTarget(target)) = self.objects.get(desc.target) else {
             // Swapchain-backed frame targets have a single dynamic color view;
             // their compatibility is checked when the frame target is refreshed.
             return Ok(());
@@ -1347,7 +1344,7 @@ impl VulkanObjects {
                 code: desc.code.clone(),
             };
             if let Some(cached) = self.compiled_shader_cache.get(&cache_key) {
-                if std::env::var_os("MATTMC_TRACE_VK_SHADER_COMPILE").is_some() {
+                if crate::env::var_os("VULKANIC_TRACE_VK_SHADER_COMPILE").is_some() {
                     trace::stdout(format_args!(
                         "vulkan.shader.compile.cache_hit label={}",
                         desc.label
@@ -1355,7 +1352,7 @@ impl VulkanObjects {
                 }
                 cached.clone()
             } else {
-                if std::env::var_os("MATTMC_TRACE_VK_SHADER_COMPILE").is_some() {
+                if crate::env::var_os("VULKANIC_TRACE_VK_SHADER_COMPILE").is_some() {
                     trace::stdout(format_args!(
                         "vulkan.shader.compile.begin label={} stage={:?} bytes={}",
                         desc.label,
@@ -1390,7 +1387,7 @@ impl VulkanObjects {
             desc.code.clone()
         };
         if desc.code_format == ShaderCodeFormat::Glsl
-            && std::env::var_os("MATTMC_TRACE_VK_SHADER_COMPILE").is_some()
+            && crate::env::var_os("VULKANIC_TRACE_VK_SHADER_COMPILE").is_some()
         {
             trace::stdout(format_args!(
                 "vulkan.shader.compile.end label={} elapsed_us={}",
@@ -1476,7 +1473,7 @@ impl VulkanObjects {
         desc: &ResourceSetDesc,
         token: BackendToken,
     ) -> GalResult<ResourceSetObject> {
-        let layout_object = match self.objects.get(&desc.layout) {
+        let layout_object = match self.objects.get(desc.layout) {
             Some(VulkanObject::ResourceLayout(layout)) => layout,
             _ => return Err(GalError::backend("resource set references missing layout")),
         };
@@ -1575,7 +1572,7 @@ impl VulkanObjects {
                     });
                 }
                 ResourceBindingKind::Sampler => {
-                    let sampler = match self.objects.get(&binding.resource) {
+                    let sampler = match self.objects.get(binding.resource) {
                         Some(VulkanObject::Sampler(sampler)) => sampler.sampler,
                         _ => {
                             return Err(GalError::backend(
@@ -1597,7 +1594,7 @@ impl VulkanObjects {
                     });
                 }
                 ResourceBindingKind::CombinedTextureSampler => {
-                    let combined = match self.objects.get(&binding.resource) {
+                    let combined = match self.objects.get(binding.resource) {
                         Some(VulkanObject::CombinedTextureSampler(combined)) => combined,
                         _ => {
                             return Err(GalError::backend(
@@ -1606,7 +1603,7 @@ impl VulkanObjects {
                         }
                     };
                     let view = self.texture_view(combined.texture_view)?;
-                    let sampler = match self.objects.get(&combined.sampler) {
+                    let sampler = match self.objects.get(combined.sampler) {
                         Some(VulkanObject::Sampler(sampler)) => sampler.sampler,
                         _ => {
                             return Err(GalError::backend(
@@ -1616,7 +1613,7 @@ impl VulkanObjects {
                     };
                     let info_index = image_infos.len();
                     let sampled_layout = sampled_image_layout_for_aspect(view.aspect);
-                    if std::env::var_os("MATTMC_TRACE_DESCRIPTOR_REALIZATION").is_some() {
+                    if crate::env::var_os("VULKANIC_TRACE_DESCRIPTOR_REALIZATION").is_some() {
                         trace::stderr(format_args!(
                             "vulkan.descriptor.combined resource={:?} texture_view={:?} texture={:?} label={} image_view={:?} sampler={:?} layout={}",
                             binding.resource,
@@ -1705,7 +1702,7 @@ impl VulkanObjects {
         let set_layouts = desc
             .resource_layouts
             .iter()
-            .map(|handle| match self.objects.get(handle) {
+            .map(|handle| match self.objects.get(*handle) {
                 Some(VulkanObject::ResourceLayout(layout)) => Ok(layout.layout),
                 _ => Err(GalError::backend(
                     "pipeline layout references missing resource layout",
@@ -1748,7 +1745,6 @@ impl VulkanObjects {
             );
             return Ok(GraphicsPipelineObject {
                 token,
-                label: desc.label.clone(),
                 profile_tag: GpuProfileTag::default(),
                 pipeline,
                 layout: desc.layout,
@@ -1850,7 +1846,7 @@ impl VulkanObjects {
         let pipeline_started = std::time::Instant::now();
         let pipeline = unsafe {
             self.context.device.create_graphics_pipelines(
-                vk::PipelineCache::null(),
+                self.context.pipeline_cache,
                 &[create_info],
                 None,
             )
@@ -1862,7 +1858,7 @@ impl VulkanObjects {
             ))
         })?
         .remove(0);
-        if std::env::var_os("MATTMC_TRACE_VK_SHADER_COMPILE").is_some() {
+        if crate::env::var_os("VULKANIC_TRACE_VK_SHADER_COMPILE").is_some() {
             trace::stdout(format_args!(
                 "vulkan.pipeline.create label={} elapsed_us={}",
                 desc.label,
@@ -1888,7 +1884,6 @@ impl VulkanObjects {
         );
         Ok(GraphicsPipelineObject {
             token,
-            label: desc.label.clone(),
             profile_tag: GpuProfileTag::default(),
             pipeline,
             layout: desc.layout,
@@ -1927,7 +1922,7 @@ impl VulkanObjects {
             .layout(layout);
         let pipeline = unsafe {
             self.context.device.create_compute_pipelines(
-                vk::PipelineCache::null(),
+                self.context.pipeline_cache,
                 &[create_info],
                 None,
             )
@@ -1952,7 +1947,7 @@ impl VulkanObjects {
     }
 
     fn shader(&self, handle: Handle) -> GalResult<&ShaderModuleObject> {
-        match self.objects.get(&handle) {
+        match self.objects.get(handle) {
             Some(VulkanObject::ShaderModule(shader)) => Ok(shader),
             _ => Err(GalError::backend(
                 "pipeline references missing shader module",
@@ -2098,7 +2093,6 @@ impl VulkanObject {
     }
 }
 
-#[allow(dead_code)]
 pub(super) struct BufferObject {
     pub(super) token: BackendToken,
     pub(super) buffer: vk::Buffer,
@@ -2109,16 +2103,37 @@ pub(super) struct BufferObject {
     pub(super) memory_offset: u64,
     allocation: DeviceMemoryAllocation,
     pub(super) size: u64,
-    pub(super) memory_domain: MemoryDomain,
+    /// Every stage its declared usages let access it; host writes order
+    /// against these instead of all commands.
+    pub(super) stages: vk::PipelineStageFlags2,
 }
 
-#[allow(dead_code)]
+/// The pipeline stages that may access a buffer with `usages`.
+pub(super) fn buffer_stages(usages: &[BufferUsage]) -> vk::PipelineStageFlags2 {
+    let shaders = vk::PipelineStageFlags2::VERTEX_SHADER
+        | vk::PipelineStageFlags2::FRAGMENT_SHADER
+        | vk::PipelineStageFlags2::COMPUTE_SHADER;
+    usages
+        .iter()
+        .fold(vk::PipelineStageFlags2::ALL_TRANSFER, |stages, usage| {
+            stages
+                | match usage {
+                    BufferUsage::Vertex => vk::PipelineStageFlags2::VERTEX_ATTRIBUTE_INPUT,
+                    BufferUsage::Index => vk::PipelineStageFlags2::INDEX_INPUT,
+                    BufferUsage::Uniform | BufferUsage::Storage => shaders,
+                    BufferUsage::Indirect => vk::PipelineStageFlags2::DRAW_INDIRECT,
+                    BufferUsage::HostRead => vk::PipelineStageFlags2::HOST,
+                    BufferUsage::TransferSrc
+                    | BufferUsage::TransferDst
+                    | BufferUsage::HostWrite => vk::PipelineStageFlags2::ALL_TRANSFER,
+                }
+        })
+}
+
 pub(super) struct TextureObject {
     pub(super) token: BackendToken,
-    #[allow(dead_code)] // Retained upstream backend diagnostic support.
     pub(super) label: String,
     pub(super) image: vk::Image,
-    pub(super) memory: vk::DeviceMemory,
     allocation: DeviceMemoryAllocation,
     pub(super) format: vk::Format,
     pub(super) copy_bytes_per_texel: u32,
@@ -2129,10 +2144,8 @@ pub(super) struct TextureObject {
     pub(super) aspect: vk::ImageAspectFlags,
 }
 
-#[allow(dead_code)]
 pub(super) struct TextureViewObject {
     pub(super) token: BackendToken,
-    #[allow(dead_code)] // Retained upstream backend diagnostic support.
     pub(super) label: String,
     pub(super) view: vk::ImageView,
     pub(super) texture: Handle,
@@ -2241,8 +2254,6 @@ impl Drop for NativeGraphicsPipeline {
 
 pub(super) struct GraphicsPipelineObject {
     pub(super) token: BackendToken,
-    #[allow(dead_code)] // Retained upstream backend diagnostic support.
-    pub(super) label: String,
     pub(super) profile_tag: GpuProfileTag,
     pub(super) pipeline: Arc<NativeGraphicsPipeline>,
     pub(super) layout: Handle,
@@ -2256,7 +2267,6 @@ pub(super) struct ComputePipelineObject {
     pub(super) layout: Handle,
 }
 
-#[allow(dead_code)]
 pub(super) struct RenderTargetObject {
     pub(super) token: BackendToken,
     pub(super) color_views: Vec<Handle>,
@@ -2264,7 +2274,6 @@ pub(super) struct RenderTargetObject {
     pub(super) extent: Extent3d,
 }
 
-#[allow(dead_code)]
 pub(super) struct FrameTargetObject {
     pub(super) token: BackendToken,
     pub(super) frame_id: u64,
@@ -2277,15 +2286,10 @@ pub(super) struct FrameTargetObject {
     pub(super) image_layout: vk::ImageLayout,
 }
 
-#[allow(dead_code)]
 pub(super) struct RenderPassObject {
     pub(super) token: BackendToken,
-    #[allow(dead_code)] // Retained upstream backend diagnostic support.
-    pub(super) label: String,
     pub(super) profile_tag: GpuProfileTag,
     pub(super) target: Handle,
-    pub(super) color_formats: Vec<ColorFormat>,
-    pub(super) depth_format: Option<TextureFormat>,
 }
 
 pub(super) fn texture_format(format: TextureFormat) -> vk::Format {
@@ -2352,8 +2356,15 @@ pub(super) fn buffer_usage_flags(usages: &[BufferUsage]) -> vk::BufferUsageFlags
 pub(super) fn memory_flags(domain: MemoryDomain) -> vk::MemoryPropertyFlags {
     match domain {
         MemoryDomain::DeviceLocal => vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        MemoryDomain::Upload | MemoryDomain::Readback => {
+        MemoryDomain::Upload => {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
+        }
+        // CPU reads of uncached (write-combined) memory are slow; cached is
+        // preferred where the device has it.
+        MemoryDomain::Readback => {
+            vk::MemoryPropertyFlags::HOST_VISIBLE
+                | vk::MemoryPropertyFlags::HOST_COHERENT
+                | vk::MemoryPropertyFlags::HOST_CACHED
         }
     }
 }

@@ -10,12 +10,15 @@
 //! sampler; such pipelines get a layout variant keyed by those bindings.
 
 use std::collections::{BTreeMap, HashMap};
+
+use smallvec::SmallVec;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use super::convert;
 use super::device::WgpuContext;
 use super::shaders::{gal_binding, ReflectedBinding, ReflectedType, SampleKind, ShaderObject};
+use crate::backends::handle_map::HandleMap;
 use crate::backends::{BackendCreateDesc, BackendToken};
 use crate::error::{GalError, GalResult};
 use crate::frame::FrameRenderTargetId;
@@ -32,6 +35,9 @@ pub(super) struct TextureObject {
     pub(super) texture: wgpu::Texture,
     pub(super) desc: TextureDesc,
     pub(super) format: wgpu::TextureFormat,
+    /// Mip generation's bind group and target view per (filterable,
+    /// layer, level).
+    pub(super) mip_blits: HashMap<(bool, u32, u32), (wgpu::BindGroup, wgpu::TextureView)>,
 }
 
 pub(super) struct TextureViewObject {
@@ -104,7 +110,8 @@ pub(super) struct ResourceSetObject {
     default_offsets: BTreeMap<u32, u64>,
     /// GAL bindings whose texture is stored in an unfilterable format.
     unfilterable: Vec<u32>,
-    bind_groups: HashMap<u64, wgpu::BindGroup>,
+    /// Bind groups by layout id; sets meet few layouts.
+    bind_groups: SmallVec<[CachedGroup; 2]>,
 }
 
 impl ResourceSetObject {
@@ -125,14 +132,11 @@ impl ResourceSetObject {
             .map(|binding| binding.resource)
     }
 
-    /// The dynamic offsets `layout` takes, from explicit offsets in GAL
-    /// binding order or else the set's defaults.
-    pub(super) fn dynamic_offsets(
-        &self,
-        layout: &BindGroupLayoutInfo,
-        explicit: &[u64],
-    ) -> GalResult<Vec<u32>> {
-        let mut dynamic: Vec<u32> = self
+    /// How `layout` takes its dynamic offsets: per wgpu offset, the index
+    /// into explicit offsets (given in GAL binding order), and the set's
+    /// default.
+    fn offset_plan(&self, layout: &BindGroupLayoutInfo) -> GalResult<OffsetPlan> {
+        let mut dynamic: SmallVec<[u32; 4]> = self
             .layout
             .bindings
             .iter()
@@ -140,24 +144,47 @@ impl ResourceSetObject {
             .map(|binding| binding.binding)
             .collect();
         dynamic.sort_unstable();
-        let by_binding: BTreeMap<u32, u64> = if explicit.is_empty() {
-            self.default_offsets.clone()
-        } else {
-            dynamic
-                .iter()
-                .copied()
-                .zip(explicit.iter().copied())
-                .collect()
-        };
-        layout
-            .dynamic_bindings
+        let mut plan = OffsetPlan::default();
+        for binding in &layout.dynamic_bindings {
+            plan.explicit_index
+                .push(dynamic.iter().position(|candidate| candidate == binding));
+            let default = self.default_offsets.get(binding).copied().unwrap_or(0);
+            plan.defaults
+                .push(convert::checked_u32(default, "dynamic buffer offset")?);
+        }
+        Ok(plan)
+    }
+}
+
+/// The native dynamic offsets of a bind group.
+pub(super) type NativeOffsets = SmallVec<[u32; 4]>;
+
+#[derive(Default)]
+struct OffsetPlan {
+    explicit_index: SmallVec<[Option<usize>; 4]>,
+    defaults: NativeOffsets,
+}
+
+impl OffsetPlan {
+    fn offsets(&self, explicit: &[u64]) -> GalResult<NativeOffsets> {
+        if explicit.is_empty() {
+            return Ok(self.defaults.clone());
+        }
+        self.explicit_index
             .iter()
-            .map(|binding| {
-                let offset = by_binding.get(binding).copied().unwrap_or(0);
-                convert::checked_u32(offset, "dynamic buffer offset")
+            .map(|index| {
+                let offset = index.and_then(|index| explicit.get(index)).copied();
+                convert::checked_u32(offset.unwrap_or(0), "dynamic buffer offset")
             })
             .collect()
     }
+}
+
+/// A set's bind group for one bind group layout.
+struct CachedGroup {
+    layout: u64,
+    group: wgpu::BindGroup,
+    offsets: OffsetPlan,
 }
 
 pub(super) struct BindGroupLayoutInfo {
@@ -247,6 +274,14 @@ impl PipelineBindings {
                     float_textures.push((group as u32, *binding));
                 }
             }
+        }
+        // Variant keys hold one bit per float texture.
+        if float_textures.len() > u64::BITS as usize {
+            return Err(GalError::unsupported_feature(format!(
+                "pipeline '{label}' samples {} float textures; the wgpu backend supports {}",
+                float_textures.len(),
+                u64::BITS
+            )));
         }
         Ok(Self {
             groups,
@@ -447,21 +482,18 @@ enum Bound {
 
 #[derive(Default)]
 pub(super) struct WgpuObjects {
-    next_token: u64,
-    pub(super) buffers: HashMap<Handle, BufferObject>,
-    pub(super) textures: HashMap<Handle, TextureObject>,
-    pub(super) views: HashMap<Handle, TextureViewObject>,
-    pub(super) samplers: HashMap<Handle, SamplerObject>,
-    combined: HashMap<Handle, (Handle, Handle)>,
-    shaders: HashMap<Handle, ShaderObject>,
-    resource_layouts: HashMap<Handle, ResourceLayoutDesc>,
-    pub(super) sets: HashMap<Handle, ResourceSetObject>,
-    pipeline_layouts: HashMap<Handle, Vec<Handle>>,
-    pub(super) graphics_pipelines: HashMap<Handle, GraphicsPipelineObject>,
-    pub(super) compute_pipelines: HashMap<Handle, ComputePipelineObject>,
-    pub(super) render_targets: HashMap<Handle, RenderTargetDesc>,
-    pub(super) frame_targets: HashMap<Handle, FrameTargetObject>,
-    render_passes: HashMap<Handle, RenderPassDesc>,
+    pub(super) buffers: HandleMap<BufferObject>,
+    pub(super) textures: HandleMap<TextureObject>,
+    pub(super) views: HandleMap<TextureViewObject>,
+    pub(super) samplers: HandleMap<SamplerObject>,
+    combined: HandleMap<(Handle, Handle)>,
+    shaders: HandleMap<ShaderObject>,
+    resource_layouts: HandleMap<ResourceLayoutDesc>,
+    pub(super) sets: HandleMap<ResourceSetObject>,
+    pipeline_layouts: HandleMap<Vec<Handle>>,
+    pub(super) graphics_pipelines: HandleMap<GraphicsPipelineObject>,
+    pub(super) compute_pipelines: HandleMap<ComputePipelineObject>,
+    pub(super) frame_targets: HandleMap<FrameTargetObject>,
     layouts: HashMap<Vec<wgpu::BindGroupLayoutEntry>, Arc<BindGroupLayoutInfo>>,
     next_layout_id: u64,
     dummies: Dummies,
@@ -504,7 +536,7 @@ impl WgpuObjects {
             BackendCreateDesc::TextureView(desc) => {
                 let texture = self
                     .textures
-                    .get(&desc.texture)
+                    .get(desc.texture)
                     .ok_or_else(|| missing("texture", desc.texture))?;
                 self.views.insert(
                     handle,
@@ -559,9 +591,8 @@ impl WgpuObjects {
                 let pipeline = self.create_compute_pipeline(context, desc)?;
                 self.compute_pipelines.insert(handle, pipeline);
             }
-            BackendCreateDesc::RenderTarget(desc) => {
-                self.render_targets.insert(handle, desc.clone());
-            }
+            // Passes name their attachments; nothing to keep.
+            BackendCreateDesc::RenderTarget(_) | BackendCreateDesc::RenderPass(_) => {}
             BackendCreateDesc::FrameTarget(desc) => {
                 self.frame_targets.insert(
                     handle,
@@ -570,38 +601,33 @@ impl WgpuObjects {
                     },
                 );
             }
-            BackendCreateDesc::RenderPass(desc) => {
-                self.render_passes.insert(handle, desc.clone());
-            }
         }
-        self.next_token += 1;
-        Ok(BackendToken(self.next_token))
+        Ok(BackendToken(0))
     }
 
     pub(super) fn destroy(&mut self, handle: Handle, kind: HandleKind) -> GalResult<()> {
         let removed = match kind {
             HandleKind::Buffer => self
                 .buffers
-                .remove(&handle)
+                .remove(handle)
                 .map(|buffer| buffer.buffer.destroy())
                 .is_some(),
             HandleKind::Texture => self
                 .textures
-                .remove(&handle)
+                .remove(handle)
                 .map(|texture| texture.texture.destroy())
                 .is_some(),
-            HandleKind::TextureView => self.views.remove(&handle).is_some(),
-            HandleKind::Sampler => self.samplers.remove(&handle).is_some(),
-            HandleKind::CombinedTextureSampler => self.combined.remove(&handle).is_some(),
-            HandleKind::ShaderModule => self.shaders.remove(&handle).is_some(),
-            HandleKind::ResourceLayout => self.resource_layouts.remove(&handle).is_some(),
-            HandleKind::ResourceSet => self.sets.remove(&handle).is_some(),
-            HandleKind::PipelineLayout => self.pipeline_layouts.remove(&handle).is_some(),
-            HandleKind::GraphicsPipeline => self.graphics_pipelines.remove(&handle).is_some(),
-            HandleKind::ComputePipeline => self.compute_pipelines.remove(&handle).is_some(),
-            HandleKind::RenderTarget => self.render_targets.remove(&handle).is_some(),
-            HandleKind::FrameTarget => self.frame_targets.remove(&handle).is_some(),
-            HandleKind::RenderPass => self.render_passes.remove(&handle).is_some(),
+            HandleKind::TextureView => self.views.remove(handle).is_some(),
+            HandleKind::Sampler => self.samplers.remove(handle).is_some(),
+            HandleKind::CombinedTextureSampler => self.combined.remove(handle).is_some(),
+            HandleKind::ShaderModule => self.shaders.remove(handle).is_some(),
+            HandleKind::ResourceLayout => self.resource_layouts.remove(handle).is_some(),
+            HandleKind::ResourceSet => self.sets.remove(handle).is_some(),
+            HandleKind::PipelineLayout => self.pipeline_layouts.remove(handle).is_some(),
+            HandleKind::GraphicsPipeline => self.graphics_pipelines.remove(handle).is_some(),
+            HandleKind::ComputePipeline => self.compute_pipelines.remove(handle).is_some(),
+            HandleKind::RenderTarget | HandleKind::RenderPass => true,
+            HandleKind::FrameTarget => self.frame_targets.remove(handle).is_some(),
         };
         if removed {
             Ok(())
@@ -612,19 +638,25 @@ impl WgpuObjects {
 
     pub(super) fn buffer(&self, handle: Handle) -> GalResult<&BufferObject> {
         self.buffers
-            .get(&handle)
+            .get(handle)
             .ok_or_else(|| missing("buffer", handle))
     }
 
     pub(super) fn texture(&self, handle: Handle) -> GalResult<&TextureObject> {
         self.textures
-            .get(&handle)
+            .get(handle)
+            .ok_or_else(|| missing("texture", handle))
+    }
+
+    pub(super) fn texture_mut(&mut self, handle: Handle) -> GalResult<&mut TextureObject> {
+        self.textures
+            .get_mut(handle)
             .ok_or_else(|| missing("texture", handle))
     }
 
     pub(super) fn view_mut(&mut self, handle: Handle) -> GalResult<&mut TextureViewObject> {
         self.views
-            .get_mut(&handle)
+            .get_mut(handle)
             .ok_or_else(|| missing("texture view", handle))
     }
 
@@ -635,7 +667,7 @@ impl WgpuObjects {
     ) -> GalResult<ResourceSetObject> {
         let layout = self
             .resource_layouts
-            .get(&desc.layout)
+            .get(desc.layout)
             .ok_or_else(|| missing("resource layout", desc.layout))?
             .clone();
         let mut default_offsets = BTreeMap::new();
@@ -647,11 +679,11 @@ impl WgpuObjects {
             let view = match binding.kind {
                 ResourceBindingKind::SampledTexture => Some(binding.resource),
                 ResourceBindingKind::CombinedTextureSampler => {
-                    self.combined.get(&binding.resource).map(|(view, _)| *view)
+                    self.combined.get(binding.resource).map(|(view, _)| *view)
                 }
                 _ => None,
             };
-            if let Some(view) = view.and_then(|view| self.views.get(&view)) {
+            if let Some(view) = view.and_then(|view| self.views.get(view)) {
                 if convert::unfilterable_float(view.format, context.features) {
                     unfilterable.push(binding.binding);
                 }
@@ -662,18 +694,18 @@ impl WgpuObjects {
             layout,
             default_offsets,
             unfilterable,
-            bind_groups: HashMap::new(),
+            bind_groups: SmallVec::new(),
         })
     }
 
     fn pipeline_resource_layouts(&self, layout: Handle) -> GalResult<Vec<ResourceLayoutDesc>> {
         self.pipeline_layouts
-            .get(&layout)
+            .get(layout)
             .ok_or_else(|| missing("pipeline layout", layout))?
             .iter()
             .map(|handle| {
                 self.resource_layouts
-                    .get(handle)
+                    .get(*handle)
                     .cloned()
                     .ok_or_else(|| missing("resource layout", *handle))
             })
@@ -702,13 +734,13 @@ impl WgpuObjects {
         let resource_layouts = self.pipeline_resource_layouts(desc.layout)?;
         let vertex_shader = self
             .shaders
-            .get_mut(&desc.vertex_shader)
+            .get_mut(desc.vertex_shader)
             .ok_or_else(|| missing("vertex shader", desc.vertex_shader))?;
         let vertex = vertex_shader.variant(context, desc.raster_y_direction)?;
         let vertex_entry = vertex_shader.entry_point.clone();
         let fragment_shader = self
             .shaders
-            .get_mut(&desc.fragment_shader)
+            .get_mut(desc.fragment_shader)
             .ok_or_else(|| missing("fragment shader", desc.fragment_shader))?;
         let fragment = fragment_shader.variant(context, desc.raster_y_direction)?;
         let fragment_entry = fragment_shader.entry_point.clone();
@@ -735,7 +767,7 @@ impl WgpuObjects {
             stencil_reference,
         };
         // Build the common variant now so invalid pipelines fail at creation.
-        self.graphics_variant(context, &mut pipeline, 0)?;
+        self.build_graphics_variant(context, &mut pipeline, 0)?;
         Ok(pipeline)
     }
 
@@ -747,7 +779,7 @@ impl WgpuObjects {
         let resource_layouts = self.pipeline_resource_layouts(desc.layout)?;
         let shader = self
             .shaders
-            .get_mut(&desc.shader)
+            .get_mut(desc.shader)
             .ok_or_else(|| missing("compute shader", desc.shader))?;
         let entry = shader.entry_point.clone();
         let variant = shader.variant(context, RasterYDirection::Up)?;
@@ -763,7 +795,7 @@ impl WgpuObjects {
             entry,
             variants: HashMap::new(),
         };
-        self.compute_variant(context, &mut pipeline, 0)?;
+        self.build_compute_variant(context, &mut pipeline, 0)?;
         Ok(pipeline)
     }
 
@@ -820,7 +852,31 @@ impl WgpuObjects {
         Ok(info)
     }
 
+    /// The variant of graphics pipeline `handle` for unfilterable key `key`.
     pub(super) fn graphics_variant(
+        &mut self,
+        context: &WgpuContext,
+        handle: Handle,
+        key: u64,
+    ) -> GalResult<Arc<RenderVariant>> {
+        let pipeline = self
+            .graphics_pipelines
+            .get(handle)
+            .ok_or_else(|| missing("graphics pipeline", handle))?;
+        if let Some(variant) = pipeline.variants.get(&key) {
+            return Ok(variant.clone());
+        }
+        // A new variant (rare): build it with the pipeline out of the map.
+        let mut pipeline = self
+            .graphics_pipelines
+            .remove(handle)
+            .expect("looked up above");
+        let built = self.build_graphics_variant(context, &mut pipeline, key);
+        self.graphics_pipelines.insert(handle, pipeline);
+        built
+    }
+
+    fn build_graphics_variant(
         &mut self,
         context: &WgpuContext,
         pipeline: &mut GraphicsPipelineObject,
@@ -926,7 +982,31 @@ impl WgpuObjects {
         Ok(variant)
     }
 
+    /// The variant of compute pipeline `handle` for unfilterable key `key`.
     pub(super) fn compute_variant(
+        &mut self,
+        context: &WgpuContext,
+        handle: Handle,
+        key: u64,
+    ) -> GalResult<Arc<ComputeVariant>> {
+        let pipeline = self
+            .compute_pipelines
+            .get(handle)
+            .ok_or_else(|| missing("compute pipeline", handle))?;
+        if let Some(variant) = pipeline.variants.get(&key) {
+            return Ok(variant.clone());
+        }
+        // A new variant (rare): build it with the pipeline out of the map.
+        let mut pipeline = self
+            .compute_pipelines
+            .remove(handle)
+            .expect("looked up above");
+        let built = self.build_compute_variant(context, &mut pipeline, key);
+        self.compute_pipelines.insert(handle, pipeline);
+        built
+    }
+
+    fn build_compute_variant(
         &mut self,
         context: &WgpuContext,
         pipeline: &mut ComputePipelineObject,
@@ -965,23 +1045,52 @@ impl WgpuObjects {
         Ok(variant)
     }
 
-    /// The bind group of `set` for `layout`, created on first use.
-    pub(super) fn bind_group(
+    /// The bind group of `set` for `layout`, created on first use, and the
+    /// native dynamic offsets for `explicit` (GAL binding order; empty for
+    /// the set's defaults).
+    pub(super) fn set_bind_group(
+        &mut self,
+        context: &WgpuContext,
+        set: Handle,
+        layout: &BindGroupLayoutInfo,
+        explicit: &[u64],
+    ) -> GalResult<(wgpu::BindGroup, NativeOffsets)> {
+        let object = self
+            .sets
+            .get(set)
+            .ok_or_else(|| missing("resource set", set))?;
+        if let Some(cached) = object
+            .bind_groups
+            .iter()
+            .find(|cached| cached.layout == layout.id)
+        {
+            return Ok((cached.group.clone(), cached.offsets.offsets(explicit)?));
+        }
+        let offsets = object.offset_plan(layout)?;
+        let group = self.create_bind_group(context, set, layout)?;
+        let native = offsets.offsets(explicit)?;
+        if let Some(object) = self.sets.get_mut(set) {
+            object.bind_groups.push(CachedGroup {
+                layout: layout.id,
+                group: group.clone(),
+                offsets,
+            });
+        }
+        Ok((group, native))
+    }
+
+    fn create_bind_group(
         &mut self,
         context: &WgpuContext,
         set: Handle,
         layout: &BindGroupLayoutInfo,
     ) -> GalResult<wgpu::BindGroup> {
-        if let Some(group) = self
+        let desc = self
             .sets
-            .get(&set)
+            .get(set)
             .ok_or_else(|| missing("resource set", set))?
-            .bind_groups
-            .get(&layout.id)
-        {
-            return Ok(group.clone());
-        }
-        let desc = self.sets[&set].desc.clone();
+            .desc
+            .clone();
         let mut bound = Vec::with_capacity(layout.entries.len());
         for entry in &layout.entries {
             let (binding, sampler_half) = gal_binding(entry.binding);
@@ -1026,9 +1135,6 @@ impl WgpuObjects {
                 })
         })?;
         drop(entries);
-        if let Some(object) = self.sets.get_mut(&set) {
-            object.bind_groups.insert(layout.id, group.clone());
-        }
         Ok(group)
     }
 
@@ -1114,7 +1220,7 @@ impl WgpuObjects {
             }
             (ResourceBindingKind::Sampler, wgpu::BindingType::Sampler(_)) => Ok(Bound::Sampler(
                 self.samplers
-                    .get(&resource.resource)
+                    .get(resource.resource)
                     .ok_or_else(|| missing("sampler", resource.resource))?
                     .sampler
                     .clone(),
@@ -1124,7 +1230,7 @@ impl WgpuObjects {
             {
                 let (view, _) = *self
                     .combined
-                    .get(&resource.resource)
+                    .get(resource.resource)
                     .ok_or_else(|| missing("combined texture sampler", resource.resource))?;
                 let dimension = view_dimension.ok_or_else(mismatch)?;
                 Ok(Bound::View(self.view_mut(view)?.binding_view(dimension)))
@@ -1134,11 +1240,11 @@ impl WgpuObjects {
             {
                 let (_, sampler) = *self
                     .combined
-                    .get(&resource.resource)
+                    .get(resource.resource)
                     .ok_or_else(|| missing("combined texture sampler", resource.resource))?;
                 Ok(Bound::Sampler(
                     self.samplers
-                        .get(&sampler)
+                        .get(sampler)
                         .ok_or_else(|| missing("sampler", sampler))?
                         .sampler
                         .clone(),
@@ -1306,6 +1412,7 @@ fn create_texture(context: &WgpuContext, desc: &TextureDesc) -> GalResult<Textur
         })
     })?;
     Ok(TextureObject {
+        mip_blits: HashMap::new(),
         texture,
         desc: desc.clone(),
         format,

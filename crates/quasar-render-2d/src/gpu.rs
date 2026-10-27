@@ -1518,7 +1518,7 @@ impl RenderState2D {
                     pipeline_layout: self.layout,
                     set_index: 0,
                     set,
-                    dynamic_offsets: vec![(i * self.uniform_stride) as u64],
+                    dynamic_offsets: [(i * self.uniform_stride) as u64].into(),
                 },
                 CommandOp::Draw {
                     vertices: 6,

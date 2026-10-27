@@ -71,6 +71,11 @@ impl VulkanicGal {
         self.backend.as_any_mut().downcast_mut()
     }
 
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn wgpu_backend(&self) -> Option<&crate::backends::wgpu::WgpuBackend> {
+        self.backend.as_any().downcast_ref()
+    }
+
     #[cfg(all(test, feature = "opengl"))]
     pub(crate) fn opengl_backend(&self) -> Option<&crate::backends::opengl::OpenGlBackend> {
         self.backend.as_any().downcast_ref()

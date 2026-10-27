@@ -589,7 +589,7 @@ pub enum CompareOp {
 /// Explicit stencil operation used by a graphics pipeline's front/back face
 /// state. The GAL keeps this deliberately small: optical masks need only
 /// preserve or replace a bounded stencil value, while unsupported operations
-/// remain unavailable instead of being reconstructed from Java state.
+/// remain unavailable instead of being emulated.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StencilOp {

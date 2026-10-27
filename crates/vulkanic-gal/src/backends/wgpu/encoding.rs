@@ -3,22 +3,35 @@
 //! - Barriers are validated by the GAL and dropped: wgpu tracks usage and
 //!   synchronizes itself.
 //! - Pipelines and resource sets are applied lazily before each draw or
-//!   dispatch, so a pipeline switch can pick its unfilterable-binding
-//!   variant and rebind sets whose wgpu layout changed.
+//!   dispatch, and only when something changed since the last one: a
+//!   pipeline switch picks its unfilterable-binding variant and rebinds the
+//!   sets whose wgpu layout changed; a set rebound with new dynamic offsets
+//!   reuses its cached bind group and offset order.
+//! - State follows the GAL's rules: what is bound before `BeginPass` (the
+//!   index buffer; compute state) carries into the pass instead of being
+//!   dropped, and sets bind against the last pipeline kind bound. `EndPass`
+//!   and the end of a command list reset everything.
 //! - Host writes keep their position in the command stream: bytes are
 //!   staged in a `StagingBelt` and copied at the op, never written ahead
 //!   of the whole submission. Unaligned writes and copies go through the
-//!   byte-copy pipeline.
-//! - Host reads copy into mappable buffers after every list, matching the
-//!   Vulkan backend, which reads the buffer once the submission completes.
-//! - Triangle fans draw generated triangle-list indices.
+//!   byte-copy pipeline. Scratch buffers come from a pool recycled when the
+//!   submission completes.
+//! - Host reads copy into mappable buffers once the batch's lists are
+//!   recorded, matching the Vulkan backend, which reads the buffer once the
+//!   submission completes.
+//! - Triangle fans draw generated triangle-list indices; last-vertex flat
+//!   shading rotates each primitive.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use smallvec::SmallVec;
+
 use super::convert;
 use super::device::WgpuContext;
-use super::resources::{ComputeVariant, RenderVariant, WgpuObjects};
+use super::resources::{
+    BindGroupLayoutInfo, ComputeVariant, NativeOffsets, RenderVariant, WgpuObjects,
+};
 use super::utility::{ByteCopy, Utility};
 use crate::commands::{
     AttachmentLoadOp, BufferImageCopyRegion, CommandOp, TextureImageCopyRegion, TextureRowOrder,
@@ -85,19 +98,89 @@ pub(super) enum Rotation {
     Lines,
 }
 
+impl Rotation {
+    fn primitive_size(self) -> u64 {
+        match self {
+            Self::Triangles => 3,
+            Self::Lines => 2,
+        }
+    }
+}
+
+/// A rotated copy of an index buffer: source, format, rotation, and the
+/// phase (the element index, modulo the primitive size, where primitives
+/// start for the bound offset).
+type RotationKey = (Handle, wgpu::IndexFormat, Rotation, u32);
+
 /// Generated index lists and rotated index-buffer copies, kept by the
 /// backend across submissions. A rotated copy is dropped as soon as its
 /// source buffer is written.
 #[derive(Default)]
 pub(super) struct IndexCache {
     patterns: HashMap<IndexPattern, (wgpu::Buffer, u32)>,
-    rotated: HashMap<(Handle, wgpu::IndexFormat, Rotation), wgpu::Buffer>,
+    rotated: HashMap<RotationKey, wgpu::Buffer>,
 }
 
 impl IndexCache {
+    /// Adds rotated copies a submitted batch wrote.
+    pub(super) fn publish(&mut self, rotations: Vec<(RotationKey, wgpu::Buffer)>) {
+        self.rotated.extend(rotations);
+    }
+
+    #[cfg(test)]
+    pub(super) fn rotated_len(&self) -> usize {
+        self.rotated.len()
+    }
+
     pub(super) fn forget(&mut self, buffer: Handle) {
         if !self.rotated.is_empty() {
-            self.rotated.retain(|(source, _, _), _| *source != buffer);
+            self.rotated.retain(|(source, ..), _| *source != buffer);
+        }
+    }
+}
+
+/// Scratch buffers reused across submissions, by usage and power-of-two
+/// size class. A batch takes buffers while encoding and returns them when
+/// its submission completes.
+#[derive(Default)]
+pub(super) struct TransientPool {
+    free: HashMap<(u32, u64), Vec<wgpu::Buffer>>,
+}
+
+/// Buffers kept per (usage, size class) when recycling.
+const MAX_POOLED_PER_CLASS: usize = 16;
+
+impl TransientPool {
+    fn take(
+        &mut self,
+        device: &wgpu::Device,
+        label: &'static str,
+        usage: wgpu::BufferUsages,
+        size: u64,
+    ) -> wgpu::Buffer {
+        let class = size.max(256).next_power_of_two();
+        if let Some(buffer) = self.free.get_mut(&(usage.bits(), class)).and_then(Vec::pop) {
+            return buffer;
+        }
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: class,
+            usage,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// Returns buffers whose submission completed. Mapped buffers must be
+    /// unmapped first.
+    pub(super) fn recycle(&mut self, buffers: impl IntoIterator<Item = wgpu::Buffer>) {
+        for buffer in buffers {
+            let pool = self
+                .free
+                .entry((buffer.usage().bits(), buffer.size()))
+                .or_default();
+            if pool.len() < MAX_POOLED_PER_CLASS {
+                pool.push(buffer);
+            }
         }
     }
 }
@@ -132,6 +215,11 @@ pub(super) struct PendingRead {
 pub(super) struct Encoded {
     pub(super) command_buffer: wgpu::CommandBuffer,
     pub(super) host_reads: Vec<PendingRead>,
+    /// Pooled scratch buffers to recycle when the submission completes.
+    pub(super) transients: Vec<wgpu::Buffer>,
+    /// Rotated index copies recorded by this batch, published to the cache
+    /// only once encoding succeeds.
+    pub(super) rotations: Vec<(RotationKey, wgpu::Buffer)>,
     pub(super) ops: u64,
 }
 
@@ -142,39 +230,74 @@ pub(super) struct AcquiredSurface<'a> {
     pub(super) view: &'a wgpu::TextureView,
 }
 
-#[derive(Clone, PartialEq)]
+type Offsets = SmallVec<[u64; 4]>;
+
 struct BoundSet {
     set: Handle,
-    offsets: Vec<u64>,
+    offsets: Offsets,
 }
 
 /// What one wgpu group slot holds: layout id, set (none for an empty
 /// group) and dynamic offsets.
-type AppliedGroup = (u64, Option<Handle>, Vec<u32>);
+struct AppliedGroup {
+    layout: u64,
+    set: Option<Handle>,
+    offsets: NativeOffsets,
+}
 
+/// The sets bound for one pipeline kind and what the open pass holds.
 #[derive(Default)]
 struct BindState {
     sets: Vec<Option<BoundSet>>,
     applied: Vec<Option<AppliedGroup>>,
+    /// Group slots whose binding changed since they were applied.
+    dirty: u64,
 }
 
 impl BindState {
-    fn bind(&mut self, index: u32, set: BoundSet) {
-        let index = index as usize;
-        if self.sets.len() <= index {
-            self.sets.resize(index + 1, None);
+    /// Binds `set` at `index`; returns whether anything changed.
+    fn bind(&mut self, index: u32, set: Handle, offsets: &[u64]) -> bool {
+        let slot = index as usize;
+        if self.sets.len() <= slot {
+            self.sets.resize_with(slot + 1, || None);
         }
-        self.sets[index] = Some(set);
+        match &mut self.sets[slot] {
+            Some(bound) if bound.set == set && bound.offsets.as_slice() == offsets => return false,
+            Some(bound) => {
+                bound.set = set;
+                bound.offsets.clear();
+                bound.offsets.extend_from_slice(offsets);
+            }
+            empty => {
+                *empty = Some(BoundSet {
+                    set,
+                    offsets: Offsets::from_slice(offsets),
+                })
+            }
+        }
+        self.dirty |= 1u64.checked_shl(index).unwrap_or(0);
+        true
+    }
+
+    /// Forgets what a pass holds (a new pass starts unbound).
+    fn reset_applied(&mut self) {
+        self.applied.clear();
+        self.dirty = u64::MAX;
+    }
+
+    fn clear(&mut self) {
+        self.sets.clear();
+        self.reset_applied();
     }
 
     fn unfilterable_key(&self, objects: &WgpuObjects, float_textures: &[(u32, u32)]) -> u64 {
         let mut key = 0;
-        for (index, (group, binding)) in float_textures.iter().enumerate().take(64) {
+        for (index, (group, binding)) in float_textures.iter().enumerate() {
             let unfilterable = self
                 .sets
                 .get(*group as usize)
                 .and_then(Option::as_ref)
-                .and_then(|bound| objects.sets.get(&bound.set))
+                .and_then(|bound| objects.sets.get(bound.set))
                 .is_some_and(|set| set.is_unfilterable(*binding));
             if unfilterable {
                 key |= 1 << index;
@@ -184,19 +307,32 @@ impl BindState {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PipelineKind {
+    Graphics,
+    Compute,
+}
+
 struct Lowering<'a> {
     context: &'a WgpuContext,
     objects: &'a mut WgpuObjects,
     utility: &'a mut Utility,
     belt: &'a mut wgpu::util::StagingBelt,
     indices: &'a mut IndexCache,
+    pool: &'a mut TransientPool,
     surface: Option<AcquiredSurface<'a>>,
     encoder: wgpu::CommandEncoder,
     render: Option<wgpu::RenderPass<'static>>,
     compute: Option<wgpu::ComputePass<'static>>,
+    /// The kind of the last pipeline bound; sets bind against it.
+    last_pipeline: Option<PipelineKind>,
     graphics_pipeline: Option<Handle>,
-    applied_graphics: Option<(Handle, u64, Arc<RenderVariant>)>,
+    /// Set when the graphics pipeline or its sets changed since the last
+    /// draw applied them.
+    graphics_dirty: bool,
+    applied_graphics: Option<(Handle, u64, Arc<RenderVariant>, DrawShape)>,
     compute_pipeline: Option<Handle>,
+    compute_dirty: bool,
     applied_compute: Option<(Handle, u64, Arc<ComputeVariant>)>,
     graphics_sets: BindState,
     compute_sets: BindState,
@@ -204,6 +340,8 @@ struct Lowering<'a> {
     /// The index buffer the pass holds: source, offset, format, rotation.
     applied_index: Option<(Handle, u64, wgpu::IndexFormat, Option<Rotation>)>,
     host_reads: Vec<(Handle, u64, u64)>,
+    transients: Vec<wgpu::Buffer>,
+    rotations: Vec<(RotationKey, wgpu::Buffer)>,
 }
 
 pub(super) struct EncodeInputs<'a> {
@@ -212,6 +350,7 @@ pub(super) struct EncodeInputs<'a> {
     pub(super) utility: &'a mut Utility,
     pub(super) belt: &'a mut wgpu::util::StagingBelt,
     pub(super) indices: &'a mut IndexCache,
+    pub(super) pool: &'a mut TransientPool,
     pub(super) surface: Option<AcquiredSurface<'a>>,
 }
 
@@ -231,19 +370,25 @@ pub(super) fn encode(
         utility: inputs.utility,
         belt: inputs.belt,
         indices: inputs.indices,
+        pool: inputs.pool,
         surface: inputs.surface,
         encoder,
         render: None,
         compute: None,
+        last_pipeline: None,
         graphics_pipeline: None,
+        graphics_dirty: true,
         applied_graphics: None,
         compute_pipeline: None,
+        compute_dirty: true,
         applied_compute: None,
         graphics_sets: BindState::default(),
         compute_sets: BindState::default(),
         index_buffer: None,
         applied_index: None,
         host_reads: Vec::new(),
+        transients: Vec::new(),
+        rotations: Vec::new(),
     };
     let mut ops = 0;
     for list in &batch.command_lists {
@@ -259,20 +404,24 @@ pub(super) fn encode(
                 })?;
             ops += 1;
         }
-        lowering.end_passes();
         lowering.encoder.pop_debug_group();
-        // Like a native command buffer boundary, state does not carry over.
-        lowering.compute_pipeline = None;
-        lowering.applied_compute = None;
-        lowering.compute_sets = BindState::default();
+        // Like a native command buffer boundary, no state carries over.
+        lowering.end_list();
     }
-    lowering.end_passes();
     let host_reads = lowering.finish_host_reads()?;
-    let Lowering { encoder, belt, .. } = lowering;
+    let Lowering {
+        encoder,
+        belt,
+        transients,
+        rotations,
+        ..
+    } = lowering;
     belt.finish();
     Ok(Encoded {
         command_buffer: encoder.finish(),
         host_reads,
+        transients,
+        rotations,
         ops,
     })
 }
@@ -284,19 +433,51 @@ fn index_format(index_type: IndexType) -> wgpu::IndexFormat {
     }
 }
 
+fn element_bytes(format: wgpu::IndexFormat) -> u64 {
+    match format {
+        wgpu::IndexFormat::Uint16 => 2,
+        wgpu::IndexFormat::Uint32 => 4,
+    }
+}
+
+/// The rotated-copy key of an index buffer bound at `offset`.
+fn rotation_key(
+    buffer: Handle,
+    offset: u64,
+    format: wgpu::IndexFormat,
+    rotation: Rotation,
+) -> RotationKey {
+    let phase = (offset / element_bytes(format)) % rotation.primitive_size();
+    (buffer, format, rotation, phase as u32)
+}
+
 impl Lowering<'_> {
     fn end_compute(&mut self) {
         self.compute = None;
     }
 
-    fn end_passes(&mut self) {
-        self.render = None;
-        self.compute = None;
+    /// Resets the graphics state `EndPass` clears.
+    fn reset_graphics(&mut self) {
         self.graphics_pipeline = None;
         self.applied_graphics = None;
-        self.graphics_sets = BindState::default();
+        self.graphics_dirty = true;
+        self.graphics_sets.clear();
         self.index_buffer = None;
         self.applied_index = None;
+        if self.last_pipeline == Some(PipelineKind::Graphics) {
+            self.last_pipeline = None;
+        }
+    }
+
+    fn end_list(&mut self) {
+        self.render = None;
+        self.compute = None;
+        self.reset_graphics();
+        self.compute_pipeline = None;
+        self.applied_compute = None;
+        self.compute_dirty = true;
+        self.compute_sets.clear();
+        self.last_pipeline = None;
     }
 
     /// Lowers `op`; `rest` is the remainder of its command list.
@@ -314,30 +495,39 @@ impl Lowering<'_> {
             }
             CommandOp::EndPass => {
                 self.render = None;
-                self.graphics_pipeline = None;
-                self.applied_graphics = None;
-                self.graphics_sets = BindState::default();
-                self.index_buffer = None;
-                self.applied_index = None;
+                self.reset_graphics();
             }
-            CommandOp::BindGraphicsPipeline(pipeline) => self.graphics_pipeline = Some(*pipeline),
-            CommandOp::BindComputePipeline(pipeline) => self.compute_pipeline = Some(*pipeline),
+            CommandOp::BindGraphicsPipeline(pipeline) => {
+                if self.graphics_pipeline != Some(*pipeline) {
+                    self.graphics_pipeline = Some(*pipeline);
+                    self.graphics_dirty = true;
+                }
+                self.last_pipeline = Some(PipelineKind::Graphics);
+            }
+            CommandOp::BindComputePipeline(pipeline) => {
+                if self.compute_pipeline != Some(*pipeline) {
+                    self.compute_pipeline = Some(*pipeline);
+                    self.compute_dirty = true;
+                }
+                self.last_pipeline = Some(PipelineKind::Compute);
+            }
             CommandOp::BindResourceSet {
                 set_index,
                 set,
                 dynamic_offsets,
                 ..
-            } => {
-                let bound = BoundSet {
-                    set: *set,
-                    offsets: dynamic_offsets.clone(),
-                };
-                if self.render.is_some() {
-                    self.graphics_sets.bind(*set_index, bound);
-                } else {
-                    self.compute_sets.bind(*set_index, bound);
+            } => match self.last_pipeline {
+                Some(PipelineKind::Compute) => {
+                    if self.compute_sets.bind(*set_index, *set, dynamic_offsets) {
+                        self.compute_dirty = true;
+                    }
                 }
-            }
+                _ => {
+                    if self.graphics_sets.bind(*set_index, *set, dynamic_offsets) {
+                        self.graphics_dirty = true;
+                    }
+                }
+            },
             // Pipelines declare no vertex attributes; shaders pull vertices
             // from storage buffers.
             CommandOp::SetVertexBuffer { .. } => {}
@@ -345,10 +535,7 @@ impl Lowering<'_> {
                 buffer,
                 offset,
                 index_type,
-            } => {
-                self.index_buffer = Some((*buffer, *offset, index_format(*index_type)));
-                self.applied_index = None;
-            }
+            } => self.index_buffer = Some((*buffer, *offset, index_format(*index_type))),
             CommandOp::Draw {
                 vertices,
                 instances,
@@ -412,18 +599,12 @@ impl Lowering<'_> {
                 groups_y,
                 groups_z,
             } => {
-                self.flush_compute()?;
-                self.compute
-                    .as_mut()
-                    .expect("flush opened a compute pass")
+                self.flush_compute()?
                     .dispatch_workgroups(*groups_x, *groups_y, *groups_z);
             }
             CommandOp::DispatchIndirect { buffer, offset } => {
-                self.flush_compute()?;
                 let buffer = self.objects.buffer(*buffer)?.buffer.clone();
-                self.compute
-                    .as_mut()
-                    .expect("flush opened a compute pass")
+                self.flush_compute()?
                     .dispatch_workgroups_indirect(&buffer, *offset);
             }
             CommandOp::CopyBuffer { src, dst, size } => {
@@ -474,24 +655,19 @@ impl Lowering<'_> {
                 subresources,
             } => {
                 self.end_compute();
-                let object = self.objects.texture(*texture)?;
+                let object = self.objects.texture_mut(*texture)?;
                 if object.desc.dimension == TextureDimension::D3 {
                     return Err(GalError::unsupported_feature(
                         "the wgpu backend generates mipmaps for 2D textures only",
                     ));
                 }
                 let filterable = !convert::unfilterable_float(object.format, self.context.features);
-                let (native, format) = (object.texture.clone(), object.format);
                 self.utility.generate_mipmaps(
                     self.context,
                     &mut self.encoder,
-                    &native,
-                    format,
+                    object,
                     filterable,
-                    subresources.base_mip,
-                    subresources.mip_count,
-                    subresources.base_layer,
-                    subresources.layer_count,
+                    *subresources,
                 )?;
             }
             CommandOp::HostWriteBuffer {
@@ -523,7 +699,7 @@ impl Lowering<'_> {
         let target = self
             .objects
             .frame_targets
-            .get(&frame_target)
+            .get(frame_target)
             .ok_or_else(|| GalError::backend("unknown frame target"))?;
         self.surface
             .as_ref()
@@ -561,7 +737,7 @@ impl Lowering<'_> {
                 };
                 self.attachment_view(handle)
             })
-            .collect::<GalResult<Vec<_>>>()?;
+            .collect::<GalResult<SmallVec<[_; 4]>>>()?;
         let depth = match depth_stencil {
             Some(attachment) => {
                 let format = self.objects.view_mut(attachment.view)?.format;
@@ -569,7 +745,7 @@ impl Lowering<'_> {
             }
             None => None,
         };
-        let color_attachments: Vec<Option<wgpu::RenderPassColorAttachment<'_>>> = colors
+        let color_attachments: SmallVec<[Option<wgpu::RenderPassColorAttachment<'_>>; 4]> = colors
             .iter()
             .zip(&color_views)
             .map(|(attachment, view)| {
@@ -619,17 +795,22 @@ impl Lowering<'_> {
             })
             .forget_lifetime();
         self.render = Some(pass);
-        self.graphics_pipeline = None;
+        // A new pass holds nothing yet; what was bound before it carries in.
         self.applied_graphics = None;
-        self.graphics_sets = BindState::default();
-        self.index_buffer = None;
+        self.graphics_dirty = true;
+        self.graphics_sets.reset_applied();
         self.applied_index = None;
         Ok(())
     }
 
-    /// Applies the bound graphics pipeline and sets; returns the
-    /// pipeline's draw shape.
+    /// Applies the bound graphics pipeline and sets if they changed;
+    /// returns the pipeline's draw shape.
     fn flush_graphics(&mut self) -> GalResult<DrawShape> {
+        if !self.graphics_dirty {
+            if let Some((_, _, _, shape)) = &self.applied_graphics {
+                return Ok(*shape);
+            }
+        }
         let handle = self
             .graphics_pipeline
             .ok_or_else(|| GalError::backend("draw without a bound graphics pipeline"))?;
@@ -637,7 +818,7 @@ impl Lowering<'_> {
             let pipeline = self
                 .objects
                 .graphics_pipelines
-                .get(&handle)
+                .get(handle)
                 .ok_or_else(|| GalError::backend("unknown graphics pipeline"))?;
             let key = self
                 .graphics_sets
@@ -648,38 +829,32 @@ impl Lowering<'_> {
             };
             (shape, pipeline.stencil_reference, key)
         };
-        let current = self
+        let unchanged = self
             .applied_graphics
             .as_ref()
-            .filter(|(applied, applied_key, _)| *applied == handle && *applied_key == key)
-            .map(|(_, _, variant)| variant.clone());
-        let variant = match current {
-            Some(variant) => variant,
-            None => {
-                let mut pipeline = self
-                    .objects
-                    .graphics_pipelines
-                    .remove(&handle)
-                    .expect("looked up above");
-                let variant = self
-                    .objects
-                    .graphics_variant(self.context, &mut pipeline, key);
-                self.objects.graphics_pipelines.insert(handle, pipeline);
-                let variant = variant?;
-                let pass = self.render_pass()?;
-                pass.set_pipeline(&variant.pipeline);
-                if let Some(reference) = stencil_reference {
-                    pass.set_stencil_reference(reference);
-                }
-                self.applied_graphics = Some((handle, key, variant.clone()));
-                variant
+            .is_some_and(|(applied, applied_key, ..)| *applied == handle && *applied_key == key);
+        if !unchanged {
+            let variant = self.objects.graphics_variant(self.context, handle, key)?;
+            let pass = self.render_pass()?;
+            pass.set_pipeline(&variant.pipeline);
+            if let Some(reference) = stencil_reference {
+                pass.set_stencil_reference(reference);
             }
-        };
+            self.applied_graphics = Some((handle, key, variant, shape));
+            // A new pipeline may lay its groups out differently.
+            self.graphics_sets.dirty = u64::MAX;
+        }
+        let variant = self
+            .applied_graphics
+            .as_ref()
+            .map(|(_, _, variant, _)| variant.clone())
+            .expect("applied above");
         let mut bind = std::mem::take(&mut self.graphics_sets);
-        let result = self.apply_sets(&mut bind, &variant.groups, true);
+        let result = self.apply_sets(&mut bind, &variant.groups, PipelineKind::Graphics);
         self.forget_rotations_written_by(&bind);
         self.graphics_sets = bind;
         result?;
+        self.graphics_dirty = false;
         Ok(shape)
     }
 
@@ -698,16 +873,14 @@ impl Lowering<'_> {
         if self.applied_index != Some(wanted) {
             let native = match rotation {
                 None => self.objects.buffer(buffer)?.buffer.clone(),
-                Some(rotation) => self
-                    .indices
-                    .rotated
-                    .get(&(buffer, format, rotation))
-                    .cloned()
-                    .ok_or_else(|| {
+                Some(rotation) => {
+                    let key = rotation_key(buffer, offset, format, rotation);
+                    self.rotated(&key).ok_or_else(|| {
                         GalError::backend(
                             "last-vertex index buffer was written inside the pass that draws with it",
                         )
-                    })?,
+                    })?
+                }
             };
             self.render_pass()?
                 .set_index_buffer(native.slice(offset..), format);
@@ -716,27 +889,38 @@ impl Lowering<'_> {
         Ok(())
     }
 
+    /// A rotated copy recorded earlier in this batch or by a completed one.
+    fn rotated(&self, key: &RotationKey) -> Option<wgpu::Buffer> {
+        self.rotations
+            .iter()
+            .find(|(candidate, _)| candidate == key)
+            .map(|(_, buffer)| buffer.clone())
+            .or_else(|| self.indices.rotated.get(key).cloned())
+    }
+
     /// Before a render pass begins, builds the rotated index buffers its
     /// last-vertex indexed draws read (compute cannot run inside the pass).
     fn prepare_rotated_indices(&mut self, rest: &[CommandOp]) -> GalResult<()> {
-        let mut pipeline = None;
-        let mut index = None;
-        let mut wanted = Vec::new();
+        let mut pipeline = self.graphics_pipeline;
+        let mut index = self.index_buffer;
+        let mut wanted: SmallVec<[RotationKey; 4]> = SmallVec::new();
         for op in rest {
             match op {
                 CommandOp::EndPass => break,
                 CommandOp::BindGraphicsPipeline(handle) => pipeline = Some(*handle),
                 CommandOp::SetIndexBuffer {
-                    buffer, index_type, ..
-                } => index = Some((*buffer, index_format(*index_type))),
+                    buffer,
+                    offset,
+                    index_type,
+                } => index = Some((*buffer, *offset, index_format(*index_type))),
                 CommandOp::DrawIndexed { .. } | CommandOp::DrawIndexedIndirect { .. } => {
-                    let (Some(pipeline), Some((buffer, format))) = (pipeline, index) else {
+                    let (Some(pipeline), Some((buffer, offset, format))) = (pipeline, index) else {
                         continue;
                     };
                     let rotation =
                         self.objects
                             .graphics_pipelines
-                            .get(&pipeline)
+                            .get(pipeline)
                             .and_then(|pipeline| {
                                 DrawShape {
                                     topology: pipeline.topology,
@@ -745,22 +929,20 @@ impl Lowering<'_> {
                                 .rotation()
                             });
                     if let Some(rotation) = rotation {
-                        if !wanted.contains(&(buffer, format, rotation)) {
-                            wanted.push((buffer, format, rotation));
+                        let key = rotation_key(buffer, offset, format, rotation);
+                        if !wanted.contains(&key) {
+                            wanted.push(key);
                         }
                     }
                 }
                 _ => {}
             }
         }
-        for (buffer, format, rotation) in wanted {
-            if self
-                .indices
-                .rotated
-                .contains_key(&(buffer, format, rotation))
-            {
+        for key in wanted {
+            if self.rotated(&key).is_some() {
                 continue;
             }
+            let (buffer, format, rotation, phase) = key;
             let source = self.objects.buffer(buffer)?.buffer.clone();
             let rotated = self.context.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("vulkanic.last-vertex-indices"),
@@ -768,15 +950,12 @@ impl Lowering<'_> {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDEX,
                 mapped_at_creation: false,
             });
-            let element_bytes = match format {
-                wgpu::IndexFormat::Uint16 => 2,
-                wgpu::IndexFormat::Uint32 => 4,
-            };
             let plan = Utility::plan_index_rotation(
                 self.context,
                 &source,
-                element_bytes,
+                element_bytes(format) as u32,
                 rotation == Rotation::Lines,
+                phase,
             )?;
             let params = self.uniform_params(&plan.param_bytes());
             self.utility.record_index_rotation(
@@ -787,28 +966,36 @@ impl Lowering<'_> {
                 &plan,
                 &params,
             )?;
-            self.indices
-                .rotated
-                .insert((buffer, format, rotation), rotated);
+            self.rotations.push((key, rotated));
         }
         Ok(())
     }
 
+    /// Drops rotated copies of `buffer`, which is about to be written.
+    fn forget_rotations_of(&mut self, buffer: Handle) {
+        self.indices.forget(buffer);
+        self.rotations.retain(|((source, ..), _)| *source != buffer);
+    }
+
     /// Drops rotated copies of index buffers the bound sets may write.
     fn forget_rotations_written_by(&mut self, bind: &BindState) {
-        if self.indices.rotated.is_empty() {
+        if self.indices.rotated.is_empty() && self.rotations.is_empty() {
             return;
         }
+        let mut written: SmallVec<[Handle; 4]> = SmallVec::new();
         for bound in bind.sets.iter().flatten() {
-            if let Some(set) = self.objects.sets.get(&bound.set) {
-                for buffer in set.written_buffers() {
-                    self.indices.forget(buffer);
-                }
+            if let Some(set) = self.objects.sets.get(bound.set) {
+                written.extend(set.written_buffers());
             }
+        }
+        for buffer in written {
+            self.forget_rotations_of(buffer);
         }
     }
 
-    fn flush_compute(&mut self) -> GalResult<()> {
+    /// Applies the bound compute pipeline and sets, opening a compute pass
+    /// if none is open.
+    fn flush_compute(&mut self) -> GalResult<&mut wgpu::ComputePass<'static>> {
         let handle = self
             .compute_pipeline
             .ok_or_else(|| GalError::backend("dispatch without a bound compute pipeline"))?;
@@ -822,95 +1009,86 @@ impl Lowering<'_> {
                     .forget_lifetime(),
             );
             self.applied_compute = None;
-            self.compute_sets.applied.fill(None);
+            self.compute_sets.reset_applied();
+            self.compute_dirty = true;
         }
-        let key = {
-            let pipeline = self
-                .objects
-                .compute_pipelines
-                .get(&handle)
-                .ok_or_else(|| GalError::backend("unknown compute pipeline"))?;
-            self.compute_sets
-                .unfilterable_key(self.objects, pipeline.float_textures())
-        };
-        let current = self
-            .applied_compute
-            .as_ref()
-            .filter(|(applied, applied_key, _)| *applied == handle && *applied_key == key)
-            .map(|(_, _, variant)| variant.clone());
-        let variant = match current {
-            Some(variant) => variant,
-            None => {
-                let mut pipeline = self
+        if self.compute_dirty {
+            let key = {
+                let pipeline = self
                     .objects
                     .compute_pipelines
-                    .remove(&handle)
-                    .expect("looked up above");
-                let variant = self
-                    .objects
-                    .compute_variant(self.context, &mut pipeline, key);
-                self.objects.compute_pipelines.insert(handle, pipeline);
-                let variant = variant?;
+                    .get(handle)
+                    .ok_or_else(|| GalError::backend("unknown compute pipeline"))?;
+                self.compute_sets
+                    .unfilterable_key(self.objects, pipeline.float_textures())
+            };
+            let unchanged = self
+                .applied_compute
+                .as_ref()
+                .is_some_and(|(applied, applied_key, _)| *applied == handle && *applied_key == key);
+            if !unchanged {
+                let variant = self.objects.compute_variant(self.context, handle, key)?;
                 self.compute
                     .as_mut()
                     .expect("opened above")
                     .set_pipeline(&variant.pipeline);
-                self.applied_compute = Some((handle, key, variant.clone()));
-                variant
+                self.applied_compute = Some((handle, key, variant));
+                self.compute_sets.dirty = u64::MAX;
             }
-        };
-        let mut bind = std::mem::take(&mut self.compute_sets);
-        let result = self.apply_sets(&mut bind, &variant.groups, false);
-        self.forget_rotations_written_by(&bind);
-        self.compute_sets = bind;
-        result
+            let variant = self
+                .applied_compute
+                .as_ref()
+                .map(|(_, _, variant)| variant.clone())
+                .expect("applied above");
+            let mut bind = std::mem::take(&mut self.compute_sets);
+            let result = self.apply_sets(&mut bind, &variant.groups, PipelineKind::Compute);
+            self.forget_rotations_written_by(&bind);
+            self.compute_sets = bind;
+            result?;
+            self.compute_dirty = false;
+        }
+        Ok(self.compute.as_mut().expect("opened above"))
     }
 
     fn apply_sets(
         &mut self,
         bind: &mut BindState,
-        groups: &[Arc<super::resources::BindGroupLayoutInfo>],
-        render: bool,
+        groups: &[Arc<BindGroupLayoutInfo>],
+        kind: PipelineKind,
     ) -> GalResult<()> {
         if bind.applied.len() < groups.len() {
-            bind.applied.resize(groups.len(), None);
+            bind.applied.resize_with(groups.len(), || None);
         }
         for (index, layout) in groups.iter().enumerate() {
-            let bound = bind.sets.get(index).cloned().flatten();
-            let (group, set, offsets) = match &bound {
+            let held = bind.applied[index].as_ref();
+            let layout_changed = held.is_none_or(|held| held.layout != layout.id);
+            let slot_dirty = bind.dirty & 1u64.checked_shl(index as u32).unwrap_or(1) != 0;
+            if !layout_changed && !slot_dirty {
+                continue;
+            }
+            let (group, set, offsets) = match bind.sets.get(index).and_then(Option::as_ref) {
                 Some(bound) => {
-                    let set = self
-                        .objects
-                        .sets
-                        .get(&bound.set)
-                        .ok_or_else(|| GalError::backend("unknown resource set"))?;
-                    let offsets = set.dynamic_offsets(layout, &bound.offsets)?;
-                    if bind.applied[index].as_ref().is_some_and(
-                        |(id, applied_set, applied_offsets)| {
-                            *id == layout.id
-                                && *applied_set == Some(bound.set)
-                                && *applied_offsets == offsets
-                        },
-                    ) {
+                    let (group, offsets) = self.objects.set_bind_group(
+                        self.context,
+                        bound.set,
+                        layout,
+                        &bound.offsets,
+                    )?;
+                    if held.is_some_and(|held| {
+                        held.layout == layout.id
+                            && held.set == Some(bound.set)
+                            && held.offsets == offsets
+                    }) {
                         continue;
                     }
-                    (
-                        self.objects.bind_group(self.context, bound.set, layout)?,
-                        Some(bound.set),
-                        offsets,
-                    )
+                    (group, Some(bound.set), offsets)
                 }
                 None => {
-                    if bind.applied[index]
-                        .as_ref()
-                        .is_some_and(|(id, applied_set, _)| {
-                            *id == layout.id && applied_set.is_none()
-                        })
-                    {
+                    if held.is_some_and(|held| held.layout == layout.id && held.set.is_none()) {
                         continue;
                     }
                     match self.objects.empty_bind_group(self.context, layout)? {
-                        Some(group) => (group, None, Vec::new()),
+                        Some(group) => (group, None, NativeOffsets::new()),
                         None => {
                             return Err(GalError::invalid_argument(format!(
                                 "the bound pipeline reads resource set {index}, but no set is bound there"
@@ -919,17 +1097,24 @@ impl Lowering<'_> {
                     }
                 }
             };
-            if render {
-                self.render_pass()?
-                    .set_bind_group(index as u32, &group, &offsets);
-            } else {
-                self.compute
+            match kind {
+                PipelineKind::Graphics => {
+                    self.render_pass()?
+                        .set_bind_group(index as u32, &group, &offsets)
+                }
+                PipelineKind::Compute => self
+                    .compute
                     .as_mut()
                     .expect("compute pass is open")
-                    .set_bind_group(index as u32, &group, &offsets);
+                    .set_bind_group(index as u32, &group, &offsets),
             }
-            bind.applied[index] = Some((layout.id, set, offsets));
+            bind.applied[index] = Some(AppliedGroup {
+                layout: layout.id,
+                set,
+                offsets,
+            });
         }
+        bind.dirty = 0;
         Ok(())
     }
 
@@ -962,46 +1147,57 @@ impl Lowering<'_> {
         Ok(buffer)
     }
 
-    /// A transient storage buffer holding `bytes`, staged in order.
-    fn staged_storage(&mut self, bytes: &[u8]) -> GalResult<wgpu::Buffer> {
-        let size = (bytes.len() as u64).next_multiple_of(4).max(4);
-        let buffer = self.context.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vulkanic.staged-bytes"),
-            size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut padded = bytes.to_vec();
-        padded.resize(size as usize, 0);
-        let mut view = self.belt.write_buffer(
-            &mut self.encoder,
-            &buffer,
-            0,
-            std::num::NonZeroU64::new(size).expect("non-zero"),
-        );
-        view.copy_from_slice(&padded);
-        drop(view);
-        Ok(buffer)
+    /// A pooled scratch buffer of at least `size` bytes, returned to the
+    /// pool when this batch's submission completes.
+    fn scratch(
+        &mut self,
+        label: &'static str,
+        usage: wgpu::BufferUsages,
+        size: u64,
+    ) -> wgpu::Buffer {
+        let buffer = self.pool.take(&self.context.device, label, usage, size);
+        self.transients.push(buffer.clone());
+        buffer
     }
 
-    fn uniform_params(&mut self, bytes: &[u8]) -> wgpu::Buffer {
-        let size = (bytes.len() as u64).next_multiple_of(16);
-        let buffer = self.context.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vulkanic.byte-copy-params"),
-            size,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut padded = bytes.to_vec();
-        padded.resize(size as usize, 0);
+    /// Stages `bytes` (zero-padded to whole words) at the start of `target`,
+    /// in command order.
+    fn stage_into(&mut self, target: &wgpu::Buffer, bytes: &[u8]) {
+        let size = (bytes.len() as u64).next_multiple_of(4).max(4);
         let mut view = self.belt.write_buffer(
             &mut self.encoder,
-            &buffer,
+            target,
             0,
             std::num::NonZeroU64::new(size).expect("non-zero"),
         );
-        view.copy_from_slice(&padded);
-        drop(view);
+        if bytes.len() as u64 == size {
+            view.copy_from_slice(bytes);
+        } else {
+            let mut padded = bytes.to_vec();
+            padded.resize(size as usize, 0);
+            view.copy_from_slice(&padded);
+        }
+    }
+
+    /// A scratch storage buffer holding `bytes`, staged in order.
+    fn staged_storage(&mut self, bytes: &[u8]) -> wgpu::Buffer {
+        let buffer = self.scratch(
+            "vulkanic.staged-bytes",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            bytes.len() as u64,
+        );
+        self.stage_into(&buffer, bytes);
+        buffer
+    }
+
+    /// A scratch uniform buffer holding an internal pipeline's parameters.
+    fn uniform_params(&mut self, bytes: &[u8]) -> wgpu::Buffer {
+        let buffer = self.scratch(
+            "vulkanic.internal-params",
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            bytes.len() as u64,
+        );
+        self.stage_into(&buffer, bytes);
         buffer
     }
 
@@ -1022,7 +1218,7 @@ impl Lowering<'_> {
 
     fn host_write(&mut self, buffer: Handle, offset: u64, data: &[u8]) -> GalResult<()> {
         self.end_compute();
-        self.indices.forget(buffer);
+        self.forget_rotations_of(buffer);
         let target = self.objects.buffer(buffer)?.buffer.clone();
         let size = data.len() as u64;
         if offset.is_multiple_of(4) && size.is_multiple_of(4) {
@@ -1035,7 +1231,7 @@ impl Lowering<'_> {
             view.copy_from_slice(data);
             return Ok(());
         }
-        let staged = self.staged_storage(data)?;
+        let staged = self.staged_storage(data);
         self.byte_copy(&staged, &target, ByteCopy::linear(0, offset, size))
     }
 
@@ -1048,7 +1244,7 @@ impl Lowering<'_> {
         size: u64,
     ) -> GalResult<()> {
         self.end_compute();
-        self.indices.forget(dst);
+        self.forget_rotations_of(dst);
         let source = self.objects.buffer(src)?.buffer.clone();
         let target = self.objects.buffer(dst)?.buffer.clone();
         let aligned =
@@ -1062,14 +1258,13 @@ impl Lowering<'_> {
         // and unaligned ones need the byte copy.
         let window_start = src_offset / 4 * 4;
         let window_size = (src_offset + size).next_multiple_of(4) - window_start;
-        let scratch = self.context.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vulkanic.copy-scratch"),
-            size: window_size,
-            usage: wgpu::BufferUsages::STORAGE
+        let scratch = self.scratch(
+            "vulkanic.copy-scratch",
+            wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+            window_size,
+        );
         self.encoder
             .copy_buffer_to_buffer(&source, window_start, &scratch, 0, window_size);
         if aligned {
@@ -1166,12 +1361,11 @@ impl Lowering<'_> {
         let aligned_row = row_bytes.next_multiple_of(256);
         let rows = u64::from(region.extent.height);
         let images = u64::from(region.extent.depth.max(1));
-        let scratch = self.context.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vulkanic.upload-repack"),
-            size: aligned_row * rows * images,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let scratch = self.scratch(
+            "vulkanic.upload-repack",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            aligned_row * rows * images,
+        );
         self.byte_copy(
             &buffer,
             &scratch,
@@ -1246,12 +1440,11 @@ impl Lowering<'_> {
         let aligned_row = row_bytes.next_multiple_of(256);
         let rows = u64::from(region.extent.height);
         let images = u64::from(region.extent.depth.max(1));
-        let scratch = self.context.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vulkanic.readback-repack"),
-            size: aligned_row * rows * images,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let scratch = self.scratch(
+            "vulkanic.readback-repack",
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            aligned_row * rows * images,
+        );
         self.encoder.copy_texture_to_buffer(
             source,
             wgpu::TexelCopyBufferInfo {
@@ -1351,12 +1544,13 @@ impl Lowering<'_> {
             let source = self.objects.buffer(buffer)?.buffer.clone();
             let start = offset / 4 * 4;
             let end = (offset + size).next_multiple_of(4).min(source.size());
-            let staging = self.context.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("vulkanic.host-read"),
-                size: end - start,
-                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+            // Recycled by the backend once the read is copied out.
+            let staging = self.pool.take(
+                &self.context.device,
+                "vulkanic.host-read",
+                wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                end - start,
+            );
             self.encoder
                 .copy_buffer_to_buffer(&source, start, &staging, 0, end - start);
             reads.push(PendingRead {

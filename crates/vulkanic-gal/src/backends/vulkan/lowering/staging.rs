@@ -91,11 +91,6 @@ impl StagingChunk {
             capacity,
         })
     }
-
-    #[allow(dead_code)] // Retained upstream backend diagnostic support.
-    pub(super) fn capacity(&self) -> u64 {
-        self.capacity
-    }
 }
 
 impl Drop for StagingChunk {

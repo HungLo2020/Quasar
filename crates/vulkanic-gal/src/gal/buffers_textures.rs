@@ -334,7 +334,7 @@ impl VulkanicGal {
     ) -> GalResult<Handle> {
         let view = self.texture_view_info(desc.texture_view)?;
         let sampler = self.samplers.get(desc.sampler)?;
-        if trace_label_matches("MATTMC_GAL_TRACE_SAMPLER_LABEL", &desc.label) {
+        if trace_label_matches("VULKANIC_GAL_TRACE_SAMPLER_LABEL", &desc.label) {
             crate::diagnostics::stderr(format_args!(
                 "[MattMC sampler-trace] combined label={} view=0x{:016x} texture=0x{:016x} sampler=0x{:016x}",
                 desc.label,
