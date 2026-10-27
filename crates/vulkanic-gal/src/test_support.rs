@@ -27,8 +27,9 @@ use super::resources::BackendCapabilities;
 #[cfg(feature = "vulkan")]
 use super::resources::ShaderStage;
 
-/// Whether GPU tests must find a device (`VULKANIC_REQUIRE_GPU=1`, as CI's
-/// GPU job sets); otherwise a missing device is an environment gap.
+/// Whether GPU tests must find a device (`VULKANIC_REQUIRE_GPU=1`, for a
+/// run that must not skip them); otherwise a missing device is an
+/// environment gap.
 pub fn require_gpu() -> bool {
     std::env::var("VULKANIC_REQUIRE_GPU").is_ok_and(|value| value == "1")
 }

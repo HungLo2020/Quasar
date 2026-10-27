@@ -40,7 +40,7 @@ Copy this checklist into your response and tick items off:
 - [ ] 6. Push branch
 - [ ] 7. Wait for all workflows on the commit
 - [ ] 8. Create and push vX.Y.Z tag
-- [ ] 9. Wait for tag-triggered workflows
+- [ ] 9. Confirm no tag-triggered workflow runs
 - [ ] 10. Report version, commit, tag, and CI results
 ```
 
@@ -88,7 +88,10 @@ stop and investigate instead of hand-editing the lockfile.
 
 ### 4. Verify
 
-Run the same checks CI runs. Do not continue if a command you can run fails.
+These local checks are the release gate; CI is only a light last-ditch catch.
+Do not continue if a command you can run fails. On a shared desktop, run the
+heavy ones under a memory limit (`systemd-run --user --scope -p MemoryMax=8G
+-p MemorySwapMax=0 ...`).
 
 ```bash
 cargo fmt --all -- --check
@@ -96,10 +99,13 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 python3 tools/verify_pong.py
 python3 tools/verify_tilemap.py
+python3 tools/full_checks.py --keep-going
 ```
 
-The ignored GPU/Vulkan tests need a graphics environment. If it is unavailable
-locally, say so and rely on the `gpu-composition` CI job; never claim they ran.
+`tools/full_checks.py` runs the feature matrix, optional-feature tests, native
+X11, GPU, demo and documentation checks. Its GPU and window steps need a
+Vulkan device, OpenGL and a display (Xvfb when installed); it reports steps it
+skips. If a graphics environment is unavailable, say so; never claim they ran.
 Fix failures, rerun the affected command, and include the fix in the release
 commit. Check `git status` afterwards and leave ignored artifacts such as
 `target/`, `dist/`, and `data/` out of the commit.
@@ -157,9 +163,10 @@ git rev-parse HEAD
 git ls-remote --tags origin "refs/tags/vX.Y.Z"
 ```
 
-### 9. Wait for tag-triggered workflows
+### 9. Confirm no tag-triggered workflow runs
 
-Pushing the tag triggers the `push` workflow again:
+CI runs on pushes to `main` and on pull requests, not on tags, so the tag
+starts no workflow. If one does run for it (a workflow changed), wait for it:
 
 ```bash
 python3 .agents/skills/update-and-push/scripts/wait_for_checks.py
