@@ -201,10 +201,14 @@ through a third-party crate), or names them in source.
 
 `Renderer2D::headless_with(BackendChoice)` and
 `Renderer2D::from_windowed_gal(...)` are backend-neutral creation paths.
-`Renderer2D::headless()` and `for_window()` retain the Vulkan default and use
-wgpu in builds without Vulkan; `VULKANIC_BACKEND=wgpu|vulkan|opengl` overrides
-the backend of every GAL a process creates, so unmodified games run on another
-compiled-in backend. The Vulkan presenter creates an owned surface through
+Backend selection is typed: `GalOptions` carries a `GraphicsBackend` (`Auto`
+by default: native Vulkan, then wgpu), an optional fallback to automatic
+selection, and whether the `VULKANIC_BACKEND` developer override may replace
+an explicit choice. `VulkanicGal::backend_info()` reports the requested and
+selected backend, any override or fallback, and the device and driver, for
+debug screens and performance reports. `Renderer2D::headless()` and
+`for_window()` use `Auto`; `*_with` variants take `GalOptions`. The Vulkan
+presenter creates an owned surface through
 ash-window; the wgpu presenter creates one through wgpu. The backend
 retains an Arc to the native window until its Vulkan resources have been
 destroyed. The legacy raw-integer native-window constructor is unsafe: its

@@ -96,29 +96,15 @@ pub struct Renderer2D {
     frame_overlap: bool,
 }
 impl Renderer2D {
-    /// Creates a headless renderer with the crate's default backend.
-    ///
-    /// Vulkan is selected when the `vulkan` feature is enabled (the default),
-    /// otherwise wgpu when `wgpu` is enabled, otherwise OpenGL when `opengl`
-    /// is enabled. `VULKANIC_BACKEND` overrides the choice.
+    /// Creates a headless renderer on the default backend: native Vulkan
+    /// first, then wgpu, then OpenGL, among those compiled in.
+    /// `VULKANIC_BACKEND` overrides the choice.
     pub fn headless() -> GalResult<Self> {
-        #[cfg(not(any(feature = "vulkan", feature = "opengl", feature = "wgpu")))]
-        {
-            Err(GalError::unsupported_feature(
-                "no graphics backend feature is enabled for quasar-render-2d",
-            ))
-        }
-        #[cfg(any(feature = "vulkan", feature = "opengl", feature = "wgpu"))]
-        {
-            let backend = if cfg!(feature = "vulkan") {
-                BackendChoice::Vulkan
-            } else if cfg!(feature = "wgpu") {
-                BackendChoice::Wgpu
-            } else {
-                BackendChoice::OpenGl
-            };
-            Self::headless_with(backend)
-        }
+        Self::headless_with_options(GalOptions::default())
+    }
+    /// Creates a headless renderer on the backend `options` selects.
+    pub fn headless_with_options(options: GalOptions) -> GalResult<Self> {
+        Self::from_gal(VulkanicGal::create_with(options, "Quasar 2D offscreen")?)
     }
     /// Creates a headless renderer on an explicitly requested backend.
     pub fn headless_with(backend: BackendChoice) -> GalResult<Self> {
@@ -152,23 +138,33 @@ impl Renderer2D {
         gal.configure_frame_surface(window_surface_desc(size))?;
         Self::with_window_surface(gal, size, options)
     }
-    /// Creates a renderer on a window: Vulkan when the `vulkan` feature is
-    /// enabled (the default), otherwise wgpu. `VULKANIC_BACKEND` overrides
-    /// the choice.
+    /// Creates a renderer on a window on the default backend: native Vulkan
+    /// when available, otherwise wgpu. `VULKANIC_BACKEND` overrides the
+    /// choice.
     #[cfg(any(feature = "vulkan", feature = "wgpu"))]
     pub fn for_window<W: HasDisplayHandle + HasWindowHandle + 'static>(
         window: Arc<W>,
         size: (u32, u32),
         options: DisplayOptions,
     ) -> GalResult<Self> {
+        Self::for_window_with(window, size, options, GalOptions::default())
+    }
+    /// Creates a renderer on a window on the backend `backend` selects, for
+    /// games that let players choose (see `GraphicsBackend::selectable`).
+    #[cfg(any(feature = "vulkan", feature = "wgpu"))]
+    pub fn for_window_with<W: HasDisplayHandle + HasWindowHandle + 'static>(
+        window: Arc<W>,
+        size: (u32, u32),
+        options: DisplayOptions,
+        backend: GalOptions,
+    ) -> GalResult<Self> {
         options.validate().map_err(GalError::invalid_argument)?;
-        let backend = if cfg!(feature = "vulkan") {
-            BackendChoice::Vulkan
-        } else {
-            BackendChoice::Wgpu
-        };
-        let gal =
-            VulkanicGal::create_windowed(backend, "Quasar 2D", window, window_surface_desc(size))?;
+        let gal = VulkanicGal::create_windowed_with(
+            backend,
+            "Quasar 2D",
+            window,
+            window_surface_desc(size),
+        )?;
         Self::with_window_surface(gal, size, options)
     }
     fn with_window_surface(
@@ -246,6 +242,11 @@ impl Renderer2D {
     /// Backend or adapter name reported by VulkanicGAL.
     pub fn device_name(&self) -> &str {
         self.gal.capabilities().name
+    }
+    /// What the renderer runs on: requested and selected backend, device and
+    /// driver (see `BackendInfo`'s one-line `Display` for debug screens).
+    pub fn backend_info(&self) -> BackendInfo {
+        self.gal.backend_info()
     }
     /// Backend timing, wait, and churn counters for diagnostics/benchmarks.
     pub fn backend_metrics(&self) -> BackendRuntimeMetrics {
@@ -505,6 +506,10 @@ impl FramebufferPresenter {
     }
     pub fn device_name(&self) -> &str {
         self.renderer.device_name()
+    }
+    /// See `Renderer2D::backend_info`.
+    pub fn backend_info(&self) -> BackendInfo {
+        self.renderer.backend_info()
     }
     pub fn backend_metrics(&self) -> BackendRuntimeMetrics {
         self.renderer.backend_metrics()

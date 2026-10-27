@@ -33,6 +33,7 @@ use super::{
     BackendRuntimeMetrics, BackendToken, CompletedHostRead,
 };
 use crate::commands::ValidatedSubmissionBatch;
+use crate::create::WgpuApi;
 use crate::error::{GalError, GalResult};
 use crate::frame::{
     AcquiredFrame, FrameAcquireDesc, FrameId, FrameResizeDesc, FrameResizeResult, FrameSurfaceDesc,
@@ -128,10 +129,10 @@ impl WgpuBackend {
         }
     }
 
-    /// A headless backend on the default adapter.
-    pub(crate) fn new(label: &str) -> GalResult<Self> {
+    /// A headless backend on the default adapter of `api`.
+    pub(crate) fn new(label: &str, api: WgpuApi) -> GalResult<Self> {
         let global_lock = lock_graphics()?;
-        let context = WgpuContext::new(label, device::new_instance(), None)?;
+        let context = WgpuContext::new(label, device::new_instance(api), None)?;
         Ok(Self::from_context(context, None, global_lock))
     }
 
@@ -139,12 +140,13 @@ impl WgpuBackend {
     /// The handles must stay valid until the backend is dropped.
     unsafe fn new_raw_windowed(
         label: &str,
+        api: WgpuApi,
         display: raw_window_handle::RawDisplayHandle,
         window: raw_window_handle::RawWindowHandle,
         desc: FrameSurfaceDesc,
     ) -> GalResult<Self> {
         let global_lock = lock_graphics()?;
-        let instance = device::new_instance();
+        let instance = device::new_instance(api);
         let surface = unsafe {
             instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
                 raw_display_handle: Some(display),
@@ -162,6 +164,7 @@ impl WgpuBackend {
         W: raw_window_handle::HasDisplayHandle + raw_window_handle::HasWindowHandle + 'static,
     >(
         label: &str,
+        api: WgpuApi,
         window: Arc<W>,
         desc: FrameSurfaceDesc,
     ) -> GalResult<Self> {
@@ -174,7 +177,7 @@ impl WgpuBackend {
             .map_err(|error| GalError::backend(error.to_string()))?
             .as_raw();
         // SAFETY: the backend owns `window` and drops it after the surface.
-        let mut backend = unsafe { Self::new_raw_windowed(label, display, raw_window, desc)? };
+        let mut backend = unsafe { Self::new_raw_windowed(label, api, display, raw_window, desc)? };
         backend._window_owner = Some(Box::new(window));
         Ok(backend)
     }
@@ -186,6 +189,7 @@ impl WgpuBackend {
     /// The handles must be valid for `platform` and outlive the backend.
     pub(crate) unsafe fn new_native_windowed(
         label: &str,
+        api: WgpuApi,
         platform: u32,
         native_display: u64,
         native_window: u64,
@@ -217,7 +221,7 @@ impl WgpuBackend {
                 )))
             }
         };
-        unsafe { Self::new_raw_windowed(label, display, window, desc) }
+        unsafe { Self::new_raw_windowed(label, api, display, window, desc) }
     }
 
     fn completion(&self) -> GalResult<std::sync::MutexGuard<'_, Completion>> {
@@ -428,6 +432,14 @@ fn wgpu_capabilities(context: &WgpuContext, presentation: bool) -> BackendCapabi
 }
 
 impl Backend for WgpuBackend {
+    fn selected_backend(&self) -> crate::create::GraphicsBackend {
+        self.context.selected_backend()
+    }
+
+    fn device_info(&self) -> crate::create::DeviceInfo {
+        self.context.device_info()
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         wgpu_capabilities(&self.context, self.surface.is_some())
     }

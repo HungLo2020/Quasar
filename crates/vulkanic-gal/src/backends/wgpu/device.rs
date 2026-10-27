@@ -8,6 +8,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
+use crate::create::{DeviceInfo, DeviceKind, GraphicsBackend, WgpuApi};
 use crate::error::{GalError, GalResult};
 
 /// Native features used when the adapter offers them; capabilities report
@@ -44,10 +45,17 @@ pub(super) struct WgpuContext {
     uncaptured: Arc<Mutex<Vec<String>>>,
 }
 
-pub(super) fn new_instance() -> wgpu::Instance {
-    // WGPU_BACKEND, WGPU_DEBUG, WGPU_VALIDATION and friends keep working.
+/// An instance limited to `api`. Only `WgpuApi::Auto` lets `WGPU_BACKEND`
+/// choose; `WGPU_DEBUG`, `WGPU_VALIDATION` and friends always apply.
+pub(super) fn new_instance(api: WgpuApi) -> wgpu::Instance {
+    let backends = match api {
+        WgpuApi::Auto => wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
+        WgpuApi::Vulkan => wgpu::Backends::VULKAN,
+        WgpuApi::Metal => wgpu::Backends::METAL,
+        WgpuApi::Dx12 => wgpu::Backends::DX12,
+    };
     wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
+        backends,
         flags: wgpu::InstanceFlags::from_build_config().with_env(),
         memory_budget_thresholds: Default::default(),
         backend_options: wgpu::BackendOptions::from_env_or_default(),
@@ -121,6 +129,45 @@ impl WgpuContext {
             .lock()
             .map(|mut errors| std::mem::take(&mut *errors))
             .unwrap_or_default()
+    }
+
+    /// The native API wgpu runs on.
+    pub(super) fn selected_backend(&self) -> GraphicsBackend {
+        GraphicsBackend::Wgpu(match self.adapter.get_info().backend {
+            wgpu::Backend::Vulkan => WgpuApi::Vulkan,
+            wgpu::Backend::Metal => WgpuApi::Metal,
+            wgpu::Backend::Dx12 => WgpuApi::Dx12,
+            _ => WgpuApi::Auto,
+        })
+    }
+
+    /// The adapter and driver wgpu selected.
+    pub(super) fn device_info(&self) -> DeviceInfo {
+        let info = self.adapter.get_info();
+        let api = match info.backend {
+            wgpu::Backend::Vulkan => "Vulkan",
+            wgpu::Backend::Metal => "Metal",
+            wgpu::Backend::Dx12 => "Direct3D 12",
+            wgpu::Backend::Gl => "OpenGL",
+            wgpu::Backend::BrowserWebGpu => "WebGPU",
+            _ => "unknown API",
+        };
+        DeviceInfo {
+            name: info.name,
+            driver: [info.driver, info.driver_info]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+            api: format!("{api} through wgpu"),
+            kind: match info.device_type {
+                wgpu::DeviceType::DiscreteGpu => DeviceKind::Discrete,
+                wgpu::DeviceType::IntegratedGpu => DeviceKind::Integrated,
+                wgpu::DeviceType::VirtualGpu => DeviceKind::Virtual,
+                wgpu::DeviceType::Cpu => DeviceKind::Cpu,
+                wgpu::DeviceType::Other => DeviceKind::Other,
+            },
+        }
     }
 
     #[cfg(test)]

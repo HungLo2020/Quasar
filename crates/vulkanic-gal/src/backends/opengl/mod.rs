@@ -39,6 +39,8 @@ use self::resources::OpenGlObjects;
 const DEFAULT_FRAMEBUFFER_TARGET: FrameRenderTargetId = FrameRenderTargetId(1);
 
 pub(crate) struct OpenGlBackend {
+    /// Read while the context was current at creation.
+    device: crate::create::DeviceInfo,
     context: OpenGlContext,
     objects: OpenGlObjects,
     lowerer: Mutex<OpenGlLowerer>,
@@ -50,6 +52,32 @@ struct OpenGlPresentationState {
     desc: FrameSurfaceDesc,
     next_frame: u64,
     acquired: Vec<FrameId>,
+}
+
+/// The renderer, vendor and version of the current GL context.
+fn gl_device_info(gl: &glow::Context) -> crate::create::DeviceInfo {
+    use crate::create::{DeviceInfo, DeviceKind};
+    use glow::HasContext;
+    let (renderer, vendor, version) = unsafe {
+        (
+            gl.get_parameter_string(glow::RENDERER),
+            gl.get_parameter_string(glow::VENDOR),
+            gl.get_parameter_string(glow::VERSION),
+        )
+    };
+    let software = ["llvmpipe", "softpipe", "swrast"]
+        .iter()
+        .any(|name| renderer.to_ascii_lowercase().contains(name));
+    DeviceInfo {
+        name: renderer,
+        driver: vendor,
+        api: format!("OpenGL {version}"),
+        kind: if software {
+            DeviceKind::Cpu
+        } else {
+            DeviceKind::Other
+        },
+    }
 }
 
 #[allow(dead_code)]
@@ -67,6 +95,7 @@ impl OpenGlBackend {
                 context.provoking_vertex,
                 context.clip_control,
             )),
+            device: gl_device_info(context.gl()),
             context,
             objects,
             presentation: None,
@@ -89,6 +118,7 @@ impl OpenGlBackend {
                 context.provoking_vertex,
                 context.clip_control,
             )),
+            device: gl_device_info(context.gl()),
             context,
             objects,
             presentation: Some(OpenGlPresentationState {
@@ -180,6 +210,14 @@ impl OpenGlBackend {
 }
 
 impl Backend for OpenGlBackend {
+    fn selected_backend(&self) -> crate::create::GraphicsBackend {
+        crate::create::GraphicsBackend::OpenGl
+    }
+
+    fn device_info(&self) -> crate::create::DeviceInfo {
+        self.device.clone()
+    }
+
     #[cfg(test)]
     fn begin_debug_capture(&self) -> Option<Box<dyn std::any::Any>> {
         renderdoc::RenderDocFrame::start_if_requested()

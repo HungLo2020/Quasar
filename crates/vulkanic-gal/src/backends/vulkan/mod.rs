@@ -272,6 +272,14 @@ impl VulkanBackend {
 }
 
 impl Backend for VulkanBackend {
+    fn selected_backend(&self) -> crate::create::GraphicsBackend {
+        crate::create::GraphicsBackend::Vulkan
+    }
+
+    fn device_info(&self) -> crate::create::DeviceInfo {
+        self.context.device_info()
+    }
+
     fn set_gpu_profile_tag(&mut self, handle: Handle, tag: crate::resources::GpuProfileTag) {
         self.objects.set_profile_tag(handle, tag);
     }

@@ -131,11 +131,14 @@ pub struct VulkanicGal {
     metrics: Metrics,
     /// Frontend policy tagging passes/pipelines with GPU profiling scopes.
     gpu_profile_classifier: Option<GpuProfileClassifier>,
+    requested_backend: super::create::GraphicsBackend,
+    selection_notes: Vec<super::create::SelectionNote>,
 }
 
 impl VulkanicGal {
     #[allow(dead_code)]
     pub(crate) fn new_with_backend(backend: Box<dyn Backend>) -> Self {
+        let requested_backend = backend.selected_backend();
         Self {
             backend,
             buffers: Arena::new(HandleKind::Buffer),
@@ -171,6 +174,8 @@ impl VulkanicGal {
             completed_submission: SubmissionId(0),
             metrics: Metrics::default(),
             gpu_profile_classifier: None,
+            requested_backend,
+            selection_notes: Vec::new(),
         }
     }
 
@@ -178,5 +183,26 @@ impl VulkanicGal {
     /// Renderers branch on these facts, never on which backend is running.
     pub fn capabilities(&self) -> BackendCapabilities {
         self.backend.capabilities()
+    }
+
+    /// What this GAL runs on: the requested and selected backend, any
+    /// override or fallback between them, and the device and driver.
+    pub fn backend_info(&self) -> super::create::BackendInfo {
+        super::create::BackendInfo {
+            requested: self.requested_backend,
+            selected: self.backend.selected_backend(),
+            notes: self.selection_notes.clone(),
+            device: self.backend.device_info(),
+        }
+    }
+
+    /// Records how creation chose this GAL's backend.
+    pub(crate) fn set_requested_backend(
+        &mut self,
+        requested: super::create::GraphicsBackend,
+        notes: Vec<super::create::SelectionNote>,
+    ) {
+        self.requested_backend = requested;
+        self.selection_notes = notes;
     }
 }

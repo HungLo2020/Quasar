@@ -48,7 +48,53 @@ pub(super) struct VulkanContext {
     pub(super) swapchain_loader: Option<ash::khr::swapchain::Device>,
 }
 
+/// Text of a fixed-size, NUL-terminated Vulkan string field.
+fn vk_string(raw: &[std::ffi::c_char]) -> String {
+    let bytes: Vec<u8> = raw
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .map(|byte| *byte as u8)
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 impl VulkanContext {
+    /// The physical device, its driver and the Vulkan version it supports.
+    pub(super) fn device_info(&self) -> crate::create::DeviceInfo {
+        use crate::create::{DeviceInfo, DeviceKind};
+        let mut driver = vk::PhysicalDeviceDriverProperties::default();
+        let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut driver);
+        unsafe {
+            self.instance
+                .get_physical_device_properties2(self.physical_device, &mut properties);
+        }
+        let device = properties.properties;
+        let version = device.api_version;
+        let driver_name = vk_string(&driver.driver_name);
+        let driver_info = vk_string(&driver.driver_info);
+        DeviceInfo {
+            name: vk_string(&device.device_name),
+            driver: match (driver_name.is_empty(), driver_info.is_empty()) {
+                (false, false) => format!("{driver_name} {driver_info}"),
+                (false, true) => driver_name,
+                _ => driver_info,
+            },
+            api: format!(
+                "Vulkan {}.{}.{}",
+                vk::api_version_major(version),
+                vk::api_version_minor(version),
+                vk::api_version_patch(version)
+            ),
+            kind: match device.device_type {
+                vk::PhysicalDeviceType::DISCRETE_GPU => DeviceKind::Discrete,
+                vk::PhysicalDeviceType::INTEGRATED_GPU => DeviceKind::Integrated,
+                vk::PhysicalDeviceType::VIRTUAL_GPU => DeviceKind::Virtual,
+                vk::PhysicalDeviceType::CPU => DeviceKind::Cpu,
+                _ => DeviceKind::Other,
+            },
+        }
+    }
+
     pub(super) fn new(label: &str, validation: ValidationMode) -> GalResult<Arc<Self>> {
         Self::new_with_surface(label, validation, None)
     }

@@ -150,9 +150,16 @@ quasar-render-3d = { path = "crates/quasar-render-3d", default-features = false,
 quasar-render-2d = { path = "crates/quasar-render-2d", default-features = false, features = ["gpu", "wgpu"] }
 ```
 
-`VULKANIC_BACKEND=wgpu` (or `vulkan`, `opengl`) overrides the backend of every
-GAL a process creates, including through `create_windowed_vulkan`, so an
-existing game runs on another compiled-in backend without code changes:
+Games that let players choose a backend pass a `GraphicsBackend` (`auto`,
+`vulkan`, `wgpu-vulkan`, `wgpu-metal`, `wgpu-dx12`, ...) through `GalOptions`;
+`VulkanicGal::backend_info()` (also on `Renderer2D`) reports what actually runs
+for debug screens. Games that do not care get native Vulkan by default. See the
+[VulkanicGAL README](crates/vulkanic-gal/README.md#choosing-and-reporting-the-backend).
+
+`VULKANIC_BACKEND=wgpu` (or `vulkan`, `opengl`, `wgpu-vulkan`, ...) overrides
+automatic selection and the `BackendChoice` constructors, so an existing game
+runs on another compiled-in backend without code changes; explicit
+`GalOptions` choices are only overridden when they allow it:
 
 ```sh
 VULKANIC_BACKEND=wgpu cargo run -p starfall --features vulkanic-gal/wgpu

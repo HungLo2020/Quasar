@@ -55,6 +55,54 @@ vulkanic-gal = { path = "...", default-features = false, features = ["wgpu"] }
   enable `opengl` when calling `BackendChoice::OpenGl` or
   `create_borrowed_opengl`.
 
+## Choosing and reporting the backend
+
+Games that do not care call the existing constructors or pass
+`GalOptions::default()` (`GraphicsBackend::Auto`): native Vulkan first, then
+wgpu, then (headless only) OpenGL, among the backends compiled in. Games that
+let players choose store a `GraphicsBackend` id in their settings and pass it
+through `GalOptions`:
+
+```rust
+use vulkanic_gal::{GalOptions, GraphicsBackend, VulkanicGal};
+
+// Settings menu: offer what this build and platform contain.
+for backend in GraphicsBackend::selectable(true) {
+    println!("{} ({})", backend.display_name(), backend.id()); // "wgpu / Vulkan (wgpu-vulkan)"
+}
+
+// Startup: the saved id, falling back to automatic selection if it fails.
+let backend: GraphicsBackend = settings.graphics_backend.parse().unwrap_or_default();
+let gal = VulkanicGal::create_windowed_with(
+    GalOptions::new(backend).with_fallback(),
+    "game",
+    window,
+    surface,
+)?;
+
+// Debug screen: "wgpu / Vulkan | NVIDIA GeForce RTX 2070 | NVIDIA 580.178.04 | Vulkan through wgpu"
+let info = gal.backend_info();
+println!("{info}");
+```
+
+- `GraphicsBackend` ids: `auto`, `vulkan`, `opengl`, `wgpu`, `wgpu-vulkan`,
+  `wgpu-metal`, `wgpu-dx12`. `is_compiled` and `selectable` account for both
+  Cargo features and the target platform (Metal on Apple, Direct3D 12 on
+  Windows).
+- An explicit choice is authoritative: without `with_fallback` a backend that
+  cannot start returns its error, and `VULKANIC_BACKEND` replaces it only when
+  `allow_env_override` is set. The override always applies to `Auto` and to the
+  `BackendChoice` constructors, so unmodified programs can still be switched
+  for testing.
+- `backend_info()` returns the requested and selected backend (wgpu's native
+  API included), any override or fallback (`notes`, with the failure reason),
+  and the device name, driver, API version and device kind. `Renderer2D`,
+  `FramebufferPresenter` and every `VulkanicGal` expose it.
+- `quasar-render-2d`'s `Renderer2D::for_window_with` and
+  `headless_with_options` take `GalOptions`; `for_window` and `headless` use
+  `Auto`, so they now fall back to wgpu when native Vulkan cannot start.
+  `quasar-render-3d` renders through whatever GAL the game created.
+
 ## The wgpu backend
 
 The wgpu backend exists for portability: Metal on macOS without MoltenVK,

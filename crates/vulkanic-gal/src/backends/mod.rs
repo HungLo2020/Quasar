@@ -17,7 +17,9 @@ mod graphics_storage_conformance;
 use std::sync::{Mutex, OnceLock};
 
 use super::commands::ValidatedSubmissionBatch;
-use super::create::BackendChoice;
+#[cfg(feature = "wgpu")]
+use super::create::WgpuApi;
+use super::create::{DeviceInfo, GraphicsBackend};
 use super::error::{GalError, GalResult};
 use super::frame::{
     AcquiredFrame, FrameAcquireDesc, FrameId, FrameResizeDesc, FrameResizeResult, FrameSurfaceDesc,
@@ -154,28 +156,20 @@ pub(super) fn graphics_backend_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-pub(crate) fn create_backend(choice: BackendChoice, label: &str) -> GalResult<Box<dyn Backend>> {
+/// Creates the concrete (never `Auto`) headless backend `backend` names.
+pub(crate) fn create_backend(backend: GraphicsBackend, label: &str) -> GalResult<Box<dyn Backend>> {
     #[cfg(not(any(feature = "vulkan", feature = "opengl", feature = "wgpu")))]
     let _ = label;
-    match choice {
+    match backend {
         #[cfg(feature = "vulkan")]
-        BackendChoice::Vulkan => Ok(Box::new(vulkan::VulkanBackend::new(label)?)),
-        #[cfg(not(feature = "vulkan"))]
-        BackendChoice::Vulkan => Err(GalError::unsupported_feature(
-            "Vulkan backend support is disabled in this build",
-        )),
+        GraphicsBackend::Vulkan => Ok(Box::new(vulkan::VulkanBackend::new(label)?)),
         #[cfg(feature = "opengl")]
-        BackendChoice::OpenGl => Ok(Box::new(opengl::OpenGlBackend::new(label)?)),
-        #[cfg(not(feature = "opengl"))]
-        BackendChoice::OpenGl => Err(GalError::unsupported_feature(
-            "OpenGL backend support is disabled in this build",
-        )),
+        GraphicsBackend::OpenGl => Ok(Box::new(opengl::OpenGlBackend::new(label)?)),
         #[cfg(feature = "wgpu")]
-        BackendChoice::Wgpu => Ok(Box::new(self::wgpu::WgpuBackend::new(label)?)),
-        #[cfg(not(feature = "wgpu"))]
-        BackendChoice::Wgpu => Err(GalError::unsupported_feature(
-            "wgpu backend support is disabled in this build",
-        )),
+        GraphicsBackend::Wgpu(api) => Ok(Box::new(self::wgpu::WgpuBackend::new(label, api)?)),
+        other => Err(GalError::unsupported_feature(format!(
+            "{other} support is not compiled into this build"
+        ))),
     }
 }
 
@@ -184,11 +178,12 @@ pub(crate) fn create_owned_windowed_wgpu_backend<
     W: raw_window_handle::HasDisplayHandle + raw_window_handle::HasWindowHandle + 'static,
 >(
     label: &str,
+    api: WgpuApi,
     window: std::sync::Arc<W>,
     surface: FrameSurfaceDesc,
 ) -> GalResult<Box<dyn Backend>> {
     Ok(Box::new(self::wgpu::WgpuBackend::new_owned_window(
-        label, window, surface,
+        label, api, window, surface,
     )?))
 }
 
@@ -197,6 +192,7 @@ pub(crate) fn create_owned_windowed_wgpu_backend<
 #[cfg(feature = "wgpu")]
 pub(crate) unsafe fn create_native_windowed_wgpu_backend(
     label: &str,
+    api: WgpuApi,
     platform: u32,
     native_display: u64,
     native_window: u64,
@@ -205,6 +201,7 @@ pub(crate) unsafe fn create_native_windowed_wgpu_backend(
     Ok(Box::new(unsafe {
         self::wgpu::WgpuBackend::new_native_windowed(
             label,
+            api,
             platform,
             native_display,
             native_window,
@@ -263,6 +260,14 @@ pub(super) enum BackendCreateDesc<'a> {
 
 pub(super) trait Backend {
     fn capabilities(&self) -> BackendCapabilities;
+    /// The concrete backend running (never `Auto`).
+    fn selected_backend(&self) -> GraphicsBackend {
+        GraphicsBackend::Auto
+    }
+    /// The device and driver, as the native API reports them.
+    fn device_info(&self) -> DeviceInfo {
+        DeviceInfo::default()
+    }
     fn create(&mut self, handle: Handle, desc: BackendCreateDesc<'_>) -> GalResult<BackendToken>;
     fn destroy(&mut self, handle: Handle, kind: HandleKind, token: BackendToken) -> GalResult<()>;
     fn encode_passes(&mut self, batch: &ValidatedSubmissionBatch) -> GalResult<()>;

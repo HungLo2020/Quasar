@@ -44,7 +44,10 @@ pub use commands::{
     CommandListDesc, CommandOp, PassAttachment, ResourceBarrier, SubmissionBatch, TextureOrigin3d,
     TextureUsageState,
 };
-pub use create::{set_gpu_timestamps_requested, BackendChoice, NativeWindow};
+pub use create::{
+    set_gpu_timestamps_requested, BackendChoice, BackendInfo, DeviceInfo, DeviceKind, GalOptions,
+    GraphicsBackend, NativeWindow, SelectionNote, WgpuApi,
+};
 pub use error::{GalError, GalResult, StatusCode};
 pub use frame::{
     AcquiredFrame, FrameAcquireDesc, FrameAcquireStatus, FrameCorrelationId, FrameId,

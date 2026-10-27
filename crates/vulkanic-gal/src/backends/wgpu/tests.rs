@@ -17,7 +17,7 @@ fn require_gpu() -> bool {
 }
 
 fn wgpu_gal(label: &str) -> Option<VulkanicGal> {
-    match WgpuBackend::new(label) {
+    match WgpuBackend::new(label, crate::create::WgpuApi::Auto) {
         Ok(backend) => {
             eprintln!("wgpu adapter: {}", backend.adapter_name_for_test());
             Some(VulkanicGal::new_with_backend(Box::new(backend)))
