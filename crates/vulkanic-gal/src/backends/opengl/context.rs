@@ -76,7 +76,6 @@ const GLX_DOUBLEBUFFER: c_int = 5;
 const GLX_RED_SIZE: c_int = 8;
 const GLX_GREEN_SIZE: c_int = 9;
 const GLX_BLUE_SIZE: c_int = 10;
-const GLX_ALPHA_SIZE: c_int = 11;
 const GLX_DEPTH_SIZE: c_int = 12;
 const GLX_DRAWABLE_TYPE: c_int = 0x8010;
 const GLX_RENDER_TYPE: c_int = 0x8011;
@@ -1431,8 +1430,6 @@ impl GlxContextState {
             GLX_GREEN_SIZE,
             8,
             GLX_BLUE_SIZE,
-            8,
-            GLX_ALPHA_SIZE,
             8,
             GLX_DEPTH_SIZE,
             24,
