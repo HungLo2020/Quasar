@@ -563,8 +563,14 @@ impl VulkanicGal {
                     }
                     // A write-after-write/read dependency is meaningful even
                     // when the resource keeps its layout and semantic usage.
-                    // Read-only same-usage barriers still describe no work.
+                    // Read-only same-usage barriers still describe no work,
+                    // except texture `TransferSrc`: `GenerateMipmaps` writes
+                    // its levels and leaves them there, so copying them out
+                    // needs a dependency in that state.
+                    let mip_output = barrier.before == TextureUsageState::TransferSrc
+                        && barrier.resource.kind() == Some(HandleKind::Texture);
                     if barrier.before == barrier.after
+                        && !mip_output
                         && !matches!(
                             barrier.before,
                             TextureUsageState::ShaderWrite

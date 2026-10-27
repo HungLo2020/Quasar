@@ -205,7 +205,15 @@ impl<'a> Kit<'a> {
             })
             .expect("texture");
         self.own(texture);
-        let view = self.view(texture, format, 0, mips);
+        // Copy-only textures cannot have views; the null handle is unused.
+        let viewable = usages
+            .iter()
+            .any(|usage| !matches!(usage, TextureUsage::TransferSrc | TextureUsage::TransferDst));
+        let view = if viewable {
+            self.view(texture, format, 0, mips)
+        } else {
+            Handle::from_raw(0)
+        };
         (texture, view)
     }
 
@@ -1148,11 +1156,13 @@ fn wgpu_generates_mipmaps_like_vulkan() {
                 texture,
                 subresources: whole,
             },
+            // Mip generation leaves its whole range in TransferSrc; the
+            // barrier orders its writes before the copies read them.
             mip_barrier(
                 texture,
                 1,
                 2,
-                TextureUsageState::TransferDst,
+                TextureUsageState::TransferSrc,
                 TextureUsageState::TransferSrc,
             ),
             CommandOp::CopyTextureToBuffer(level(1, 0, 2)),

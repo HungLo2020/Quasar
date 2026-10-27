@@ -447,8 +447,10 @@ pub enum CommandOp {
         extent: Extent3d,
     },
     /// Generates the descendant mip levels in one explicit texture range.
-    /// The first level is the source; every following level is written by the
-    /// operation. Backends choose their native implementation privately.
+    /// The first level is the source (in `TransferSrc`); every following
+    /// level is written by the operation (from `TransferDst`). Afterwards the
+    /// whole range is in `TransferSrc`. Backends choose their native
+    /// implementation privately.
     GenerateMipmaps {
         /// The texture.
         texture: Handle,

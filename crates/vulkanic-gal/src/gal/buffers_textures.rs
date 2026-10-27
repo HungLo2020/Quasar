@@ -247,15 +247,34 @@ impl VulkanicGal {
     /// Creates a view of a texture's mip and layer range. Views keep the
     /// texture's format; 3D views address the single 3D layer.
     pub fn create_texture_view(&mut self, desc: TextureViewDesc) -> GalResult<Handle> {
-        let (texture_dimension, texture_mip_levels, texture_array_layers, texture_format) = {
+        let (texture_dimension, texture_mip_levels, texture_array_layers, texture_format, viewable) = {
             let texture = self.textures.get(desc.texture)?;
+            // Copies address textures directly; only these usages read or
+            // write through a view.
+            let viewable = texture.desc.usages.iter().any(|usage| {
+                matches!(
+                    usage,
+                    TextureUsage::Sampled
+                        | TextureUsage::Storage
+                        | TextureUsage::ColorAttachment
+                        | TextureUsage::DepthStencilAttachment
+                        | TextureUsage::Present
+                )
+            });
             (
                 texture.desc.dimension,
                 texture.desc.mip_levels,
                 texture.desc.array_layers,
                 texture.desc.format,
+                viewable,
             )
         };
+        if !viewable {
+            return self.validation_error(GalError::resource(
+                StatusCode::InvalidArgument,
+                "texture view requires a sampled, storage, attachment or present usage",
+            ));
+        }
         let Some(mip_end) = desc.base_mip.checked_add(desc.mip_count) else {
             return self.validation_error(GalError::resource(
                 StatusCode::InvalidArgument,
