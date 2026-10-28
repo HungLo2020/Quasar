@@ -10,7 +10,7 @@
 8. a GUI should be available and actually useful for development, think godot, unity style editor. this gui AND the engine should not OWN the project, ie the project should be buildable and runnable without having to use an engine or gui specific run or test command.
 9. it should support 2d and 3d games
 10. Games should follow my https://github.com/HungLo2020/Basalt repo's STANDARDS.md format for games.
-11. the engine GUI Editor itself should be built with QT and KDE style frameworks.
+11. The optional engine editor and visual tilemap tools should be built with Quasar's own shared `quasar-ui`, windowing, input and rendering infrastructure. Games and tools should use the same public reusable widgets, with GPU rendering composed on one caller-owned VulkanicGAL device/frame. Do not introduce Qt, KDE widgets, Kirigami, GTK or a separate editor UI framework. Essential editor operations must also be available through public Rust APIs and CLI/headless workflows.
 12. the engine should be cross platform. linux windows and macos. x86-64, arm64, and riscv64
 13. VulkanicGAL should be a low level crate for supporting different rendering backends, Vulkan, OpenGL, Metal, DirectX etc. not a high level Renderer
 14. Higher level rendering crates should handle high level functionality. HungLo2020/MattMC BlackOps Jackal MicroMages MissileCommand are all games i want to use Quasars rendering and engine functionality eventually

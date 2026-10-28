@@ -90,3 +90,9 @@ cargo run -p starfall -- --help
 - The common parser is intentionally not a full subcommand framework.
 - Environment parsing is heuristic and typed getters remain authoritative.
 - Unknown file keys are preserved in memory but not written back automatically.
+- The server example currently installs its game-specific `--bind`,
+  `--max-players` and `--tick-rate` arguments as defaults before loading a file.
+  File values therefore override those explicit arguments. Consumers should
+  install defaults, load files, then apply explicit game CLI values with
+  `set_cli`, followed by `CommonArgs::apply_overrides`. The example still needs
+  that correction; the library's precedence handling is already available.

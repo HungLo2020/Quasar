@@ -1,9 +1,10 @@
 # Graphics profiling
 
-Issue #18 is implemented by the independently usable `quasar-profile` crate and
-the shared GAL/frame measurements already exposed by VulkanicGAL and
-`quasar-frame`. It does not require a custom build system, editor or GPU-specific
-CI claim.
+The measurement foundation of issue #18 is implemented by the independently
+usable `quasar-profile` crate and the shared GAL/frame measurements exposed by
+VulkanicGAL and `quasar-frame`. Live benchmark integration with configured
+regression thresholds remains outstanding. Profiling does not require a custom
+build system or editor.
 
 ## Pipeline
 
@@ -53,10 +54,16 @@ same device/driver and compare distributions, not absolute numbers across hosts.
   ignored Vulkan render test (`.png` headless screenshot is also supported).
 - Starfall tests assert non-uniform 3D+HUD pixels, >10 draws, exact replay and
   deterministic state hashes.
-- Native X11/Vulkan CI exercises composition, Pong, tilemap, `quasar-app` and
-  Starfall render/benchmark paths when the software Vulkan job is available.
-- Thresholds are opt-in. CI does not claim GPU performance from compile-only
-  runs or compare thresholds across different GPUs/drivers.
+- The current GitHub workflow runs formatting and the ordinary workspace tests
+  on Linux, plus selected compile checks on Windows/macOS. It does not run the
+  ignored GPU tests or native rendering/benchmark matrix. Those checks are
+  available locally through `tools/full_checks.py` or individual test commands.
+- `ProfileThresholds::check` is opt-in and currently exercised only by unit
+  tests. Live benchmarks emit measurements without applying those limits. The
+  stored composition fixture test checks metric shape and statistical
+  consistency, not a new run's performance against the historical artifact.
+- CI does not claim GPU performance from compile-only runs or compare
+  thresholds across different GPUs/drivers.
 
 ## Sample measurements
 
@@ -83,7 +90,7 @@ CPU frame as a GPU benchmark.
 Single-host observations. Acquire/present variation reflects swapchain and
 compositor behavior, not simulation time.
 
-## Acceptance criteria
+## Implemented coverage
 
 - Independent profiling crate, no mandatory runner/renderer/GPU ownership.
 - CPU frame, GPU frame when supported, scope, upload, resource, draw and

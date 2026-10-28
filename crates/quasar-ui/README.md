@@ -1,9 +1,17 @@
 # quasar-ui
 
-Renderer-independent in-game UI: main menus, pause screens, options dialogs,
-HUD widgets, modal confirmations and overlays. It addresses Quasar issue #43
-without requiring a Quasar app runner, ECS, editor, Qt or one specific
-renderer.
+Renderer-independent retained UI shared by games, development tools and the
+future optional Quasar editor. The current controls support main menus, pause
+screens, options dialogs, HUD widgets, modal confirmations and overlays.
+Games can use it independently, without requiring a Quasar app runner, ECS,
+editor or one specific renderer.
+
+The editor and visual tilemap tools will use these same public widgets and
+Quasar's window/input/rendering infrastructure on one caller-owned VulkanicGAL
+device/frame, without Qt/KDE/GTK or a separate editor UI framework. General
+controls belong in `quasar-ui`; editor-specific workflows belong in the
+optional tools. Docking, trees/tables/inspectors and live embedded viewports
+are planned, not implemented. See the [shared UI architecture and roadmap](../../docs/ui.md).
 
 `quasar-ui` owns a retained widget tree, layout, focus, modal scopes,
 interaction state, text editing and caller-defined actions. It owns no window,
@@ -22,7 +30,7 @@ cargo test -p quasar-ui --features input,config
 | Feature | Default | Adds | Effect |
 |---|---|---|---|
 | *(none)* | yes | — | Core widget tree, layout, focus, events, themes. No graphics or input crates. |
-| `input` | no | `quasar-input` | `UiBindings` and `from_input_state` adapters. |
+| `input` | no | `quasar-input` | `UiBindings`, preferred `from_frame_input`, and `from_input_state` adapters. |
 | `render2d` | no | `quasar-render-2d` | `UiRenderer` painter and `BitmapTextMeasure`. |
 | `config` | no | `quasar-config` | `config_to_value` / `value_to_config` bridges. |
 | `serde` | no | `serde` | `Theme` serialization. |
@@ -96,7 +104,7 @@ game semantics.
 |---|---|---|
 | `Panel` | Stack/grid/absolute container, padding, clipping, scrolling | no |
 | `Label` | Literal or localized text with `Body`/`Heading`/`Small`/`Dim` style | no |
-| `Button` | Press action | yes |
+| `Button` | Keyboard activation or pointer release over original target | yes |
 | `Slider` | Bounded, stepped float value | yes |
 | `Checkbox` | Boolean toggle | yes |
 | `Select` | One-of-many option list | yes |
@@ -137,9 +145,17 @@ physical pixels: `update` takes a viewport `Rect`, a DPI `scale` and safe-area
 - Rebinding uses `begin_rebind`, `finish_rebind` and `cancel_rebind`; while
   capturing, navigation and gameplay bindings are isolated and the game decides
   how to turn the captured event into a binding string.
-- Navigation: `next`/`previous` cycle focus order; `up`/`down`/`left`/`right`
-  move within stacks, grids and sliders; `activate` presses; `cancel` bubbles a
-  `Cancelled` event and releases focus/modal state.
+- Navigation: `next`/`previous` cycle focus order. `up`/`down` change a focused
+  list/select/tab selection or otherwise cycle focus. `left`/`right` adjust
+  sliders/selects/tabs or move the text caret. Spatial grid navigation is not
+  implemented. `activate` activates the focused control; `cancel` emits
+  `Cancelled` and clears text-field focus when applicable. The caller owns
+  page and modal dismissal.
+- Focus feedback changes immediately. Keyboard/controller navigation suppresses
+  stationary-pointer hover until the mouse moves again. Hover follows menu
+  choices without stealing text editing focus. Buttons activate on release
+  over the original target, allowing drag-away cancellation; tabs select the
+  clicked tab.
 
 ### Text editing
 
@@ -164,8 +180,9 @@ existing widget API. `UiRenderer::prepare_text` uploads only changed atlas pages
 Every colour, size, row height, padding, gap, border and focus width is a public
 field; games can build their own `Theme`. `Theme::contrast_ratio` implements the
 WCAG 2.x relative-luminance formula for auditing foreground/background pairs.
-Widgets expose hover, focus and press transition state (`WidgetState`) so
-keyboard users get the same visible focus as mouse users. Labels are literal or
+Widgets expose hover and press transition amounts and immediate focus state
+(`WidgetState::focus_t` switches between 0 and 1), so keyboard users get visible
+focus as mouse users do. Labels are literal or
 localized text; no widget depends on colour alone to convey state.
 
 ## Rendering
@@ -209,6 +226,7 @@ claim. Layout is O(nodes) per update and allocates only event/measure buffers.
 |---|---|
 | `tests/layout.rs` | Stack/grid/absolute layout, DPI and safe area, scrolling/clipping, mouse and keyboard actions, sliders/checkboxes/lists/text fields, modal focus trapping and rebinding isolation, localization and contrast |
 | `tests/integration.rs` | `quasar-input` adapter, config value round-trip, bounded interaction sequences |
+| `tests/interaction.rs` | Immediate focus, mouse/keyboard switching, release/cancel behavior, hidden/disabled targets, tab hit testing, text focus and consumed-frame stationary clicks/slider drags |
 | `tests/text.rs` | Styled/fallback shaping, caret-to-hit consistency, grapheme editing, selection, scrolling and IME preedit |
 | `src/render2d.rs` tests | Slider value precision derived from the configured step |
 | `tests/render.rs` | Vulkan offscreen bitmap/shaped text, 2× DPI, clipping, resizing, atlas reuse and resource balance (ignored without a Vulkan device) |
@@ -233,7 +251,7 @@ claim. Layout is O(nodes) per update and allocates only event/measure buffers.
   supports wrapping/bidi, but current labels use natural single-line layout
   unless they contain explicit `\n`. Long text is the caller's responsibility to
   truncate or clip.
-- No animations beyond hover/focus/press transitions and no tween/timeline
+- No animations beyond hover/press transitions and no tween/timeline
   integration.
 - No built-in persistence, validation or translation loading; `config` only
   bridges values. Games own schema, validation and file format (both demos use
@@ -241,4 +259,6 @@ claim. Layout is O(nodes) per update and allocates only event/measure buffers.
 - No accessibility tree or screen-reader bridge; contrast and focus visibility
   are provided as primitives.
 - No virtualized list recycling; `List` draws all items.
+- Docking, split panes, trees, tables, property inspectors, clipboard integration
+  and live embedded viewport widgets remain planned shared-UI extensions.
 - No multi-window support: one `Ui` targets one viewport.

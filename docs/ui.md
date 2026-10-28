@@ -1,9 +1,36 @@
-# In-game UI architecture
+# Shared UI architecture
 
-`quasar-ui` addresses Quasar issue **#43**. It is an optional, independently
-consumable retained-UI layer for main menus, pause screens, settings dialogs,
-HUD widgets, modal confirmations and overlays. It is in-game UI, not the future
-Qt/KDE development editor.
+`quasar-ui` is the independently consumable retained UI foundation for games,
+development tools and the future optional Quasar editor. Its implemented
+controls support main menus, pause screens, settings dialogs, HUD widgets,
+modal confirmations and overlays. This delivers the game UI foundation of
+[#43](https://github.com/HungLo2020/Quasar/issues/43); the issue's expanded
+game/editor UI contract is not complete yet.
+
+## Shared game and editor UI
+
+The optional editor and visual tilemap tools will use `quasar-ui`,
+`quasar-window`, `quasar-input`, optional `quasar-app`, and Quasar renderers
+composed on one caller-owned VulkanicGAL device/frame. They use the same public
+widgets as ordinary games, without Qt, KDE widgets, Kirigami, GTK or a separate
+editor UI framework. Reusable controls belong in `quasar-ui`; editor-specific
+document/workspace coordination belongs in the optional editor application.
+
+The remaining work is tracked separately:
+
+- [#44](https://github.com/HungLo2020/Quasar/issues/44): reusable docking,
+  split panes, trees, tables, inspectors and related general-purpose controls.
+- [#45](https://github.com/HungLo2020/Quasar/issues/45): live embedded 2D/3D
+  viewports with shared GAL targets, input mapping and resource lifetimes.
+- [#46](https://github.com/HungLo2020/Quasar/issues/46): optional editor shell.
+- [#20](https://github.com/HungLo2020/Quasar/issues/20): visual tilemap editor.
+
+These tools and advanced controls are planned, not shipped. Essential editing
+operations must also be exposed through public Rust APIs and CLI/headless
+workflows. Games keep their own world model, ordinary Cargo commands and the
+choice of which Quasar crates to adopt.
+
+## Current ownership
 
 The crate owns UI state and layout. It owns no window, GPU device, swapchain,
 ECS or scene graph, and it never submits GPU work itself. A game builds a widget
@@ -93,7 +120,7 @@ as a vertical/horizontal stack, a fixed-column grid or absolute positioning.
 |---|---|---|
 | `Panel` | Stack/grid/absolute container; padding, clip, scroll | no |
 | `Label` | Literal/localized text; `Body`/`Heading`/`Small`/`Dim` | no |
-| `Button` | Press → `Pressed(ActionId)` | yes |
+| `Button` | Keyboard activation or pointer release over original target → `Pressed(ActionId)` | yes |
 | `Slider` | Bounded/stepped float; drag and arrow keys → `Changed` | yes |
 | `Checkbox` | Boolean toggle → `Changed(Bool)` | yes |
 | `Select` | One-of-many list → `Changed(UInt)` | yes |
@@ -117,9 +144,12 @@ geometry.
 - The first focusable node is focused automatically on the first update unless
   `focus` or `set_modal` already set the target. This fixed the "Enter does
   nothing on first launch" class of bug in the demos.
-- `next`/`previous` cycle the focus order; `up`/`down`/`left`/`right` move within
-  stacks, grids and sliders; `activate` presses; `cancel` bubbles a `Cancelled`
-  event and releases focus/modal state.
+- `next`/`previous` cycle the focus order. `up`/`down` change a focused
+  list/select/tab selection or otherwise cycle focus. `left`/`right` adjust
+  sliders/selects/tabs or move the text caret. Spatial navigation through grids
+  is not implemented. `activate` activates the focused control; `cancel` emits
+  `Cancelled` and clears text-field focus when applicable. The caller owns
+  page and modal dismissal.
 - Selection feedback changes in the same update as navigation, without fading
   the previous focus border. Mouse movement selects hovered menu controls;
   keyboard/controller navigation suppresses hover until the mouse moves again.
@@ -197,7 +227,7 @@ shared 2D canvas between the game pass and presentation.
 | Feature | Default | Adds |
 |---|---|---|
 | *(none)* | yes | Core tree, layout, focus, events, themes |
-| `input` | no | `UiBindings`, `from_input_state` |
+| `input` | no | `UiBindings`, `from_frame_input`, `from_input_state` |
 | `render2d` | no | `UiRenderer`, `BitmapTextMeasure` |
 | `config` | no | `config_to_value`, `value_to_config` |
 | `serde` | no | `Theme` serialization |
@@ -234,6 +264,10 @@ measurable rather than anecdotal.
   contrast.
 - 3 integration tests: `quasar-input` adapter, config value round-trip, bounded
   interaction sequences.
+- 6 interaction regression tests (the frame-input case requires `input`):
+  immediate selection, mouse/keyboard switching, release activation and click
+  cancellation, hidden/disabled targets, tab hit testing, preserved text focus,
+  and stationary clicks/slider drags across consumed menu frames.
 - 3 shaped-text tests: styled measurement/fallback, editing/caret/scroll and
   IME preedit.
 - 1 `render2d` unit test: slider value precision follows its step.
@@ -253,12 +287,15 @@ measurable rather than anecdotal.
   is the caller's responsibility; the shaped `quasar-text` path supports
   wrapping, alignment and bidi, but current widget labels use natural single-line
   layout unless they contain explicit `\n`.
-- No animation beyond hover/focus/press transitions and no tween/timeline
+- No animation beyond hover/press transitions and no tween/timeline
   integration.
 - No persistence/validation/translation loading. `config` only bridges values;
   both demos own their TOML schema.
 - No accessibility tree or screen-reader bridge.
 - No virtualized list recycling; `List` draws all items.
+- No docking, split panes, trees, tables, property inspectors, clipboard
+  adapter or live embedded viewport widget yet; these extend the same shared
+  UI foundation rather than a separate editor toolkit.
 - One `Ui` targets one viewport; multi-window is not modelled.
 - Audits are read-only and cover MicroMages, Jackal, MissileCommand and MattMC.
   BlackOps was unavailable locally and was not inspected.

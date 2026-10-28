@@ -96,9 +96,18 @@ and timeline semaphores. macOS additionally needs a compatible Vulkan
 portability driver; distribution of that runtime is future work. x86-64 is the
 verified architecture; arm64 and riscv64 remain unverified targets.
 
-There is no editor yet. The working interpretation of [requirements](REQUIREMENTS.md)
-is that a future optional editor uses Qt/KDE frameworks; standalone game windows
-use Rust/winit. Controller support is available through `quasar-input`'s optional
+There is no editor yet. The [requirements](REQUIREMENTS.md) call for an optional
+native Rust editor built with the shared `quasar-ui`, Quasar window/input layers
+and Quasar renderers on one caller-owned VulkanicGAL device/frame. Games and
+tools use the same public widgets; reusable controls belong in `quasar-ui`.
+The editor and tilemap tools will expose essential operations through public
+Rust APIs and CLI/headless workflows as well as their UI. They remain optional
+ordinary Cargo applications, with no Qt/KDE/GTK toolkit dependency. Advanced
+widgets, embedded viewports and the editor shell are planned in issues
+[#44](https://github.com/HungLo2020/Quasar/issues/44),
+[#45](https://github.com/HungLo2020/Quasar/issues/45) and
+[#46](https://github.com/HungLo2020/Quasar/issues/46).
+Controller support is available through `quasar-input`'s optional
 `gilrs` backend and pure event API; advanced 3D rendering and an editor remain
 future additions. Audio is provided by `quasar-audio`; see
 [the audio audit and feature matrix](docs/audio-audit.md) and
