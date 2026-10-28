@@ -10,7 +10,8 @@ use std::collections::{HashMap, HashSet};
 /// Consumption requests recorded by one or more input consumers.
 ///
 /// The runner applies these to the underlying [`InputState`] after all frame
-/// callbacks. A consumed action or button is not retried on the next frame.
+/// callbacks. Consumed edges are not retried on the next frame. Device positions and held
+/// values remain authoritative until a native transition changes them.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ConsumedInput {
     pub all: bool,
@@ -348,7 +349,6 @@ impl FrameInput {
 
     pub fn apply_consumption(&self, state: &mut InputState) {
         if self.consumed.all {
-            state.release_all();
             state.consume_edges();
             return;
         }
@@ -356,19 +356,14 @@ impl FrameInput {
             if let Some(current) = state.actions.get_mut(action) {
                 current.pressed = false;
                 current.released = false;
-                current.value = 0.0;
             }
         }
         for button in &self.consumed.buttons {
-            state.held.remove(button);
             state.pressed.remove(button);
             state.released.remove(button);
         }
         if self.consumed.text {
             state.text.clear();
-        }
-        if self.consumed.pointer {
-            state.cursor_physical = None;
         }
         if self.consumed.relative_motion {
             state.relative_motion = (0.0, 0.0);

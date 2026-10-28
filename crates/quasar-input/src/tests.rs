@@ -539,8 +539,10 @@ fn frame_consumption_is_visible_to_the_next_frame_and_respects_all() {
     frame.consume_all();
     frame.apply_consumption(&mut input);
     let after = input.frame(4);
-    assert!(!after.mouse_held(MouseButton::Left));
-    assert_eq!(after.action("ui_activate").value, 0.0);
+    assert!(after.mouse_held(MouseButton::Left));
+    assert!(!after.mouse_pressed(MouseButton::Left));
+    assert_eq!(after.action("ui_activate").value, 1.0);
+    assert!(!after.action("ui_activate").pressed);
 }
 
 #[test]
@@ -555,4 +557,45 @@ fn focus_loss_releases_held_actions_in_the_next_frame() {
     assert!(!frame.held(Key::KeyW));
     assert!(frame.released(Key::KeyW));
     assert!(!frame.action("move").pressed);
+}
+
+#[test]
+fn pointer_consumption_preserves_position_and_holds_until_native_release() {
+    let mut input = InputState {
+        cursor_physical: Some((12.0, 34.0)),
+        ..InputState::default()
+    };
+    input.mouse_button(MouseButton::Left, true);
+    let mut frame = input.frame(1);
+    assert!(frame.consume_pointer());
+    assert_eq!(frame.cursor_physical(), None);
+    assert!(!frame.mouse_held(MouseButton::Left));
+    frame.apply_consumption(&mut input);
+    let next = input.frame(2);
+    assert_eq!(next.cursor_physical(), Some((12.0, 34.0)));
+    assert!(next.mouse_held(MouseButton::Left));
+    assert!(!next.mouse_pressed(MouseButton::Left));
+    input.mouse_button(MouseButton::Left, false);
+    assert!(input.frame(3).mouse_released(MouseButton::Left));
+}
+
+#[test]
+fn keyboard_consumption_does_not_retrigger_a_held_action() {
+    let mut bindings = Bindings::default();
+    bindings.bind("move", Binding::key(Key::KeyW));
+    let mut input = InputState::default();
+    input.set_bindings(bindings).unwrap();
+    input.key(Key::KeyW, true);
+    let mut frame = input.frame(1);
+    assert!(frame.consume_keyboard());
+    assert!(!frame.held(Key::KeyW));
+    frame.apply_consumption(&mut input);
+    // An unrelated native transition reevaluates bindings.
+    input.key(Key::KeyA, true);
+    let next = input.frame(2);
+    assert!(next.held(Key::KeyW));
+    assert_eq!(next.action("move").value, 1.0);
+    assert!(!next.action("move").pressed);
+    input.key(Key::KeyW, false);
+    assert!(input.frame(3).action("move").released);
 }

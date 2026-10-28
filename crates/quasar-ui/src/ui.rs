@@ -78,6 +78,8 @@ pub struct Ui {
     focus_initialized: bool,
     modal: Option<NodeId>,
     pointer_capture: Option<NodeId>,
+    last_pointer: Option<Vec2>,
+    pointer_active: bool,
     slider_drag: Option<NodeId>,
     text_drag: Option<NodeId>,
     capturing: Option<(NodeId, String)>,
@@ -99,6 +101,8 @@ impl Ui {
             focus_initialized: false,
             modal: None,
             pointer_capture: None,
+            last_pointer: None,
+            pointer_active: false,
             slider_drag: None,
             text_drag: None,
             capturing: None,
@@ -424,12 +428,12 @@ impl Ui {
         measure: &dyn TextMeasure,
         dt: f32,
     ) -> UiFrame {
+        let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
         self.layout(viewport, scale, safe_area, measure);
         let mut frame = UiFrame {
             focus: self.focus,
             ..UiFrame::default()
         };
-        self.animate(dt);
 
         if self.capturing.is_some() {
             frame.consumed = true;
@@ -443,6 +447,7 @@ impl Ui {
                 frame.events.push(UiEvent::Cancelled);
             }
             frame.focus = self.focus;
+            self.animate(dt);
             return frame;
         }
 
@@ -475,9 +480,68 @@ impl Ui {
             }
         }
 
-        let hovered = input
+        // A stationary pointer must not reclaim selection after keyboard navigation.
+        let pointer_moved = input.pointer.is_some() && input.pointer != self.last_pointer;
+        self.last_pointer = input.pointer;
+        if pointer_moved || input.primary_pressed || input.scroll != Vec2::ZERO {
+            self.pointer_active = true;
+        }
+        if input.next
+            || input.previous
+            || input.up
+            || input.down
+            || input.left
+            || input.right
+            || input.activate
+            || input.cancel
+            || !input.text.is_empty()
+            || input.backspace
+            || input.delete
+            || input.home
+            || input.end
+            || input.select_all
+        {
+            self.pointer_active = false;
+        }
+        let hit = input
             .pointer
             .and_then(|pointer| self.interactive_at(pointer));
+        let hovered = if self.pointer_active { hit } else { None };
+        // Hover follows menu choices, but text fields acquire focus only on click,
+        // and moving the mouse while typing must not steal editing focus.
+        let editing = self.focus.is_some_and(|id| {
+            self.nodes
+                .get(&id)
+                .is_some_and(|node| matches!(node.widget, Widget::TextInput { .. }))
+        });
+        if pointer_moved
+            && self.pointer_active
+            && !editing
+            && let Some(id) = hovered
+            && !matches!(self.nodes[&id].widget, Widget::TextInput { .. })
+        {
+            self.set_focus_internal(Some(id), &mut frame);
+        }
+        if self.pointer_capture.is_some_and(|id| {
+            !self.focus_order.contains(&id)
+                || self
+                    .modal
+                    .is_some_and(|modal| !self.is_descendant_or_self(id, modal))
+        }) || (!input.primary_down && !input.primary_pressed && !input.primary_released)
+        {
+            self.pointer_capture = None;
+            self.slider_drag = None;
+            self.text_drag = None;
+        }
+        for node in self.nodes.values_mut() {
+            node.state.pressed = self.pointer_capture == Some(node.id)
+                && (input.primary_down || input.primary_pressed)
+                && (hit == Some(node.id) || !matches!(node.widget, Widget::Button { .. }));
+        }
+        if self.pointer_capture.is_some() {
+            frame.consumed = true;
+            frame.consumed_pointer = true;
+        }
         for node in self.nodes.values_mut() {
             node.state.hovered = hovered == Some(node.id);
             if !node.state.hovered {
@@ -509,7 +573,9 @@ impl Ui {
                 {
                     self.set_focus_internal(Some(id), &mut frame);
                 }
-                self.press(id, pointer, input.shift, measure, &mut frame);
+                if !matches!(self.nodes[&id].widget, Widget::Button { .. }) {
+                    self.press(id, pointer, input.shift, measure, &mut frame);
+                }
                 frame.consumed = true;
                 frame.consumed_pointer = true;
             }
@@ -535,6 +601,12 @@ impl Ui {
         }
 
         if input.primary_released {
+            if let Some(id) = self.pointer_capture
+                && hit == Some(id)
+                && matches!(self.nodes[&id].widget, Widget::Button { .. })
+            {
+                self.activate(id, &mut frame);
+            }
             self.pointer_capture = None;
             self.slider_drag = None;
             self.text_drag = None;
@@ -650,18 +722,25 @@ impl Ui {
         }
 
         frame.focus = self.focus;
+        self.animate(dt);
         frame
     }
 
     fn animate(&mut self, dt: f32) {
+        let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
         let rate = (dt * self.theme.transition_rate).clamp(0.0, 1.0);
         for node in self.nodes.values_mut() {
-            let focus_target = if self.focus == Some(node.id) {
+            let focus_target = if self.focus == Some(node.id)
+                && (!self.pointer_active
+                    || node.state.hovered
+                    || matches!(node.widget, Widget::TextInput { .. }))
+            {
                 1.0
             } else {
                 0.0
             };
-            node.state.focus_t += (focus_target - node.state.focus_t) * rate;
+            // Focus communicates the current selection and must change this frame.
+            node.state.focus_t = focus_target;
             let press_target = if node.state.pressed { 1.0 } else { 0.0 };
             node.state.press_t += (press_target - node.state.press_t) * rate;
         }
@@ -799,8 +878,36 @@ impl Ui {
                 self.slider_drag = Some(id);
                 self.drag_slider(id, pointer, frame);
             }
-            Some(Widget::Select { .. } | Widget::Tabs { .. }) => {
+            Some(Widget::Select { .. }) => {
                 self.adjust_selection(id, 1, frame);
+            }
+            Some(Widget::Tabs {
+                tabs,
+                selected,
+                action,
+            }) => {
+                if !tabs.is_empty()
+                    && let Some(entry) = self.layout.iter().find(|entry| entry.id == id)
+                {
+                    let index = (((pointer.x - entry.rect.x) / entry.rect.width)
+                        * tabs.len() as f32)
+                        .floor() as usize;
+                    let index = index.min(tabs.len() - 1);
+                    if index != selected {
+                        if let Widget::Tabs { selected, .. } =
+                            &mut self.nodes.get_mut(&id).unwrap().widget
+                        {
+                            *selected = index;
+                        }
+                        frame.events.push(UiEvent::Changed {
+                            id,
+                            value: UiValue::UInt(index as u32),
+                        });
+                        if let Some(action) = action {
+                            frame.events.push(UiEvent::Pressed(action));
+                        }
+                    }
+                }
             }
             Some(Widget::List {
                 items,

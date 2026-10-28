@@ -241,12 +241,21 @@ fn buttons_emit_actions_from_keyboard_and_mouse() {
         0.016,
     );
     assert!(frame.consumed_pointer);
-    assert!(
-        frame
-            .events
-            .iter()
-            .any(|event| *event == UiEvent::Pressed(ActionId::new(9)))
+    assert!(!frame.events.contains(&UiEvent::Pressed(ActionId::new(9))));
+    let frame = ui.update(
+        &UiInput {
+            pointer: Some(rect.center()),
+            primary_released: true,
+            ..UiInput::default()
+        },
+        Rect::new(0.0, 0.0, 300.0, 200.0),
+        1.0,
+        Edges::ZERO,
+        &MonospaceMeasure,
+        0.016,
     );
+    assert!(frame.consumed_pointer);
+    assert!(frame.events.contains(&UiEvent::Pressed(ActionId::new(9))));
 }
 
 #[test]

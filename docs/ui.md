@@ -120,6 +120,14 @@ geometry.
 - `next`/`previous` cycle the focus order; `up`/`down`/`left`/`right` move within
   stacks, grids and sliders; `activate` presses; `cancel` bubbles a `Cancelled`
   event and releases focus/modal state.
+- Selection feedback changes in the same update as navigation, without fading
+  the previous focus border. Mouse movement selects hovered menu controls;
+  keyboard/controller navigation suppresses hover until the mouse moves again.
+  Hover does not steal focus from a text field being edited, and text fields
+  acquire pointer focus on click.
+- Buttons activate on release over the button where the press began. Dragging
+  outside cancels the click; returning inside before release allows activation.
+  Tabs select the clicked tab directly.
 - Modal subtrees exclude outside nodes from focus order and interaction. This is
   the confirmation-dialog guarantee (quit/restart prompts cannot be bypassed by
   clicking the menu behind them).
@@ -128,6 +136,12 @@ geometry.
   UI actually claimed. A text field can consume typing while mouse look keeps
   working when the pointer was not consumed.
 - Pointer capture and slider drags survive movement outside the widget bounds.
+- `FrameInput` consumption masks input for the rest of that frame and clears
+  handled edges from the underlying input state. It preserves physical cursor
+  position, held buttons and action values for the next frame. Games must keep
+  consuming channels each frame while their UI owns them; focus loss remains a
+  separate device reset. This lets stationary clicks and held drags work even
+  when a menu calls `consume_all()` every frame.
 - Rebinding: `begin_rebind`, `finish_rebind`, `cancel_rebind`. While capturing,
   navigation/gameplay input is isolated and the game decides how the next event
   becomes a binding string. This mirrors MicroMages/Jackal rebind flows without
@@ -151,8 +165,9 @@ public field; games can build a custom theme without forking widgets.
 
 `Theme::contrast_ratio(foreground, background)` implements the WCAG 2.x
 relative-luminance formula (alpha ignored) so palettes can be audited. Widgets
-track `WidgetState { hovered, pressed, hover_t, focus_t, press_t }`, and focus is
-drawn with a distinct border, so keyboard users get visible focus equivalent to
+track `WidgetState { hovered, pressed, hover_t, focus_t, press_t }`. Hover and
+press amounts can animate; `focus_t` switches immediately between 0 and 1. Focus
+is drawn with a distinct border, so keyboard users get visible focus equivalent to
 mouse hover. Text is always literal or localized; no widget conveys state by
 colour alone. There is no accessibility tree/screen-reader bridge in this
 milestone; those primitives are provided rather than a platform integration.
