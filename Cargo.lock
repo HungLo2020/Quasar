@@ -1783,6 +1783,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightwatch"
+version = "0.2.16"
+dependencies = [
+ "quasar-app",
+ "quasar-audio",
+ "quasar-config",
+ "quasar-core",
+ "quasar-frame",
+ "quasar-input",
+ "quasar-nav",
+ "quasar-profile",
+ "quasar-render-2d",
+ "quasar-render-3d",
+ "quasar-window",
+ "vulkanic-gal",
+]
+
+[[package]]
 name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2813,6 +2831,8 @@ dependencies = [
 name = "quasar-render-3d"
 version = "0.2.16"
 dependencies = [
+ "quasar-frame",
+ "quasar-render-2d",
  "vulkanic-gal",
 ]
 

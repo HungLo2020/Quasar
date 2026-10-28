@@ -47,3 +47,49 @@ an owner without release leaves resources with GAL until GAL teardown.
 See [the runnable cube/HUD example](../../examples/composition/README.md) for
 mesh creation, shared textures, a 2D overlay, native surfaces, readback, cleanup,
 GPU tests and benchmark commands.
+
+## Opt-in per-pixel lighting
+
+`LitRenderState3D` adds a forward lighting/material path. `RenderState3D`,
+`Camera3D`, `Material`, `Draw3D` and the legacy shaders retain their existing API
+and output. Existing consumers do not allocate light buffers or adopt the new
+path unless they construct a lit renderer.
+
+```rust
+use quasar_render_3d::{
+    Attenuation, ColorSpace, Light, Lighting, LitCamera3D, LitDraw3D,
+    LitMaterial, LitRenderState3D, Mat4, PassOptions,
+};
+
+// `gal`, `target`, `mesh` and `texture_view` belong to the application.
+let mut renderer = LitRenderState3D::new(&mut gal, 64)?;
+let lights = [Light::Point {
+    position: [2.0, 3.0, 1.0], color: [1.0, 0.6, 0.2],
+    intensity: 2.0, range: 12.0, attenuation: Attenuation::Smooth,
+}];
+let prepared = renderer.prepare(
+    &mut gal, target,
+    LitCamera3D { view_projection, position: camera_position },
+    Lighting {
+        ambient: [0.03, 0.04, 0.06], lights: &lights,
+        output_color_space: ColorSpace::Linear,
+    },
+    &[LitDraw3D {
+        mesh: &mesh, model: Mat4::IDENTITY,
+        material: LitMaterial::textured(texture_view),
+    }],
+    PassOptions::default(),
+)?;
+// Order `prepared.commands` alongside 2D and custom GAL passes, then submit.
+```
+
+The input structs are plain Rust data and borrowed slices. They contain no
+entity/node IDs, scene storage, scheduler or application loop. A future ECS or
+scene adapter can extract these values from its own storage; an ordinary game
+can construct exactly the same values directly. The renderer owns its caches
+and upload slots, while applications own meshes, sampled views, targets and GAL.
+
+See [3D lighting architecture](../../docs/lighting-3d.md) for shader extension,
+color space, bounded resources, depth transitions, validation and the staged
+capability matrix. [Nightwatch](../../examples/nightwatch/README.md) demonstrates
+lit world/weapon passes, direct GAL barriers and a 2D HUD on one device/frame.

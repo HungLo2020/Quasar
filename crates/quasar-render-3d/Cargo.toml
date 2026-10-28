@@ -14,3 +14,7 @@ wgpu = ["vulkanic-gal/wgpu"]
 
 [dependencies]
 vulkanic-gal = { workspace = true }
+
+[dev-dependencies]
+quasar-frame = { workspace = true, features = ["vulkan"] }
+quasar-render-2d = { workspace = true, features = ["gpu", "vulkan"] }

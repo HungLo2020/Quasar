@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "examples/pong", "examples/composition", "examples/tilequest", "examples/framebuffer", "examples/audio", "examples/starfall", "examples/falling-sand", "examples/physics-playground", "examples/app-stress"]
+members = ["crates/*", "examples/pong", "examples/composition", "examples/tilequest", "examples/framebuffer", "examples/audio", "examples/starfall", "examples/falling-sand", "examples/physics-playground", "examples/app-stress", "examples/nightwatch"]
 default-members = ["examples/pong"]
 resolver = "3"
 

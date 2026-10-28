@@ -1,6 +1,12 @@
 //! Optional mesh rendering through VulkanicGAL's public API. The game owns GAL,
 //! assets, draw ordering, frame targets, submission and presentation.
+mod lighting;
 mod math;
+pub use lighting::DEFAULT_LIT_FRAGMENT_SHADER;
+pub use lighting::{
+    Attenuation, ColorSpace, Light, Lighting, LitCamera3D, LitDraw3D, LitMaterial, LitPassOptions,
+    LitRenderState3D, ShadingModel,
+};
 pub use math::Mat4;
 use std::collections::BTreeMap;
 use vulkanic_gal::{commands::SubmissionUsage, resources::*, *};
@@ -183,6 +189,7 @@ struct Slot {
     sets: BTreeMap<(Handle, Handle), Handle>,
     passes: BTreeMap<Handle, Handle>,
     usage: SubmissionUsage,
+    lights: Option<Handle>,
 }
 /// Rendering state on a caller-owned device. Always use its construction GAL.
 /// Keeps bounded transient slots; release explicitly before dropping.
@@ -196,9 +203,19 @@ pub struct RenderState3D {
     pipelines: BTreeMap<(TextureFormat, TextureFormat, bool, bool), Handle>,
     slots: Vec<Slot>,
     stride: usize,
+    uniform_size: usize,
+    light_buffer_size: usize,
 }
 impl RenderState3D {
     pub fn new(gal: &mut VulkanicGal) -> GalResult<Self> {
+        Self::new_configured(gal, None, 0)
+    }
+    fn new_configured(
+        gal: &mut VulkanicGal,
+        lit_fragment: Option<&str>,
+        light_buffer_size: usize,
+    ) -> GalResult<Self> {
+        let uniform_size = if lit_fragment.is_some() { 192 } else { 160 };
         let mut created = Vec::new();
         let result = (|| {
             if gal.capabilities().shader_conventions.glsl_dialect != GlslDialect::ExplicitBindings
@@ -208,13 +225,17 @@ impl RenderState3D {
                     "3D shaders require explicit bindings and [0,1] clip depth",
                 ));
             }
+            let mut bindings = vec![
+                desc(0, ResourceBindingKind::CombinedTextureSampler, 0),
+                desc(1, ResourceBindingKind::StorageBuffer, 0),
+                desc(2, ResourceBindingKind::UniformBuffer, 1),
+            ];
+            if lit_fragment.is_some() {
+                bindings.push(desc(3, ResourceBindingKind::StorageBuffer, 0));
+            }
             let resource_layout = gal.create_resource_layout(ResourceLayoutDesc {
                 label: "3d-resources".into(),
-                bindings: vec![
-                    desc(0, ResourceBindingKind::CombinedTextureSampler, 0),
-                    desc(1, ResourceBindingKind::StorageBuffer, 0),
-                    desc(2, ResourceBindingKind::UniformBuffer, 1),
-                ],
+                bindings,
             })?;
             created.push(resource_layout);
             let layout = gal.create_pipeline_layout(PipelineLayoutDesc {
@@ -225,13 +246,17 @@ impl RenderState3D {
             let vertex = gal.create_shader_module(shader(
                 "3d-vertex",
                 ShaderStage::Vertex,
-                include_str!("mesh.vert"),
+                if lit_fragment.is_some() {
+                    include_str!("lit.vert")
+                } else {
+                    include_str!("mesh.vert")
+                },
             ))?;
             created.push(vertex);
             let fragment = gal.create_shader_module(shader(
                 "3d-fragment",
                 ShaderStage::Fragment,
-                include_str!("mesh.frag"),
+                lit_fragment.unwrap_or(include_str!("mesh.frag")),
             ))?;
             created.push(fragment);
             let sampler = gal.create_sampler(SamplerDesc {
@@ -255,8 +280,10 @@ impl RenderState3D {
                 pipelines: BTreeMap::new(),
                 slots: Vec::new(),
                 stride: (gal.capabilities().limits.uniform_buffer_offset_alignment as usize)
-                    .max(160)
+                    .max(uniform_size)
                     .next_power_of_two(),
+                uniform_size,
+                light_buffer_size,
             })
         })();
         if result.is_err() {
@@ -273,6 +300,18 @@ impl RenderState3D {
         camera: Camera3D,
         draws: &[Draw3D<'_>],
         options: PassOptions,
+    ) -> GalResult<Prepared3D> {
+        self.prepare_frame(gal, target, camera, draws, options, None)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_frame(
+        &mut self,
+        gal: &mut VulkanicGal,
+        target: Handle,
+        camera: Camera3D,
+        draws: &[Draw3D<'_>],
+        options: PassOptions,
+        lighting: Option<&lighting::LightingFrame<'_>>,
     ) -> GalResult<Prepared3D> {
         if self.layout.is_null()
             || draws.len() > 4096
@@ -311,6 +350,7 @@ impl RenderState3D {
             camera,
             draws,
             options,
+            lighting,
         );
         let finish = gal.finish_command_recording();
         result.and_then(|p| finish.map(|()| p))
@@ -327,6 +367,7 @@ impl RenderState3D {
         camera: Camera3D,
         draws: &[Draw3D<'_>],
         options: PassOptions,
+        lighting: Option<&lighting::LightingFrame<'_>>,
     ) -> GalResult<Prepared3D> {
         let bytes = draws.len().max(1) * self.stride;
         let completed = gal.poll_completed();
@@ -334,13 +375,33 @@ impl RenderState3D {
             !s.usage.has_pending_commands() && s.usage.last_submission() <= completed
         });
         if selected.is_none() && self.slots.len() < 3 {
-            self.slots.push(Slot {
-                uniform: buffer(
+            let lights = if self.light_buffer_size > 0 {
+                Some(buffer(
                     gal,
-                    "3d-uniforms",
-                    bytes.next_power_of_two(),
-                    BufferUsage::Uniform,
-                )?,
+                    "3d-lights",
+                    self.light_buffer_size,
+                    BufferUsage::Storage,
+                )?)
+            } else {
+                None
+            };
+            let uniform = match buffer(
+                gal,
+                "3d-uniforms",
+                bytes.next_power_of_two(),
+                BufferUsage::Uniform,
+            ) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    if let Some(handle) = lights {
+                        let _ = gal.retire(handle);
+                    }
+                    return Err(error);
+                }
+            };
+            self.slots.push(Slot {
+                uniform,
+                lights,
                 capacity: bytes.next_power_of_two(),
                 sets: BTreeMap::new(),
                 passes: BTreeMap::new(),
@@ -417,32 +478,42 @@ impl RenderState3D {
             let slot = &mut self.slots[index];
             let key = (draw.mesh.vertices, draw.material.texture_view);
             if let std::collections::btree_map::Entry::Vacant(entry) = slot.sets.entry(key) {
+                let mut bindings = vec![
+                    binding(
+                        0,
+                        pair,
+                        ResourceBindingKind::CombinedTextureSampler,
+                        None,
+                        vec![],
+                    ),
+                    binding(
+                        1,
+                        draw.mesh.vertices,
+                        ResourceBindingKind::StorageBuffer,
+                        None,
+                        vec![],
+                    ),
+                    binding(
+                        2,
+                        slot.uniform,
+                        ResourceBindingKind::UniformBuffer,
+                        Some(self.uniform_size as u64),
+                        vec![0],
+                    ),
+                ];
+                if let Some(lights) = slot.lights {
+                    bindings.push(binding(
+                        3,
+                        lights,
+                        ResourceBindingKind::StorageBuffer,
+                        Some(self.light_buffer_size as u64),
+                        vec![],
+                    ));
+                }
                 let set = gal.create_resource_set(ResourceSetDesc {
                     label: "3d-set".into(),
                     layout: self.resource_layout,
-                    bindings: vec![
-                        binding(
-                            0,
-                            pair,
-                            ResourceBindingKind::CombinedTextureSampler,
-                            None,
-                            vec![],
-                        ),
-                        binding(
-                            1,
-                            draw.mesh.vertices,
-                            ResourceBindingKind::StorageBuffer,
-                            None,
-                            vec![],
-                        ),
-                        binding(
-                            2,
-                            slot.uniform,
-                            ResourceBindingKind::UniformBuffer,
-                            Some(160),
-                            vec![0],
-                        ),
-                    ],
+                    bindings,
                 })?;
                 entry.insert(set);
             }
@@ -478,7 +549,7 @@ impl RenderState3D {
                 })?;
                 entry.insert(h);
             }
-            let values: Vec<f32> = camera
+            let mut values: Vec<f32> = camera
                 .view_projection
                 .0
                 .iter()
@@ -493,8 +564,12 @@ impl RenderState3D {
                     0.,
                 ])
                 .collect();
+            if let Some(frame) = lighting {
+                values.truncate(36); // viewProjection, model, base tint
+                values.extend(frame.materials[i].parameters());
+            }
             let data: Vec<u8> = values.into_iter().flat_map(f32::to_ne_bytes).collect();
-            uniforms[i * self.stride..i * self.stride + 160].copy_from_slice(&data);
+            uniforms[i * self.stride..i * self.stride + self.uniform_size].copy_from_slice(&data);
             work.extend([
                 CommandOp::TrackSubmission(draw.mesh.usage.clone()),
                 CommandOp::BindGraphicsPipeline(self.pipelines[&key]),
@@ -536,11 +611,16 @@ impl RenderState3D {
             ),
             barrier(
                 depth_texture,
-                if options.clear_depth {
-                    TextureUsageState::Undefined
-                } else {
-                    TextureUsageState::DepthStencilAttachment
-                },
+                lighting.map_or_else(
+                    || {
+                        if options.clear_depth {
+                            TextureUsageState::Undefined
+                        } else {
+                            TextureUsageState::DepthStencilAttachment
+                        }
+                    },
+                    |frame| frame.depth_before,
+                ),
                 TextureUsageState::DepthStencilAttachment,
             ),
             CommandOp::BeginPass {
@@ -573,6 +653,28 @@ impl RenderState3D {
                 }),
             },
         ];
+        if let Some(frame) = lighting {
+            let lights = slot.lights.expect("lit renderer owns light storage");
+            let upload = [
+                barrier(
+                    lights,
+                    TextureUsageState::ShaderRead,
+                    TextureUsageState::TransferDst,
+                ),
+                CommandOp::HostWriteBuffer {
+                    buffer: lights,
+                    offset: 0,
+                    data: frame.bytes.clone(),
+                },
+                barrier(
+                    lights,
+                    TextureUsageState::TransferDst,
+                    TextureUsageState::ShaderRead,
+                ),
+            ];
+            let before_pass = operations.len() - 1;
+            operations.splice(before_pass..before_pass, upload);
+        }
         operations.extend(work);
         operations.push(CommandOp::EndPass);
         Ok(Prepared3D {
@@ -630,6 +732,9 @@ impl RenderState3D {
                 gal.retire(h)?;
             }
             gal.retire(s.uniform)?;
+            if let Some(lights) = s.lights {
+                gal.retire(lights)?;
+            }
         }
         for h in std::mem::take(&mut self.pairs).into_values() {
             gal.retire(h)?;
