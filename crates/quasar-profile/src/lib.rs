@@ -21,6 +21,8 @@
 #[cfg(feature = "frame")]
 use quasar_frame::FrameReport;
 use std::collections::VecDeque;
+mod benchmark;
+pub use benchmark::{BenchmarkConfig, BenchmarkError, BenchmarkSession};
 
 #[cfg(feature = "json")]
 use serde::{Deserialize, Serialize};
@@ -45,6 +47,22 @@ pub struct FrameSample {
     pub acquire_nanos: u64,
     pub present_nanos: u64,
     pub submit_nanos: u64,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub instance_upload_bytes: u64,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub culled_instances: u64,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub visible_instances: u64,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub backend_submit_nanos: u64,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub backend_encode_nanos: u64,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub hazard_analysis_nanos: u64,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub validation_nanos: u64,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub renderer_prepare_nanos: u64,
     pub gpu_frame_nanos: Option<u64>,
     pub gpu_scope_nanos: Vec<u64>,
     pub draws: u64,
@@ -75,6 +93,13 @@ impl FrameSample {
             acquire_nanos: report.acquire_nanos,
             present_nanos: report.present_nanos,
             submit_nanos: profile.gal_submit_total_nanos,
+            renderer_prepare_nanos: profile.gal_command_generation_nanos,
+            validation_nanos: profile
+                .gal_validate_ops_nanos
+                .saturating_add(profile.gal_validate_handles_nanos),
+            hazard_analysis_nanos: profile.gal_hazard_analysis_nanos,
+            backend_encode_nanos: profile.backend_encode_nanos,
+            backend_submit_nanos: profile.backend_submit_nanos,
             gpu_frame_nanos: (profile.gpu_timestamp_status > 0)
                 .then_some(profile.gpu_frame_total_nanos),
             gpu_scope_nanos: profile.gpu_scope_nanos.to_vec(),
@@ -140,6 +165,22 @@ pub struct ProfileSummary {
     pub acquire: Distribution,
     pub present: Distribution,
     pub submit: Distribution,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub instance_upload_bytes: Distribution,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub culled_instances: Distribution,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub visible_instances: Distribution,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub backend_submit: Distribution,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub backend_encode: Distribution,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub hazard_analysis: Distribution,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub validation: Distribution,
+    #[cfg_attr(feature = "json", serde(default))]
+    pub renderer_prepare: Distribution,
     pub gpu_frame: Distribution,
     pub gpu_scopes: Vec<Distribution>,
     pub draws: Distribution,
@@ -211,6 +252,14 @@ impl FrameProfiler {
             acquire: values(&self.samples, |sample| sample.acquire_nanos),
             present: values(&self.samples, |sample| sample.present_nanos),
             submit: values(&self.samples, |sample| sample.submit_nanos),
+            instance_upload_bytes: values(&self.samples, |sample| sample.instance_upload_bytes),
+            culled_instances: values(&self.samples, |sample| sample.culled_instances),
+            visible_instances: values(&self.samples, |sample| sample.visible_instances),
+            backend_submit: values(&self.samples, |sample| sample.backend_submit_nanos),
+            backend_encode: values(&self.samples, |sample| sample.backend_encode_nanos),
+            hazard_analysis: values(&self.samples, |sample| sample.hazard_analysis_nanos),
+            validation: values(&self.samples, |sample| sample.validation_nanos),
+            renderer_prepare: values(&self.samples, |sample| sample.renderer_prepare_nanos),
             gpu_frame: values_optional(&self.samples, |sample| sample.gpu_frame_nanos),
             gpu_scopes: (0..gpu_scope_count)
                 .map(|index| {
@@ -246,6 +295,7 @@ impl FrameProfiler {
 
 /// Optional p99 regression limits. Unspecified limits are not checked.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "json", derive(Serialize, Deserialize))]
 pub struct ProfileThresholds {
     pub max_cpu_frame_p99_nanos: Option<u64>,
     pub max_gpu_frame_p99_nanos: Option<u64>,

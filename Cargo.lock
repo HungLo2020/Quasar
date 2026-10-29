@@ -1790,6 +1790,7 @@ dependencies = [
  "quasar-audio",
  "quasar-config",
  "quasar-core",
+ "quasar-diagnostics",
  "quasar-frame",
  "quasar-input",
  "quasar-nav",
@@ -1797,6 +1798,7 @@ dependencies = [
  "quasar-render-2d",
  "quasar-render-3d",
  "quasar-window",
+ "tempfile",
  "vulkanic-gal",
 ]
 
@@ -2807,6 +2809,8 @@ dependencies = [
 name = "quasar-profile"
 version = "0.2.16"
 dependencies = [
+ "quasar-config",
+ "quasar-diagnostics",
  "quasar-frame",
  "serde",
  "serde_json",
@@ -2831,8 +2835,11 @@ dependencies = [
 name = "quasar-render-3d"
 version = "0.2.16"
 dependencies = [
+ "quasar-config",
+ "quasar-diagnostics",
  "quasar-frame",
  "quasar-render-2d",
+ "quasar-spatial",
  "vulkanic-gal",
 ]
 

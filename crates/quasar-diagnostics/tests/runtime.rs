@@ -189,3 +189,19 @@ fn records_serialize_structurally() {
     assert_eq!(restored, record);
     assert!(json.contains("\"kind\":\"bool\""));
 }
+
+#[test]
+fn reusable_level_parser_rejects_invalid_filter_names() {
+    use quasar_diagnostics::Level;
+    for level in [
+        Level::Trace,
+        Level::Debug,
+        Level::Info,
+        Level::Warn,
+        Level::Error,
+    ] {
+        assert_eq!(level.as_str().parse::<Level>().unwrap(), level);
+    }
+    assert_eq!("WARNING".parse::<Level>().unwrap(), Level::Warn);
+    assert!("verbose".parse::<Level>().is_err());
+}

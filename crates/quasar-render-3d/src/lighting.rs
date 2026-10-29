@@ -283,6 +283,32 @@ pub(crate) struct LightingFrame<'a> {
     pub surface: Option<surface::SurfaceFrame<'a>>,
 }
 impl LitRenderState3D {
+    pub fn with_submission(
+        gal: &mut VulkanicGal,
+        max_lights: usize,
+        submission: SubmissionConfig,
+    ) -> GalResult<Self> {
+        if max_lights > 4096 {
+            return Err(GalError::invalid_argument("light budget exceeds 4096"));
+        }
+        Ok(Self {
+            core: RenderState3D::new_submission_configured(
+                gal,
+                Some(DEFAULT_LIT_FRAGMENT_SHADER),
+                48 + max_lights.max(1) * 64,
+                0,
+                submission,
+            )?,
+            max_lights,
+        })
+    }
+    pub fn work_stats(&self) -> RenderWork {
+        self.core.work_stats()
+    }
+    #[cfg(feature = "diagnostics")]
+    pub fn set_diagnostics(&mut self, d: quasar_diagnostics::Diagnostics) {
+        self.core.set_diagnostics(d);
+    }
     /// A fixed per-slot light budget, 0..=4096. Overflow is an explicit error.
     pub fn new(gal: &mut VulkanicGal, max_lights: usize) -> GalResult<Self> {
         Self::with_fragment_shader(gal, max_lights, DEFAULT_LIT_FRAGMENT_SHADER)

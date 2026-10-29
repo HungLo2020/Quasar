@@ -74,11 +74,13 @@ Bias controls are explicit: pipeline raster bias, normalized-depth receiver
 the geometric normal rather than normal-map bumps. Tune these to the scene's
 scale and projection range; excessive bias detaches shadows and insufficient
 bias causes self-shadow artifacts. There is no automatic fitting, cascade
-selection, light discovery or hidden scene ownership.
+selection, light discovery or hidden scene ownership. Optional per-light
+frustum culling and instanced submission use the
+[submission policy](render-submission.md).
 
 Current scope is one map per directional/spot light. Point-light cube shadows,
-cascades, PCSS/contact hardening, temporal filtering, baked lighting and shadow
-caster culling remain future work. The fixed directional volume can lose detail
+cascades, PCSS/contact hardening, temporal filtering, baked lighting remain future work. Conservative shadow caster culling is
+available through the optional visibility feature. The fixed directional volume can lose detail
 in a large world; callers control coverage and resolution now.
 
 ## Normal-map contract
@@ -110,8 +112,10 @@ Depth allocation is bounded up front by `ShadowConfig::max_depth_bytes`:
 `3 * max(2, max_maps) * resolution² * 4` bytes. The minimum two layers preserve
 the array-view type even for a single-map renderer. The default two 1024² maps
 reserve a worst-case 24 MiB depth budget; slots allocate lazily. Per-caster
-144-byte uniforms use the device's aligned dynamic stride. Metadata costs a
-16-byte header plus 96 bytes per map per receiver slot. Receiver draw payloads
+144-byte uniforms use the device's aligned dynamic stride. Metadata storage costs a
+16-byte header plus 96 bytes per map per receiver slot, with at least one record
+allocated to satisfy backend runtime-array minimum binding sizes even at zero
+shadow capacity. Only the header and actual records are uploaded. Receiver draw payloads
 are 208 bytes before dynamic-offset padding. Statistics distinguish shadow
 caster work from receiver work; GAL counters also include metadata/light writes.
 

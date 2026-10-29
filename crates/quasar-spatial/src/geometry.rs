@@ -371,3 +371,64 @@ impl<const N: usize> Frustum<N> {
         self.planes.iter().all(|plane| plane.intersects_aabb(aabb))
     }
 }
+
+/// Clip-space depth convention for extracting planes from a projection matrix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipDepth {
+    ZeroToOne,
+    NegativeOneToOne,
+}
+impl Frustum<3> {
+    /// Extract inward planes from a column-major world-to-clip matrix.
+    /// Accepts finite perspective/orthographic matrices; an always-inside plane
+    /// (such as an infinite far plane) is omitted. No renderer types are needed.
+    pub fn from_view_projection(
+        matrix: [[f64; 4]; 4],
+        depth: ClipDepth,
+    ) -> crate::SpatialResult<Self> {
+        if !matrix.iter().flatten().all(|v| v.is_finite()) {
+            return Err(SpatialError::NonFinite);
+        }
+        let row = |r: usize| std::array::from_fn::<_, 4, _>(|c| matrix[c][r]);
+        let w = row(3);
+        let mut planes = Vec::with_capacity(6);
+        for (axis, sign) in [(0, 1.), (0, -1.), (1, 1.), (1, -1.), (2, 1.), (2, -1.)] {
+            let r = row(axis);
+            let p = std::array::from_fn::<_, 4, _>(|i| {
+                if axis == 2 && sign == 1. && depth == ClipDepth::ZeroToOne {
+                    r[i]
+                } else {
+                    w[i] + sign * r[i]
+                }
+            });
+            if p[..3].iter().all(|v| *v == 0.) && p[3] >= 0. {
+                continue;
+            }
+            planes.push(Plane::new([p[0], p[1], p[2]], p[3])?);
+        }
+        Self::new(planes)
+    }
+}
+impl Aabb<3> {
+    /// Conservative world bounds under a finite affine column-major transform.
+    /// Handles rotations, shear, non-uniform and mirrored scales.
+    pub fn transformed_affine(&self, matrix: [[f64; 4]; 4]) -> crate::SpatialResult<Self> {
+        if !matrix.iter().flatten().all(|v| v.is_finite()) {
+            return Err(SpatialError::NonFinite);
+        }
+        if matrix[0][3] != 0. || matrix[1][3] != 0. || matrix[2][3] != 0. || matrix[3][3] != 1. {
+            return Err(SpatialError::InvalidBounds);
+        }
+        let mut min: [f64; 3] = matrix[3][..3].try_into().unwrap();
+        let mut max = min;
+        for r in 0..3 {
+            for (c, column) in matrix.iter().take(3).enumerate() {
+                let a = column[r] * self.min[c];
+                let b = column[r] * self.max[c];
+                min[r] += a.min(b);
+                max[r] += a.max(b);
+            }
+        }
+        Self::new(min, max)
+    }
+}

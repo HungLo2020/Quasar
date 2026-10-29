@@ -9,10 +9,12 @@ use quasar_app::{
     AppConfig, AppContext, Application, DesktopApplication, Flow, RenderPolicy, TimingConfig,
 };
 use quasar_core::FixedStepConfig;
+use quasar_diagnostics::{Diagnostics, DiagnosticsConfig, Field, Level, TextSink};
 use quasar_frame::{CompletionPolicy, FrameSurface};
 use quasar_input::{Key, MouseButton};
-use quasar_profile::{FrameProfiler, FrameSample};
+use quasar_profile::{BenchmarkSession, FrameSample};
 use quasar_window::{DesktopConfig, WindowConfig, winit::event::WindowEvent};
+use std::sync::Arc;
 use std::time::Duration;
 use vulkanic_gal::{resources::*, *};
 
@@ -33,6 +35,19 @@ pub fn run(settings: Settings) -> Result<()> {
         frame_interval: None,
     };
     let world = World::new(settings.seed);
+    let profile = BenchmarkSession::new(settings.benchmark_config)?;
+    let diagnostics = settings
+        .log_level
+        .map_or_else(Diagnostics::disabled, |min_level| {
+            Diagnostics::with_config(
+                Arc::new(TextSink::new(std::io::stderr())),
+                DiagnosticsConfig {
+                    min_level,
+                    span_level: Level::Debug,
+                    ..DiagnosticsConfig::default()
+                },
+            )
+        });
     quasar_app::run(
         App {
             settings,
@@ -43,7 +58,8 @@ pub fn run(settings: Settings) -> Result<()> {
             gal: None,
             frames: 0,
             done: false,
-            profile: FrameProfiler::new(600),
+            profile,
+            diagnostics,
             audio: None,
         },
         config,
@@ -59,7 +75,8 @@ struct App {
     gal: Option<VulkanicGal>,
     frames: u64,
     done: bool,
-    profile: FrameProfiler,
+    profile: BenchmarkSession,
+    diagnostics: Diagnostics,
     audio: Option<crate::sound::Audio>,
 }
 impl App {
@@ -89,14 +106,69 @@ impl App {
                 max_frames_in_flight: 3,
             },
         )?;
-        self.graphics = Some(Graphics::with_options(
+        if let Some(validation) = self.settings.validation {
+            gal.set_full_validation(validation);
+        }
+        for (key, value) in [
+            (
+                "build",
+                if cfg!(debug_assertions) {
+                    "debug".into()
+                } else {
+                    "optimized".into()
+                },
+            ),
+            ("validation", gal.full_validation().to_string()),
+            ("instancing", self.settings.instancing.to_string()),
+            ("frustum_culling", self.settings.frustum_culling.to_string()),
+            (
+                "shadow_resolution",
+                self.settings.shadow_resolution.to_string(),
+            ),
+            (
+                "resolution",
+                format!("{}x{}", self.settings.width, self.settings.height),
+            ),
+            ("seed", self.settings.seed.to_string()),
+        ] {
+            self.profile.set_metadata(key, &value)?;
+        }
+        let backend = gal.backend_info();
+        for (key, value) in [
+            ("backend", backend.selected.display_name().to_string()),
+            ("device", backend.device.name),
+            ("driver", backend.device.driver),
+            ("api", backend.device.api),
+            ("shadows", self.settings.shadows.to_string()),
+            ("normal_maps", self.settings.normal_maps.to_string()),
+            ("debug_assertions", cfg!(debug_assertions).to_string()),
+        ] {
+            self.profile
+                .set_metadata(key, &value.chars().take(64).collect::<String>())?;
+        }
+        self.diagnostics.event_with(
+            Level::Info,
+            "nightwatch",
+            "renderer_config",
+            [
+                Field::new("instancing", self.settings.instancing),
+                Field::new("frustum_culling", self.settings.frustum_culling),
+                Field::new("validation", gal.full_validation()),
+            ],
+        );
+        self.graphics = Some(Graphics::with_submission(
             &mut gal,
             nightwatch::render::GraphicsOptions {
                 shadows: self.settings.shadows,
                 normal_maps: self.settings.normal_maps,
                 shadow_resolution: self.settings.shadow_resolution,
             },
+            self.settings.submission(),
         )?);
+        self.graphics
+            .as_mut()
+            .unwrap()
+            .set_diagnostics(self.diagnostics.clone());
         self.surface = Some(FrameSurface::new(size.width.max(1), size.height.max(1)));
         self.gal = Some(gal);
         if self.settings.audio {
@@ -270,9 +342,13 @@ impl Application for App {
             })?
         {
             self.frames += 1;
-            if self.settings.benchmark && self.frames > 8 {
+            if self.settings.benchmark {
                 let mut sample = FrameSample::from_frame_report(self.frames, &report);
                 sample.with_renderer_stats(graphics.stats());
+                let work = graphics.work_stats();
+                sample.visible_instances = work.visible as u64;
+                sample.culled_instances = work.culled as u64;
+                sample.instance_upload_bytes = work.instance_upload_bytes as u64;
                 self.profile.record(sample);
             }
             if self
@@ -294,6 +370,9 @@ impl Application for App {
             self.profile.write_json(path)?;
         }
         self.release()?;
+        if self.settings.benchmark {
+            self.profile.report(&self.diagnostics)?;
+        }
         println!(
             "nightwatch frames={} ticks={} shots={} kills={} wave={} weapon={:?} hash={:016x}",
             self.frames,
@@ -305,7 +384,7 @@ impl Application for App {
             self.world.state_hash()
         );
         if let Some(path) = &self.settings.screenshot {
-            nightwatch::render::screenshot_with_options(
+            nightwatch::render::screenshot_with_submission(
                 &self.world,
                 self.settings.width,
                 self.settings.height,
@@ -315,6 +394,7 @@ impl Application for App {
                     normal_maps: self.settings.normal_maps,
                     shadow_resolution: self.settings.shadow_resolution,
                 },
+                self.settings.submission(),
             )?;
         }
         Ok(())

@@ -30,6 +30,19 @@ fn pixel(image: &[u8], x: usize, y: usize) -> [u8; 4] {
 #[test]
 #[ignore = "requires Vulkan"]
 fn directional_and_spot_shadows_and_normal_maps_change_pixels() {
+    surface_suite(SubmissionConfig::default());
+}
+
+#[test]
+#[ignore = "requires GPU"]
+fn instanced_surface_shader_preserves_all_lighting_and_material_cases() {
+    surface_suite(SubmissionConfig {
+        instancing: true,
+        ..SubmissionConfig::default()
+    });
+}
+
+fn surface_suite(submission: SubmissionConfig) {
     let mut gal = VulkanicGal::create(
         if cfg!(feature = "vulkan") {
             BackendChoice::Vulkan
@@ -39,13 +52,14 @@ fn directional_and_spot_shadows_and_normal_maps_change_pixels() {
         "surface tests",
     )
     .unwrap();
-    let mut renderer = SurfaceRenderState3D::new(&mut gal, 4, 2).unwrap();
-    let mut shadows = ShadowRenderState3D::new(
+    let mut renderer = SurfaceRenderState3D::with_submission(&mut gal, 4, 2, submission).unwrap();
+    let mut shadows = ShadowRenderState3D::with_submission(
         &mut gal,
         ShadowConfig {
             resolution: 128,
             ..ShadowConfig::default()
         },
+        submission,
     )
     .unwrap();
     let mut mesh = plane(&mut gal);
@@ -502,6 +516,19 @@ fn directional_and_spot_shadows_and_normal_maps_change_pixels() {
 #[test]
 #[ignore = "requires Vulkan"]
 fn shadow_slots_preserve_reordered_frames_and_consumer_reservations() {
+    slot_suite(SubmissionConfig::default());
+}
+
+#[test]
+#[ignore = "requires GPU"]
+fn instanced_slots_preserve_reordered_frames_and_consumer_reservations() {
+    slot_suite(SubmissionConfig {
+        instancing: true,
+        ..SubmissionConfig::default()
+    });
+}
+
+fn slot_suite(submission: SubmissionConfig) {
     let mut gal = VulkanicGal::create(
         if cfg!(feature = "vulkan") {
             BackendChoice::Vulkan
@@ -511,14 +538,15 @@ fn shadow_slots_preserve_reordered_frames_and_consumer_reservations() {
         "shadow lifetime tests",
     )
     .unwrap();
-    let mut renderer = SurfaceRenderState3D::new(&mut gal, 1, 1).unwrap();
-    let mut shadows = ShadowRenderState3D::new(
+    let mut renderer = SurfaceRenderState3D::with_submission(&mut gal, 1, 1, submission).unwrap();
+    let mut shadows = ShadowRenderState3D::with_submission(
         &mut gal,
         ShadowConfig {
             resolution: 64,
             max_maps: 1,
             ..ShadowConfig::default()
         },
+        submission,
     )
     .unwrap();
     let mut mesh = plane(&mut gal);
@@ -842,6 +870,272 @@ fn shadow_and_surface_validation_rejects_invalid_data_before_recording() {
     normals_only.release(&mut gal).unwrap();
     drop(maps);
     renderer.release(&mut gal).unwrap();
+    shadows.release(&mut gal).unwrap();
+    mesh.release(&mut gal).unwrap();
+    target.release(&mut gal).unwrap();
+    gal.retire(view).unwrap();
+    gal.retire(texture).unwrap();
+    gal.retire_through(gal.latest_submission_id()).unwrap();
+    assert_eq!(
+        gal.metrics().resource_creates,
+        gal.metrics().resource_destroys
+    );
+}
+
+#[cfg(feature = "visibility")]
+#[test]
+#[ignore = "requires GPU"]
+fn instanced_buffer_growth_and_culling_preserve_per_instance_materials() {
+    let mut gal = VulkanicGal::create(
+        if cfg!(feature = "vulkan") {
+            BackendChoice::Vulkan
+        } else {
+            BackendChoice::Wgpu
+        },
+        "instance growth",
+    )
+    .unwrap();
+    let mut mesh = plane(&mut gal);
+    let (texture, view) = support::upload_color(&mut gal, [255; 4]).unwrap();
+    let mut reference = SurfaceRenderState3D::new(&mut gal, 0, 0).unwrap();
+    let mut optimized = SurfaceRenderState3D::with_submission(
+        &mut gal,
+        0,
+        0,
+        SubmissionConfig {
+            instancing: true,
+            frustum_culling: true,
+            ..SubmissionConfig::default()
+        },
+    )
+    .unwrap();
+    let mut target = OffscreenTarget::new(&mut gal, 128, 128).unwrap();
+    let mut material = LitMaterial::textured(view);
+    material.shading = ShadingModel::Diffuse;
+    let draws: Vec<_> = (0..20)
+        .map(|i| {
+            let mut lit = material;
+            lit.base.tint = [(i % 3) as f32 / 2., (i % 5) as f32 / 4., 1., 1.];
+            SurfaceDraw3D {
+                mesh: &mesh,
+                model: Mat4::translation(
+                    if i < 16 { (i % 4) as f32 - 1.5 } else { 50. },
+                    (i / 4) as f32 - 1.5,
+                    0.,
+                ) * Mat4::scale(0.4, 0.4, 0.4),
+                material: lit.into(),
+            }
+        })
+        .collect();
+    let lighting = Lighting {
+        ambient: [1.; 3],
+        ..Lighting::default()
+    };
+    let mut pending = Vec::new();
+    for _ in 0..3 {
+        pending.push(
+            optimized
+                .prepare(
+                    &mut gal,
+                    target.target(),
+                    camera(),
+                    lighting,
+                    &draws[..1],
+                    None,
+                    PassOptions::default(),
+                )
+                .unwrap(),
+        );
+    }
+    assert!(
+        optimized
+            .prepare(
+                &mut gal,
+                target.target(),
+                camera(),
+                lighting,
+                &draws,
+                None,
+                PassOptions::default()
+            )
+            .is_err()
+    );
+    assert!(optimized.clear_bindings(&mut gal).is_err());
+    pending.clear();
+    let expected = target
+        .render(&mut gal, |gal, t| {
+            Ok(vec![
+                reference
+                    .prepare(
+                        gal,
+                        t,
+                        camera(),
+                        lighting,
+                        &draws,
+                        None,
+                        PassOptions::default(),
+                    )?
+                    .commands,
+            ])
+        })
+        .unwrap();
+    let actual = target
+        .render(&mut gal, |gal, t| {
+            Ok(vec![
+                optimized
+                    .prepare(
+                        gal,
+                        t,
+                        camera(),
+                        lighting,
+                        &draws,
+                        None,
+                        PassOptions::default(),
+                    )?
+                    .commands,
+            ])
+        })
+        .unwrap();
+    assert_eq!(actual.rgba, expected.rgba);
+    assert_eq!(optimized.work_stats().visible, 16);
+    assert_eq!(optimized.work_stats().culled, 4);
+    assert_eq!(optimized.work_stats().draws, 1);
+    assert_eq!(optimized.work_stats().instance_upload_bytes, 16 * 208);
+    optimized.release(&mut gal).unwrap();
+    reference.release(&mut gal).unwrap();
+    mesh.release(&mut gal).unwrap();
+    target.release(&mut gal).unwrap();
+    gal.retire(view).unwrap();
+    gal.retire(texture).unwrap();
+    gal.retire_through(gal.latest_submission_id()).unwrap();
+    assert_eq!(
+        gal.metrics().resource_creates,
+        gal.metrics().resource_destroys
+    );
+}
+
+#[cfg(feature = "visibility")]
+#[test]
+#[ignore = "requires GPU"]
+fn camera_rejection_does_not_remove_an_offscreen_shadow_caster() {
+    let mut gal = VulkanicGal::create(
+        if cfg!(feature = "vulkan") {
+            BackendChoice::Vulkan
+        } else {
+            BackendChoice::Wgpu
+        },
+        "offscreen caster",
+    )
+    .unwrap();
+    let submission = SubmissionConfig {
+        instancing: true,
+        frustum_culling: true,
+        ..SubmissionConfig::default()
+    };
+    let mut receiver = SurfaceRenderState3D::with_submission(&mut gal, 1, 1, submission).unwrap();
+    let mut shadows = ShadowRenderState3D::with_submission(
+        &mut gal,
+        ShadowConfig {
+            resolution: 128,
+            max_maps: 1,
+            ..ShadowConfig::default()
+        },
+        submission,
+    )
+    .unwrap();
+    let mut mesh = plane(&mut gal);
+    let (texture, view) = support::upload_color(&mut gal, [255; 4]).unwrap();
+    let mut material = LitMaterial::textured(view);
+    material.shading = ShadingModel::Diffuse;
+    let draws = [
+        SurfaceDraw3D {
+            mesh: &mesh,
+            model: Mat4::IDENTITY,
+            material: material.into(),
+        },
+        SurfaceDraw3D {
+            mesh: &mesh,
+            model: Mat4::translation(0.9, 0., 1.) * Mat4::scale(0.15, 0.15, 1.),
+            material: material.into(),
+        },
+    ];
+    let caster = [draws[1].shadow_caster()];
+    let camera = LitCamera3D {
+        view_projection: Mat4::orthographic(-0.5, 0.5, -0.5, 0.5, 0.1, 10.).unwrap()
+            * Mat4::translation(0., 0., -4.),
+        ..camera()
+    };
+    let lights = [Light::Directional {
+        direction: [-1., 0., -1.],
+        color: [1.; 3],
+        intensity: 1.,
+    }];
+    let lighting = Lighting {
+        ambient: [0.02; 3],
+        lights: &lights,
+        ..Lighting::default()
+    };
+    let mut target = OffscreenTarget::new(&mut gal, 128, 128).unwrap();
+    let plain = target
+        .render(&mut gal, |gal, t| {
+            Ok(vec![
+                receiver
+                    .prepare(
+                        gal,
+                        t,
+                        camera,
+                        lighting,
+                        &draws,
+                        None,
+                        PassOptions::default(),
+                    )?
+                    .commands,
+            ])
+        })
+        .unwrap();
+    let maps = shadows
+        .prepare(
+            &mut gal,
+            &[ShadowView {
+                light_index: 0,
+                view_projection: Mat4::orthographic(-2., 2., -2., 2., 0.1, 10.).unwrap()
+                    * Mat4::look_at([4., 0., 4.], [0., 0., 0.], [0., 1., 0.]).unwrap(),
+                casters: &caster,
+                settings: ShadowSettings {
+                    normal_bias: 0.,
+                    filter: ShadowFilter::Hard,
+                    ..ShadowSettings::default()
+                },
+            }],
+        )
+        .unwrap();
+    let dark = target
+        .render(&mut gal, |gal, t| {
+            Ok(vec![
+                maps.commands.clone(),
+                receiver
+                    .prepare(
+                        gal,
+                        t,
+                        camera,
+                        lighting,
+                        &draws,
+                        Some(maps.binding()),
+                        PassOptions::default(),
+                    )?
+                    .commands,
+            ])
+        })
+        .unwrap();
+    assert_eq!(receiver.work_stats().visible, 1);
+    assert_eq!(receiver.work_stats().culled, 1);
+    assert_eq!(shadows.work_stats().visible, 1);
+    assert!(
+        pixel(&plain.rgba, 51, 64)[0] > 100 && pixel(&dark.rgba, 51, 64)[0] < 30,
+        "offscreen caster must shadow visible receiver"
+    );
+    drop(maps);
+    receiver.release(&mut gal).unwrap();
     shadows.release(&mut gal).unwrap();
     mesh.release(&mut gal).unwrap();
     target.release(&mut gal).unwrap();

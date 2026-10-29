@@ -36,18 +36,19 @@ fn run() -> Result<()> {
             world.health,
             world.state_hash()
         );
-        if let Some(path) = settings.screenshot {
+        if let Some(path) = &settings.screenshot {
             #[cfg(feature = "graphics")]
-            nightwatch::render::screenshot_with_options(
+            nightwatch::render::screenshot_with_submission(
                 &world,
                 settings.width,
                 settings.height,
-                &path,
+                path,
                 nightwatch::render::GraphicsOptions {
                     shadows: settings.shadows,
                     normal_maps: settings.normal_maps,
                     shadow_resolution: settings.shadow_resolution,
                 },
+                settings.submission(),
             )?;
             #[cfg(not(feature = "graphics"))]
             {

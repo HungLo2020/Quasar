@@ -24,6 +24,10 @@ assert_eq!(grid.first_ray(&ray, 20.0)?.id, 7);
 
 ## APIs
 
+- `Frustum<3>::from_view_projection` extracts planes from ordinary column-major
+  matrices with either clip-depth convention; infinite far planes are supported.
+- `Aabb<3>::transformed_affine` provides conservative transformed bounds for
+  rotation, shear and mirrored/non-uniform scale without a renderer dependency.
 - `Aabb<N>`, `Ray<N>`, `Plane<N>`, `Frustum<N>` with finite/inclusive
   validation and 2D/3D aliases.
 - `SpatialGrid<N, T>`: deterministic spatial hash for any `T: Copy + Ord`.

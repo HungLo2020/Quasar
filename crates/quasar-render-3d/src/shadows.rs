@@ -128,6 +128,8 @@ struct ShadowSlot {
     passes: Vec<Handle>,
     owned: Vec<Handle>,
     uniform: Handle,
+    instances: Option<Handle>,
+    instance_capacity: usize,
     capacity: usize,
     sets: BTreeMap<(Handle, Handle), Handle>,
     usage: SubmissionUsage,
@@ -143,6 +145,10 @@ pub struct ShadowRenderState3D {
     slots: Vec<ShadowSlot>,
     pairs: BTreeMap<Handle, Handle>,
     stride: usize,
+    submission: SubmissionConfig,
+    work: RenderWork,
+    #[cfg(feature = "diagnostics")]
+    diagnostics: quasar_diagnostics::Diagnostics,
 }
 impl ShadowConfig {
     pub fn depth_bytes(self) -> Option<u64> {
@@ -193,16 +199,30 @@ impl ShadowConfig {
 }
 impl ShadowRenderState3D {
     pub fn new(gal: &mut VulkanicGal, config: ShadowConfig) -> GalResult<Self> {
+        Self::with_submission(gal, config, SubmissionConfig::default())
+    }
+    pub fn with_submission(
+        gal: &mut VulkanicGal,
+        config: ShadowConfig,
+        submission: SubmissionConfig,
+    ) -> GalResult<Self> {
         config.validate(gal)?;
+        submission.validate(gal)?;
         let mut owned = vec![];
         let result = (|| {
             let resource_layout = gal.create_resource_layout(ResourceLayoutDesc {
                 label: "3d-shadow-resources".into(),
-                bindings: vec![
-                    desc(0, ResourceBindingKind::CombinedTextureSampler, 0),
-                    desc(1, ResourceBindingKind::StorageBuffer, 0),
-                    desc(2, ResourceBindingKind::UniformBuffer, 1),
-                ],
+                bindings: {
+                    let mut bindings = vec![
+                        desc(0, ResourceBindingKind::CombinedTextureSampler, 0),
+                        desc(1, ResourceBindingKind::StorageBuffer, 0),
+                        desc(2, ResourceBindingKind::UniformBuffer, 1),
+                    ];
+                    if submission.instancing {
+                        bindings.push(desc(7, ResourceBindingKind::StorageBuffer, 0));
+                    }
+                    bindings
+                },
             })?;
             owned.push(resource_layout);
             let layout = gal.create_pipeline_layout(PipelineLayoutDesc {
@@ -213,13 +233,21 @@ impl ShadowRenderState3D {
             let vertex = gal.create_shader_module(shader(
                 "3d-shadow-vertex",
                 ShaderStage::Vertex,
-                include_str!("shadow.vert"),
+                &if submission.instancing {
+                    instanced_shader(include_str!("shadow.vert"), true)
+                } else {
+                    include_str!("shadow.vert").into()
+                },
             ))?;
             owned.push(vertex);
             let fragment = gal.create_shader_module(shader(
                 "3d-shadow-fragment",
                 ShaderStage::Fragment,
-                include_str!("shadow.frag"),
+                &if submission.instancing {
+                    instanced_shader(include_str!("shadow.frag"), false)
+                } else {
+                    include_str!("shadow.frag").into()
+                },
             ))?;
             owned.push(fragment);
             let sampler = gal.create_sampler(SamplerDesc {
@@ -265,8 +293,12 @@ impl ShadowRenderState3D {
                 slots: vec![],
                 pairs: BTreeMap::new(),
                 stride: (gal.capabilities().limits.uniform_buffer_offset_alignment as usize)
-                    .max(144)
+                    .max(if submission.instancing { 16 } else { 144 })
                     .next_power_of_two(),
+                submission,
+                work: RenderWork::default(),
+                #[cfg(feature = "diagnostics")]
+                diagnostics: quasar_diagnostics::Diagnostics::disabled(),
             }),
             Err(e) => {
                 for h in owned.into_iter().rev() {
@@ -276,7 +308,19 @@ impl ShadowRenderState3D {
             }
         }
     }
-    fn slot(&self, gal: &mut VulkanicGal, bytes: usize) -> GalResult<ShadowSlot> {
+    pub fn work_stats(&self) -> RenderWork {
+        self.work
+    }
+    #[cfg(feature = "diagnostics")]
+    pub fn set_diagnostics(&mut self, d: quasar_diagnostics::Diagnostics) {
+        self.diagnostics = d;
+    }
+    fn slot(
+        &self,
+        gal: &mut VulkanicGal,
+        bytes: usize,
+        instance_bytes: usize,
+    ) -> GalResult<ShadowSlot> {
         let mut owned = vec![];
         let result = (|| {
             let texture = gal.create_texture(TextureDesc {
@@ -361,10 +405,25 @@ impl ShadowRenderState3D {
                 BufferUsage::Uniform,
             )?;
             owned.push(uniform);
-            Ok((texture, view, pair, targets, passes, uniform))
+            let instances = if self.submission.instancing {
+                let h = buffer(
+                    gal,
+                    "3d-shadow-instances",
+                    instance_bytes.next_power_of_two(),
+                    BufferUsage::Storage,
+                )?;
+                owned.push(h);
+                Some(h)
+            } else {
+                None
+            };
+            Ok((texture, view, pair, targets, passes, uniform, instances))
         })();
         match result {
-            Ok((texture, view, pair, targets, passes, uniform)) => {
+            Ok((texture, view, pair, targets, passes, uniform, instances)) => {
+                if instances.is_some() {
+                    owned.pop();
+                }
                 owned.pop();
                 Ok(ShadowSlot {
                     texture,
@@ -373,6 +432,8 @@ impl ShadowRenderState3D {
                     targets,
                     passes,
                     uniform,
+                    instances,
+                    instance_capacity: instance_bytes.next_power_of_two(),
                     capacity: bytes.next_power_of_two(),
                     owned,
                     sets: BTreeMap::new(),
@@ -393,11 +454,14 @@ impl ShadowRenderState3D {
         gal: &mut VulkanicGal,
         views: &[ShadowView<'_>],
     ) -> GalResult<PreparedShadows> {
+        #[cfg(feature = "diagnostics")]
+        let _span = self.diagnostics.span("quasar.render3d", "shadows");
         let count: usize = views.iter().map(|v| v.casters.len()).sum();
         let mut indexes = std::collections::BTreeSet::new();
         if self.layout.is_null()
             || views.len() > self.config.max_maps
             || count > self.config.max_casters
+            || count > self.submission.max_instances
         {
             return Err(GalError::invalid_argument(
                 "released shadow renderer or shadow map/caster budget exceeded",
@@ -446,7 +510,7 @@ impl ShadowRenderState3D {
             !s.usage.has_pending_commands() && s.usage.last_submission() <= completed
         });
         if selected.is_none() && self.slots.len() < 3 {
-            let slot = self.slot(gal, bytes)?;
+            let slot = self.slot(gal, bytes, count.max(1) * 144)?;
             self.slots.push(slot);
             selected = Some(self.slots.len() - 1);
         }
@@ -483,6 +547,22 @@ impl ShadowRenderState3D {
             slot.uniform = new;
             slot.capacity = bytes.next_power_of_two();
         }
+        let instance_bytes = count.max(1) * 144;
+        if self.submission.instancing && self.slots[index].instance_capacity < instance_bytes {
+            let new = buffer(
+                gal,
+                "3d-shadow-instances",
+                instance_bytes.next_power_of_two(),
+                BufferUsage::Storage,
+            )?;
+            let slot = &mut self.slots[index];
+            for h in std::mem::take(&mut slot.sets).into_values() {
+                gal.retire(h)?;
+            }
+            gal.retire(slot.instances.unwrap())?;
+            slot.instances = Some(new);
+            slot.instance_capacity = instance_bytes.next_power_of_two();
+        }
         gal.begin_command_recording()?;
         let result = self.record(gal, index, views, count, bytes);
         let finish = gal.finish_command_recording();
@@ -499,10 +579,17 @@ impl ShadowRenderState3D {
         let mut data = vec![0; bytes];
         let mut draws = vec![];
         let mut records = vec![];
-        let mut draw_index = 0;
+        let mut draw_index = 0usize;
+        let mut visible = 0usize;
+        let mut instance_data = Vec::new();
         for (layer, v) in views.iter().enumerate() {
             let mut work = vec![];
+            let mut previous = None;
+            let visibility = Visibility::new(self.submission.frustum_culling, v.view_projection);
             for c in v.casters {
+                if !visibility.intersects(c.mesh, c.model) {
+                    continue;
+                }
                 let pair = if let Some(p) = self.pairs.get(&c.texture_view) {
                     *p
                 } else {
@@ -520,29 +607,41 @@ impl ShadowRenderState3D {
                     let set = gal.create_resource_set(ResourceSetDesc {
                         label: "3d-shadow-set".into(),
                         layout: self.resource_layout,
-                        bindings: vec![
-                            binding(
-                                0,
-                                pair,
-                                ResourceBindingKind::CombinedTextureSampler,
-                                None,
-                                vec![],
-                            ),
-                            binding(
-                                1,
-                                c.mesh.vertices,
-                                ResourceBindingKind::StorageBuffer,
-                                None,
-                                vec![],
-                            ),
-                            binding(
-                                2,
-                                slot.uniform,
-                                ResourceBindingKind::UniformBuffer,
-                                Some(144),
-                                vec![0],
-                            ),
-                        ],
+                        bindings: {
+                            let mut bindings = vec![
+                                binding(
+                                    0,
+                                    pair,
+                                    ResourceBindingKind::CombinedTextureSampler,
+                                    None,
+                                    vec![],
+                                ),
+                                binding(
+                                    1,
+                                    c.mesh.vertices,
+                                    ResourceBindingKind::StorageBuffer,
+                                    None,
+                                    vec![],
+                                ),
+                                binding(
+                                    2,
+                                    slot.uniform,
+                                    ResourceBindingKind::UniformBuffer,
+                                    Some(if self.submission.instancing { 16 } else { 144 }),
+                                    vec![0],
+                                ),
+                            ];
+                            if let Some(instances) = slot.instances {
+                                bindings.push(binding(
+                                    7,
+                                    instances,
+                                    ResourceBindingKind::StorageBuffer,
+                                    None,
+                                    vec![],
+                                ));
+                            }
+                            bindings
+                        },
                     })?;
                     entry.insert(set);
                 }
@@ -554,16 +653,29 @@ impl ShadowRenderState3D {
                     .chain(c.model.0.iter().flatten())
                     .copied()
                     .chain([c.alpha_cutoff, c.opacity, 0., 0.]);
-                for (i, value) in values.enumerate() {
-                    data[draw_index * self.stride + i * 4..draw_index * self.stride + i * 4 + 4]
-                        .copy_from_slice(&value.to_ne_bytes());
+                let encoded: Vec<u8> = values.flat_map(f32::to_ne_bytes).collect();
+                let set = slot.sets[&key];
+                if self.submission.instancing {
+                    instance_data.extend_from_slice(&encoded);
+                    if previous == Some((set, c.mesh.indices)) {
+                        if let Some(CommandOp::DrawIndexed { instances, .. }) = work.last_mut() {
+                            *instances += 1;
+                        }
+                        visible += 1;
+                        continue;
+                    }
+                    data[draw_index * self.stride..draw_index * self.stride + 4]
+                        .copy_from_slice(&(visible as u32).to_ne_bytes());
+                } else {
+                    data[draw_index * self.stride..draw_index * self.stride + 144]
+                        .copy_from_slice(&encoded);
                 }
                 work.extend([
                     CommandOp::TrackSubmission(c.mesh.usage.clone()),
                     CommandOp::BindResourceSet {
                         pipeline_layout: self.layout,
                         set_index: 0,
-                        set: slot.sets[&key],
+                        set,
                         dynamic_offsets: [(draw_index * self.stride) as u64].into(),
                     },
                     CommandOp::SetIndexBuffer {
@@ -576,8 +688,11 @@ impl ShadowRenderState3D {
                         instances: 1,
                     },
                 ]);
+                previous = Some((set, c.mesh.indices));
                 draw_index += 1;
+                visible += 1;
             }
+
             let slot = &self.slots[index];
             let (_, depth_view) = gal
                 .pass_target_depth_attachment(slot.targets[layer])?
@@ -612,6 +727,17 @@ impl ShadowRenderState3D {
             ]);
             records.push(record);
         }
+        let bytes = draw_index.max(1) * self.stride;
+        data.truncate(bytes);
+        self.work = RenderWork {
+            candidates: count,
+            visible,
+            culled: count - visible,
+            draws: draw_index,
+            instance_upload_bytes: instance_data.len(),
+        };
+        #[cfg(feature = "diagnostics")]
+        self.work.report(&self.diagnostics);
         let slot = &self.slots[index];
         let mut operations = vec![
             CommandOp::TrackSubmission(slot.usage.clone()),
@@ -636,6 +762,28 @@ impl ShadowRenderState3D {
                 TextureUsageState::DepthStencilAttachment,
             ),
         ];
+        if let Some(instances) = slot.instances
+            && !instance_data.is_empty()
+        {
+            operations.extend([
+                barrier(
+                    instances,
+                    TextureUsageState::ShaderRead,
+                    TextureUsageState::TransferDst,
+                ),
+                CommandOp::HostWriteBuffer {
+                    buffer: instances,
+                    offset: 0,
+                    data: instance_data,
+                },
+                barrier(
+                    instances,
+                    TextureUsageState::TransferDst,
+                    TextureUsageState::ShaderRead,
+                ),
+            ]);
+        }
+
         operations.extend(draws);
         operations.push(barrier(
             slot.texture,
@@ -656,7 +804,7 @@ impl ShadowRenderState3D {
             },
             stats: ShadowStats {
                 maps: views.len(),
-                draws: count,
+                draws: draw_index,
                 uniform_upload_bytes: bytes,
                 allocated_depth_bytes: self.config.depth_bytes().unwrap() / 3
                     * self.slots.len() as u64,
@@ -686,6 +834,9 @@ impl ShadowRenderState3D {
                 gal.retire(h)?;
             }
             gal.retire(slot.uniform)?;
+            if let Some(instances) = slot.instances {
+                gal.retire(instances)?;
+            }
             for h in slot.owned.into_iter().rev() {
                 gal.retire(h)?;
             }

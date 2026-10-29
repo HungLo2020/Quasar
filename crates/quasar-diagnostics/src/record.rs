@@ -279,3 +279,26 @@ impl TruncateFloor for String {
         self.truncate(boundary);
     }
 }
+
+/// Invalid textual diagnostics level.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseLevelError;
+impl std::fmt::Display for ParseLevelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("expected trace, debug, info, warn or error diagnostics level")
+    }
+}
+impl std::error::Error for ParseLevelError {}
+impl std::str::FromStr for Level {
+    type Err = ParseLevelError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "trace" => Ok(Self::Trace),
+            "debug" => Ok(Self::Debug),
+            "info" => Ok(Self::Info),
+            "warn" | "warning" => Ok(Self::Warn),
+            "error" => Ok(Self::Error),
+            _ => Err(ParseLevelError),
+        }
+    }
+}

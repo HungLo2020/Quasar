@@ -1073,7 +1073,7 @@ impl CommonArgs {
     }
     pub fn help(&self, program: &str, extra: &str) -> String {
         format!(
-            "{program}\n\nCommon options:\n  --headless             Run without a window\n  --fullscreen           Start fullscreen\n  --windowed             Start windowed\n  --resolution WxH       Window or offscreen resolution\n  --no-audio             Disable audio output\n  --audio-device NAME    Select an audio device\n  --benchmark            Enable benchmark mode\n  --benchmark-file FILE  Machine-readable benchmark output\n  --log-level LEVEL      Diagnostics level\n  --config FILE          Read a JSON configuration file\n  --set KEY=VALUE        Override a configuration value (repeatable)\n  --help, -h             Show help\n  --version, -V          Show version\n\n{extra}"
+            "{program}\n\nCommon options:\n  --headless             Run without a window\n  --fullscreen           Start fullscreen\n  --windowed             Start windowed\n  --resolution WxH       Window or offscreen resolution\n  --no-audio             Disable audio output\n  --audio-device NAME    Select an audio device\n  --benchmark            Enable benchmark mode\n  --benchmark-file FILE  Machine-readable benchmark output\n  --log-level LEVEL      Diagnostics level\n  --config FILE          Read a TOML/JSON configuration file\n  --set KEY=VALUE        Override a configuration value (repeatable)\n  --help, -h             Show help\n  --version, -V          Show version\n\n{extra}"
         )
     }
 }

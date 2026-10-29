@@ -3,6 +3,7 @@
 mod lighting;
 mod math;
 mod shadows;
+mod submission;
 mod surface;
 pub use lighting::DEFAULT_LIT_FRAGMENT_SHADER;
 pub use lighting::{
@@ -15,6 +16,8 @@ pub use shadows::{
     ShadowSettings, ShadowStats, ShadowView,
 };
 use std::collections::BTreeMap;
+pub use submission::{RenderWork, SubmissionConfig};
+use submission::{Visibility, instanced_shader};
 pub use surface::{
     DEFAULT_SURFACE_FRAGMENT_SHADER, NormalMap, SurfaceDraw3D, SurfaceMaterial,
     SurfaceRenderState3D,
@@ -34,6 +37,7 @@ pub struct Mesh {
     indices: Handle,
     count: u32,
     usage: SubmissionUsage,
+    bounds: ([f32; 3], [f32; 3]),
 }
 impl Mesh {
     pub fn upload(gal: &mut VulkanicGal, vertices: &[Vertex], indices: &[u32]) -> GalResult<Self> {
@@ -123,8 +127,26 @@ impl Mesh {
             vertices: vb,
             indices: ib,
             count: indices.len() as u32,
+            bounds: (
+                std::array::from_fn(|axis| {
+                    vertices
+                        .iter()
+                        .map(|v| v.position[axis])
+                        .fold(f32::INFINITY, f32::min)
+                }),
+                std::array::from_fn(|axis| {
+                    vertices
+                        .iter()
+                        .map(|v| v.position[axis])
+                        .fold(f32::NEG_INFINITY, f32::max)
+                }),
+            ),
             usage: SubmissionUsage::default(),
         })
+    }
+    /// Conservative mesh-space minimum/maximum positions, retained at upload.
+    pub fn local_bounds(&self) -> ([f32; 3], [f32; 3]) {
+        self.bounds
     }
     pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
         if self.usage.has_pending_commands() {
@@ -195,6 +217,8 @@ pub struct Prepared3D {
 }
 struct Slot {
     uniform: Handle,
+    instances: Option<Handle>,
+    instance_capacity: usize,
     capacity: usize,
     sets: BTreeMap<(Handle, Handle, Handle, Handle), Handle>,
     passes: BTreeMap<Handle, Handle>,
@@ -225,10 +249,25 @@ pub struct RenderState3D {
     uniform_size: usize,
     light_buffer_size: usize,
     shadow_buffer_size: usize,
+    draw_size: usize,
+    submission: SubmissionConfig,
+    work: RenderWork,
+    #[cfg(feature = "diagnostics")]
+    diagnostics: quasar_diagnostics::Diagnostics,
 }
 impl RenderState3D {
     pub fn new(gal: &mut VulkanicGal) -> GalResult<Self> {
         Self::new_configured(gal, None, 0)
+    }
+    pub fn with_submission(gal: &mut VulkanicGal, submission: SubmissionConfig) -> GalResult<Self> {
+        Self::new_submission_configured(gal, None, 0, 0, submission)
+    }
+    pub fn work_stats(&self) -> RenderWork {
+        self.work
+    }
+    #[cfg(feature = "diagnostics")]
+    pub fn set_diagnostics(&mut self, diagnostics: quasar_diagnostics::Diagnostics) {
+        self.diagnostics = diagnostics;
     }
     fn new_configured(
         gal: &mut VulkanicGal,
@@ -243,13 +282,51 @@ impl RenderState3D {
         light_buffer_size: usize,
         shadow_buffer_size: usize,
     ) -> GalResult<Self> {
-        let uniform_size = if shadow_buffer_size > 0 {
+        Self::new_submission_configured(
+            gal,
+            lit_fragment,
+            light_buffer_size,
+            shadow_buffer_size,
+            SubmissionConfig::default(),
+        )
+    }
+    fn new_submission_configured(
+        gal: &mut VulkanicGal,
+        lit_fragment: Option<&str>,
+        light_buffer_size: usize,
+        shadow_buffer_size: usize,
+        submission: SubmissionConfig,
+    ) -> GalResult<Self> {
+        submission.validate(gal)?;
+        let caps = gal.capabilities();
+        let required_bindings = if submission.instancing {
+            8
+        } else if shadow_buffer_size > 0 {
+            7
+        } else if lit_fragment.is_some() {
+            4
+        } else {
+            3
+        };
+        if !caps.features.storage_buffers
+            || !caps.features.uniform_buffers
+            || !caps.features.dynamic_buffer_offsets
+            || caps.limits.max_resource_layout_bindings < required_bindings
+            || light_buffer_size.max(shadow_buffer_size) as u64 > caps.limits.max_buffer_size
+            || (shadow_buffer_size > 0 && !caps.features.texture_array_layers)
+        {
+            return Err(GalError::unsupported_feature(
+                "3D submission requires compatible buffer, binding and texture-array limits",
+            ));
+        }
+        let draw_size = if shadow_buffer_size > 0 {
             208
         } else if lit_fragment.is_some() {
             192
         } else {
             160
         };
+        let uniform_size = if submission.instancing { 16 } else { draw_size };
         let mut created = Vec::new();
         let result = (|| {
             if gal.capabilities().shader_conventions.glsl_dialect != GlslDialect::ExplicitBindings
@@ -274,6 +351,9 @@ impl RenderState3D {
                     desc(6, ResourceBindingKind::StorageBuffer, 0),
                 ]);
             }
+            if submission.instancing {
+                bindings.push(desc(7, ResourceBindingKind::StorageBuffer, 0));
+            }
             let resource_layout = gal.create_resource_layout(ResourceLayoutDesc {
                 label: "3d-resources".into(),
                 bindings,
@@ -284,24 +364,33 @@ impl RenderState3D {
                 resource_layouts: vec![resource_layout],
             })?;
             created.push(layout);
-            let vertex = gal.create_shader_module(shader(
-                "3d-vertex",
-                ShaderStage::Vertex,
-                if lit_fragment.is_some() {
-                    if shadow_buffer_size > 0 {
-                        include_str!("surface.vert")
-                    } else {
-                        include_str!("lit.vert")
-                    }
+            let vertex_source = if lit_fragment.is_some() {
+                if shadow_buffer_size > 0 {
+                    include_str!("surface.vert")
                 } else {
-                    include_str!("mesh.vert")
-                },
-            ))?;
+                    include_str!("lit.vert")
+                }
+            } else {
+                include_str!("mesh.vert")
+            };
+            let vertex_source = if submission.instancing {
+                instanced_shader(vertex_source, true)
+            } else {
+                vertex_source.into()
+            };
+            let vertex =
+                gal.create_shader_module(shader("3d-vertex", ShaderStage::Vertex, &vertex_source))?;
             created.push(vertex);
+            let fragment_source = lit_fragment.unwrap_or(include_str!("mesh.frag"));
+            let fragment_source = if submission.instancing {
+                instanced_shader(fragment_source, false)
+            } else {
+                fragment_source.into()
+            };
             let fragment = gal.create_shader_module(shader(
                 "3d-fragment",
                 ShaderStage::Fragment,
-                lit_fragment.unwrap_or(include_str!("mesh.frag")),
+                &fragment_source,
             ))?;
             created.push(fragment);
             let sampler = gal.create_sampler(SamplerDesc {
@@ -401,6 +490,11 @@ impl RenderState3D {
                 uniform_size,
                 light_buffer_size,
                 shadow_buffer_size,
+                draw_size,
+                submission,
+                work: RenderWork::default(),
+                #[cfg(feature = "diagnostics")]
+                diagnostics: quasar_diagnostics::Diagnostics::disabled(),
             })
         })();
         if result.is_err() {
@@ -431,7 +525,7 @@ impl RenderState3D {
         lighting: Option<&lighting::LightingFrame<'_>>,
     ) -> GalResult<Prepared3D> {
         if self.layout.is_null()
-            || draws.len() > 4096
+            || draws.len() > self.submission.max_instances
             || !camera.view_projection.finite()
             || !camera.light_direction.iter().all(|f| f.is_finite())
             || camera.light_direction.iter().map(|f| f * f).sum::<f32>() < 1e-12
@@ -448,6 +542,8 @@ impl RenderState3D {
                 "invalid 3D draw/camera or released renderer/mesh",
             ));
         }
+        #[cfg(feature = "diagnostics")]
+        let _span = self.diagnostics.span("quasar.render3d", "prepare");
         let format = gal.pass_target_color_format(target)?;
         let (depth_texture, depth_view) = if target.kind() == Some(HandleKind::FrameTarget) {
             gal.frame_target_owned_depth_attachment(target)?
@@ -535,8 +631,33 @@ impl RenderState3D {
             } else {
                 None
             };
+            let instance_bytes = draws.len().max(1) * self.draw_size;
+            let instances = if self.submission.instancing {
+                match buffer(
+                    gal,
+                    "3d-instances",
+                    instance_bytes.next_power_of_two(),
+                    BufferUsage::Storage,
+                ) {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        let _ = gal.retire(uniform);
+                        if let Some(h) = lights {
+                            let _ = gal.retire(h);
+                        }
+                        if let Some(h) = shadows {
+                            let _ = gal.retire(h);
+                        }
+                        return Err(e);
+                    }
+                }
+            } else {
+                None
+            };
             self.slots.push(Slot {
                 uniform,
+                instances,
+                instance_capacity: instance_bytes.next_power_of_two(),
                 lights,
                 shadows,
                 capacity: bytes.next_power_of_two(),
@@ -573,6 +694,22 @@ impl RenderState3D {
             slot.capacity = bytes.next_power_of_two();
             slot.uniform = buffer(gal, "3d-uniforms", slot.capacity, BufferUsage::Uniform)?;
         }
+        let instance_bytes = draws.len().max(1) * self.draw_size;
+        if self.submission.instancing && self.slots[index].instance_capacity < instance_bytes {
+            let new = buffer(
+                gal,
+                "3d-instances",
+                instance_bytes.next_power_of_two(),
+                BufferUsage::Storage,
+            )?;
+            let slot = &mut self.slots[index];
+            for h in std::mem::take(&mut slot.sets).into_values() {
+                gal.retire(h)?;
+            }
+            gal.retire(slot.instances.unwrap())?;
+            slot.instances = Some(new);
+            slot.instance_capacity = instance_bytes.next_power_of_two();
+        }
         if !self.slots[index].passes.contains_key(&target) {
             let slot = &mut self.slots[index];
             if slot.passes.len() >= 8 {
@@ -590,6 +727,11 @@ impl RenderState3D {
         }
         let mut uniforms = vec![0; bytes];
         let mut work = Vec::new();
+        let mut instance_data = Vec::new();
+        let visibility = Visibility::new(self.submission.frustum_culling, camera.view_projection);
+        let mut visible = 0usize;
+        let mut batches = 0usize;
+        let mut previous = None;
         for (i, draw) in draws.iter().enumerate() {
             let info = gal.texture_view_info(draw.material.texture_view)?;
             if info.dimension != TextureDimension::D2
@@ -600,6 +742,9 @@ impl RenderState3D {
                 return Err(GalError::invalid_argument(
                     "3D material needs a sampled 2D floating-point/normalized view",
                 ));
+            }
+            if !visibility.intersects(draw.mesh, draw.model) {
+                continue;
             }
             let pair = if let Some(h) = self.pairs.get(&(draw.material.texture_view, false)) {
                 *h
@@ -680,6 +825,15 @@ impl RenderState3D {
                         vec![0],
                     ),
                 ];
+                if let Some(instances) = slot.instances {
+                    bindings.push(binding(
+                        7,
+                        instances,
+                        ResourceBindingKind::StorageBuffer,
+                        None,
+                        vec![],
+                    ));
+                }
                 if let Some(lights) = slot.lights {
                     bindings.push(binding(
                         3,
@@ -788,15 +942,31 @@ impl RenderState3D {
                 }
             }
             let data: Vec<u8> = values.into_iter().flat_map(f32::to_ne_bytes).collect();
-            uniforms[i * self.stride..i * self.stride + self.uniform_size].copy_from_slice(&data);
+            let pipeline = self.pipelines[&key];
+            let batch_key = (set, pipeline, draw.mesh.indices);
+            if self.submission.instancing {
+                instance_data.extend_from_slice(&data);
+                if previous == Some(batch_key) && !draw.material.transparent {
+                    if let Some(CommandOp::DrawIndexed { instances, .. }) = work.last_mut() {
+                        *instances += 1;
+                    }
+                    visible += 1;
+                    continue;
+                }
+                uniforms[batches * self.stride..batches * self.stride + 4]
+                    .copy_from_slice(&(visible as u32).to_ne_bytes());
+            } else {
+                uniforms[batches * self.stride..batches * self.stride + self.uniform_size]
+                    .copy_from_slice(&data);
+            }
             work.extend([
                 CommandOp::TrackSubmission(draw.mesh.usage.clone()),
-                CommandOp::BindGraphicsPipeline(self.pipelines[&key]),
+                CommandOp::BindGraphicsPipeline(pipeline),
                 CommandOp::BindResourceSet {
                     pipeline_layout: self.layout,
                     set_index: 0,
                     set,
-                    dynamic_offsets: [(i * self.stride) as u64].into(),
+                    dynamic_offsets: [(batches * self.stride) as u64].into(),
                 },
                 CommandOp::SetIndexBuffer {
                     buffer: draw.mesh.indices,
@@ -808,7 +978,26 @@ impl RenderState3D {
                     instances: 1,
                 },
             ]);
+            previous = if draw.material.transparent {
+                None
+            } else {
+                Some(batch_key)
+            };
+            batches += 1;
+            visible += 1;
         }
+        let bytes = batches.max(1) * self.stride;
+        uniforms.truncate(bytes);
+        self.work = RenderWork {
+            candidates: draws.len(),
+            visible,
+            culled: draws.len() - visible,
+            draws: batches,
+            instance_upload_bytes: instance_data.len(),
+        };
+
+        #[cfg(feature = "diagnostics")]
+        self.work.report(&self.diagnostics);
         let slot = &self.slots[index];
         let attachment = gal.pass_target_color_attachment(target)?;
         let mut operations = vec![
@@ -872,6 +1061,30 @@ impl RenderState3D {
                 }),
             },
         ];
+        if let Some(instances) = slot.instances
+            && !instance_data.is_empty()
+        {
+            let upload = [
+                barrier(
+                    instances,
+                    TextureUsageState::ShaderRead,
+                    TextureUsageState::TransferDst,
+                ),
+                CommandOp::HostWriteBuffer {
+                    buffer: instances,
+                    offset: 0,
+                    data: instance_data,
+                },
+                barrier(
+                    instances,
+                    TextureUsageState::TransferDst,
+                    TextureUsageState::ShaderRead,
+                ),
+            ];
+            let before_pass = operations.len() - 1;
+            operations.splice(before_pass..before_pass, upload);
+        }
+
         if let Some(frame) = lighting {
             let lights = slot.lights.expect("lit renderer owns light storage");
             let upload = [
@@ -945,7 +1158,7 @@ impl RenderState3D {
                 operations,
             })?,
             stats: RenderStats {
-                draws: draws.len(),
+                draws: batches,
                 uniform_upload_bytes: bytes,
             },
         })
@@ -994,6 +1207,9 @@ impl RenderState3D {
                 gal.retire(h)?;
             }
             gal.retire(s.uniform)?;
+            if let Some(instances) = s.instances {
+                gal.retire(instances)?;
+            }
             if let Some(lights) = s.lights {
                 gal.retire(lights)?;
             }

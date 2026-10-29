@@ -10,8 +10,12 @@ publish.workspace = true
 default = ["json", "frame"]
 json = ["dep:serde", "dep:serde_json"]
 frame = ["dep:quasar-frame"]
+config = ["dep:quasar-config"]
+diagnostics = ["dep:quasar-diagnostics"]
 
 [dependencies]
+quasar-config = { workspace = true, optional = true }
+quasar-diagnostics = { workspace = true, optional = true }
 quasar-frame = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

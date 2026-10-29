@@ -8,19 +8,23 @@ publish.workspace = true
 
 [features]
 default = ["desktop"]
-graphics = ["dep:quasar-frame", "dep:quasar-render-3d", "dep:quasar-render-2d", "dep:vulkanic-gal", "dep:quasar-profile"]
+graphics = ["dep:quasar-frame", "dep:quasar-render-3d", "dep:quasar-render-2d", "dep:vulkanic-gal", "quasar-profile/frame", "quasar-profile/json", "quasar-profile/diagnostics"]
 desktop = ["graphics", "dep:quasar-app", "quasar-app/desktop", "dep:quasar-window", "dep:quasar-input", "dep:quasar-core", "dep:quasar-audio"]
 
 [dependencies]
 quasar-nav.workspace = true
-quasar-config.workspace = true
+quasar-config = { workspace = true, features = ["toml", "json"] }
+quasar-diagnostics.workspace = true
 quasar-frame = { workspace = true, optional = true, features = ["vulkan"] }
-quasar-render-3d = { workspace = true, optional = true }
+quasar-render-3d = { workspace = true, optional = true, features = ["visibility", "config", "diagnostics"] }
 quasar-render-2d = { workspace = true, optional = true, features = ["gpu", "vulkan", "png"] }
 vulkanic-gal = { workspace = true, optional = true, features = ["vulkan"] }
-quasar-profile = { workspace = true, optional = true, features = ["frame", "json"] }
+quasar-profile = { workspace = true, features = ["config"] }
 quasar-app = { workspace = true, optional = true }
 quasar-window = { workspace = true, optional = true }
 quasar-input = { workspace = true, optional = true }
 quasar-core = { workspace = true, optional = true }
 quasar-audio = { workspace = true, optional = true, features = ["native"] }
+
+[dev-dependencies]
+tempfile.workspace = true

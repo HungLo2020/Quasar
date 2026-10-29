@@ -40,7 +40,7 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
 | `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, optional shaped glyph-atlas pages, camera/transforms, clipping, GPU readback, persistent software-framebuffer presentation | VulkanicGAL, quasar-core, quasar-frame; optional quasar-text |
 | `quasar-tilemap` | Versioned/Tiled maps, indexed tile/object queries, PNG atlases, animation, culled draw lists and CLI | Optional quasar-render-2d |
-| `quasar-render-3d` | Indexed meshes, transforms, legacy and opt-in per-pixel directional/point/spot lighting, classic/unlit and normal-mapped materials, directional/spot shadows, depth and shared-GAL prepared passes | VulkanicGAL |
+| `quasar-render-3d` | Indexed meshes, transforms, legacy and opt-in per-pixel directional/point/spot lighting, classic/unlit and normal-mapped materials, directional/spot shadows, optional instancing/frustum culling and shared-GAL prepared passes | VulkanicGAL |
 | `quasar-frame` | Optional recording transactions, target caching, acquire/present/cancel and completion polling | VulkanicGAL |
 | `examples/tilequest` | Scrolling top-down quest, layered maps, collision, replays and headless/native verification | Selected crates |
 | `examples/framebuffer` | CPU-rendered RGBA8 framebuffer presented through `quasar-render-2d`, with headless screenshots, window exercises and benchmarks | quasar-render-2d |
@@ -187,6 +187,8 @@ shaders, directional/spotlight shadows and normal maps, see
 [3D lighting](docs/lighting-3d.md), [surface/shadow rendering](docs/shadows-3d.md) and the playable
 [Nightwatch FPS example](examples/nightwatch/README.md). This path preserves
 legacy rendering and requires no scene, ECS or application runner.
+[Instancing, visibility and reusable benchmarks](docs/render-submission.md)
+extend this path through optional configuration and diagnostics hooks.
 
 ## Software framebuffer presentation
 

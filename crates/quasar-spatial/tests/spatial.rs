@@ -454,3 +454,79 @@ fn repeated_insert_remove_churn_is_reclaimed() {
     assert_eq!(grid.cell_references(), 0);
     assert_eq!(grid.memory().entries, 0);
 }
+
+#[test]
+fn projection_planes_and_affine_bounds_are_renderer_independent() {
+    use quasar_spatial::{Aabb, ClipDepth, Frustum};
+    let identity = [
+        [1., 0., 0., 0.],
+        [0., 1., 0., 0.],
+        [0., 0., 1., 0.],
+        [0., 0., 0., 1.],
+    ];
+    let zero = Frustum::<3>::from_view_projection(identity, ClipDepth::ZeroToOne).unwrap();
+    let signed = Frustum::<3>::from_view_projection(identity, ClipDepth::NegativeOneToOne).unwrap();
+    for x in -12..=12 {
+        for y in -12..=12 {
+            for z in -12..=12 {
+                let p = [x as f64 / 10., y as f64 / 10., z as f64 / 10.];
+                assert_eq!(
+                    zero.contains_point(&p),
+                    p[0].abs() <= 1. && p[1].abs() <= 1. && p[2] >= 0. && p[2] <= 1.
+                );
+                assert_eq!(signed.contains_point(&p), p.iter().all(|v| v.abs() <= 1.));
+            }
+        }
+    }
+    let bounds = Aabb::new([-2., -1., -3.], [1., 4., 2.]).unwrap();
+    let matrix = [
+        [-2., 1., 0., 0.],
+        [0.5, 0., 2., 0.],
+        [0., 3., -1., 0.],
+        [5., -4., 1., 1.],
+    ];
+    let result = bounds.transformed_affine(matrix).unwrap();
+    for bits in 0..8 {
+        let p = std::array::from_fn::<_, 3, _>(|a| {
+            if bits & (1 << a) == 0 {
+                bounds.min[a]
+            } else {
+                bounds.max[a]
+            }
+        });
+        let p = std::array::from_fn(|r| {
+            matrix[3][r] + (0..3).map(|c| matrix[c][r] * p[c]).sum::<f64>()
+        });
+        assert!(result.contains_point(&p));
+    }
+    assert!(
+        zero.intersects_aabb(&Aabb::new([-2.; 3], [2.; 3]).unwrap()),
+        "box enclosing camera must remain visible"
+    );
+    assert!(
+        zero.intersects_aabb(&Aabb::point([1., 0., 0.]).unwrap()),
+        "inclusive plane boundary"
+    );
+    let mut invalid = identity;
+    invalid[0][0] = f64::NAN;
+    assert!(Frustum::<3>::from_view_projection(invalid, ClipDepth::ZeroToOne).is_err());
+    assert!(bounds.transformed_affine(invalid).is_err());
+    let mut projective = identity;
+    projective[2][3] = -1.;
+    assert!(bounds.transformed_affine(projective).is_err());
+}
+
+#[test]
+fn infinite_far_clip_plane_is_omitted() {
+    use quasar_spatial::{ClipDepth, Frustum};
+    let projection = [
+        [1., 0., 0., 0.],
+        [0., 1., 0., 0.],
+        [0., 0., -1., -1.],
+        [0., 0., -0.1, 0.],
+    ];
+    let frustum = Frustum::<3>::from_view_projection(projection, ClipDepth::ZeroToOne).unwrap();
+    assert_eq!(frustum.planes().len(), 5);
+    assert!(frustum.contains_point(&[0., 0., -1e20]));
+    assert!(!frustum.contains_point(&[0., 0., -0.01]));
+}

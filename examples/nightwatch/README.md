@@ -89,8 +89,9 @@ lazily. Disabling shadows omits caster passes; normal maps remain independently
 usable. H/N toggle effects live without changing gameplay state.
 `--benchmark` disables requested vsync, enables GPU timestamps, and defaults to a
 240-frame run; `--benchmark-file` also enables it. `--frames` counts native
-rendered frames. GPU benchmarks require native mode. Configuration files and
-`--set` are rejected because this example has no persisted configuration schema.
+rendered frames. GPU benchmarks require native mode. Configuration files and repeatable `--set` overrides use quasar-config
+precedence; see [submission/configuration](../../docs/render-submission.md) for
+the TOML/JSON schema, environment mappings and live benchmark thresholds.
 All assets and effect PCM are generated locally; no asset download is needed.
 
 Simulation hashes support repeatability checks on the same floating-point
@@ -148,7 +149,7 @@ binding/[0,1] depth requirements; construction returns `UnsupportedFeature`.
 A separate capability-rejection test covers that boundary. No separate renderer
 or silent backend fallback is introduced to hide it.
 
-With shadows and normal maps enabled, the same debug/validation/Xvfb setup now
+Before instancing/culling, with shadows and normal maps enabled, the same debug/validation/Xvfb setup
 produces the following 180-frame results (172 retained samples):
 
 | Metric | p50 | p99 |
@@ -160,11 +161,50 @@ produces the following 180-frame results (172 retained samples):
 | Host writes | 208,208 B | 210,256 B |
 | Blocking/device-idle waits | 0 / 0 | 0 / 0 |
 
-The two caster passes increase draw/validation work substantially. This debug
-build is CPU-bound in submission; these numbers establish functionality and cost,
-not a real-time performance target. Caster culling, batching and submission
-profiling are useful next performance work. Maximum resource creation after
+The two caster passes increased draw/validation work substantially. This earlier
+debug build was CPU-bound in submission; these numbers establish functionality and cost,
+not a real-time performance target. The optional submission path described below addresses that CPU work. Maximum resource creation after
 warmup was three objects in a frame, with no leaks at teardown. Native tests also
 pause the game, toggle H/N, verify world pixels change, then verify restoring both
 effects restores the image exactly. The surface/shadow GPU tests pass through
 both Vulkan and wgpu on this machine.
+
+## Instanced submission and visibility
+
+Nightwatch now enables instancing and independent camera/light-frustum culling.
+Use `--no-instancing`, `--no-culling`, `--validation` and `--no-validation` for
+controlled comparisons. `render.*` configuration controls the same policy.
+Material/model inputs stay ordinary game data. Static cover, animated enemies,
+weapon parts and both shadow passes share the library's bounded upload slots.
+
+Vulkan and wgpu tests compare scalar, instanced and culled images exactly over
+six animated gameplay frames, with balanced teardown. Additional GPU tests cover
+off-camera shadow casters, per-instance materials, buffer growth, retained
+commands and reversed submission order. Native tests exercise gameplay, H/N,
+resize, teardown and a configured live threshold failure.
+
+An optimized Linux/RTX 2070/Xvfb run at 960×540, seed 42, 180 frames with 8 warmup
+frames, repeated three times per case, produced these medians of each run's p50:
+
+| Policy | CPU frame | CPU submit | GPU frame | Draws | Host writes |
+|---|---:|---:|---:|---:|---:|
+| Previous commit, validation on | 17.52 ms | 4.838 ms | 0.886 ms | 750 | 208,208 B |
+| Instancing + culling, validation on | 10.14 ms | 0.191 ms | 0.920 ms | 28 | 112,160 B |
+| Previous commit, validation off | 11.22 ms | 0.313 ms | 0.839 ms | 750 | 208,208 B |
+| Instancing + culling, validation off | 10.23 ms | 0.133 ms | 0.920 ms | 28 | 112,160 B |
+| Current scalar path, validation off | 11.51 ms | 0.344 ms | 0.883 ms | 750 | 208,208 B |
+| Instancing without culling, validation off | 10.62 ms | 0.143 ms | 0.857 ms | 32 | 143,376 B |
+
+Validation and Vulkan command-label environment settings match between old/new
+cases. The old executable was built from commit `1e6c0ed`. All runs produced
+16 shots, 4 kills and game hash `c6ee52a2d7295b44`; resources balanced at shutdown.
+The optimized path measured 557 visible and 158 culled pass instances at p50
+(these are independent distributions). CPU preparation was about 0.27 ms.
+
+CPU submission and upload costs improve substantially; this does not demonstrate
+a GPU-time improvement. Whole-frame results are dominated by roughly 10 ms of
+Xvfb presentation time, with run-to-run variation. Compare matching optimized
+builds and validation settings; the earlier 67 ms debug number is not an
+optimized baseline. See the reusable
+[benchmark runner and configuration](../../docs/render-submission.md) for
+reproducing cases and retaining raw measurements.

@@ -39,3 +39,19 @@ cargo run -p starfall -- --benchmark --benchmark-frames 120 \
 GPU numbers are reported only when the backend provides valid timestamps.
 Thresholds and measurements are single-machine observations, not portable
 performance guarantees. See [`docs/profiling.md`](../../docs/profiling.md).
+
+## Live benchmark sessions
+
+`BenchmarkSession` adds configurable warmup, bounded sample retention, live
+`ProfileThresholds` checks and bounded caller-provided metadata. Empty runs and
+missing GPU measurements fail explicit budgets. Optional `config` and
+`diagnostics` features provide prefix-based Quasar Config adapters and structured
+completion/failure records without installing global state. Session JSON keeps
+existing summary keys and adds a `benchmark` context object.
+
+Frame samples now distinguish renderer preparation, GAL validation, hazard
+analysis, backend encode/submit, visible/culled instances and instance uploads.
+New fields have deserialization defaults for old artifacts.
+
+See [submission benchmarks](../../docs/render-submission.md) for configuration,
+Nightwatch integration and the generic repeated-command benchmark runner.

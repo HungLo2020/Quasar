@@ -28,9 +28,22 @@ fn center(pixels: &[u8]) -> [u8; 4] {
 #[test]
 #[ignore = "requires Vulkan"]
 fn lights_materials_composition_and_retirement() {
+    lighting_composition_suite(SubmissionConfig::default());
+}
+
+#[test]
+#[ignore = "requires GPU"]
+fn instanced_lit_and_legacy_paths_compose_with_direct_gal_and_2d() {
+    lighting_composition_suite(SubmissionConfig {
+        instancing: true,
+        ..SubmissionConfig::default()
+    });
+}
+
+fn lighting_composition_suite(submission: SubmissionConfig) {
     let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "lit renderer tests").unwrap();
-    let mut renderer = LitRenderState3D::new(&mut gal, 8).unwrap();
-    let mut legacy = RenderState3D::new(&mut gal).unwrap();
+    let mut renderer = LitRenderState3D::with_submission(&mut gal, 8, submission).unwrap();
+    let mut legacy = RenderState3D::with_submission(&mut gal, submission).unwrap();
     let mut mesh = plane(&mut gal);
     let (texture, view) = upload_white(&mut gal).unwrap();
     let mut target = OffscreenTarget::new(&mut gal, 64, 64).unwrap();

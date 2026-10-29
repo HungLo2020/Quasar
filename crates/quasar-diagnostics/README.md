@@ -35,6 +35,7 @@ span.finish();
   Disabled spans do not allocate ids or call the clock.
 - `Counter` and `Gauge` are atomic, independently shareable values. They are not
   globally registered.
+- `Level` implements `FromStr` for shared configuration/CLI filtering.
 - `DiagnosticsConfig` bounds level filtering, field count, field/name length and
   error-chain depth. `Failure::from_error` copies a bounded source chain.
 - With the `timing` feature, `FrameTimer` records last/min/max/total/EMA CPU frame
@@ -54,6 +55,8 @@ Feature-gated hooks are provided by:
 - `quasar-audio`: audio command queue/device failures.
 - `quasar-frame`: resize and presentation lifecycle records.
 - `quasar-assets`: load/cache/invalidation diagnostics.
+- `quasar-render-3d`: optional preparation spans and submission work counts.
+- `quasar-profile`: optional live benchmark completion/threshold-failure reports.
 - `quasar-net`: no network crate exists in this repository yet; the standalone
   diagnostics API is ready for a future optional adapter.
 

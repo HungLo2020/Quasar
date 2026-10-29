@@ -129,6 +129,12 @@ fn frame_reports_map_into_samples() {
     use vulkanic_gal::metrics::SubmitProfile;
     let profile = SubmitProfile {
         gal_submit_total_nanos: 500,
+        gal_command_generation_nanos: 29,
+        gal_validate_ops_nanos: 11,
+        gal_validate_handles_nanos: 13,
+        gal_hazard_analysis_nanos: 17,
+        backend_encode_nanos: 19,
+        backend_submit_nanos: 23,
         draw_ops: 2,
         draw_indexed_ops: 3,
         host_write_bytes: 4_000,
@@ -152,6 +158,11 @@ fn frame_reports_map_into_samples() {
     assert_eq!(sample.frame, 7);
     assert_eq!(sample.cpu_frame_nanos, 30);
     assert_eq!(sample.submit_nanos, 500);
+    assert_eq!(sample.renderer_prepare_nanos, 29);
+    assert_eq!(sample.validation_nanos, 24);
+    assert_eq!(sample.hazard_analysis_nanos, 17);
+    assert_eq!(sample.backend_encode_nanos, 19);
+    assert_eq!(sample.backend_submit_nanos, 23);
     assert_eq!(sample.gpu_frame_nanos, Some(6_000));
     assert_eq!(sample.draws, 5);
     assert_eq!(sample.host_write_bytes, 4_000);

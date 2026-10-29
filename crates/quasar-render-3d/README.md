@@ -19,7 +19,8 @@ OpenGL-backed GAL.
   normal GAL commands. Color/depth load or clear policy is explicit.
 
 Draws preserve caller order. Sort opaque/transparent objects as appropriate;
-there is no automatic scene sorting, animation, PBR or culling. Optional
+there is no automatic scene sorting, animation or PBR. Optional frustum
+culling is available through the submission policy described below. Optional
 directional/spotlight shadow mapping is described below.
 Meshes are uploaded once into host-visible GAL buffers. Per-frame uniforms use
 three bounded completion-tracked slots; geometry is not uploaded each frame.
@@ -113,3 +114,18 @@ resource budgets, ordering/lifetime requirements, shader ABI and limitations.
 [Nightwatch](../../examples/nightwatch/README.md) demonstrates sun/flashlight
 shadows, moving rigid-part casters, procedural concrete/metal normal maps,
 a first-person weapon and a 2D HUD in one GAL frame.
+
+## Instancing and visibility
+
+`with_submission` constructors accept an optional `SubmissionConfig` for the
+legacy/lit/surface and shadow renderers. Compatible consecutive opaque draws
+share instanced draws with per-instance materials; ordering is preserved.
+The optional `visibility` feature reuses quasar-spatial for independent camera
+and light-frustum tests against uploaded mesh bounds. The old constructors and
+custom-shader ABI retain their existing behavior.
+
+`work_stats()` separates candidate/visible/culled instances from physical draw
+counts and instance upload bytes. Optional `config` and `diagnostics` features
+provide existing Config adapters and explicit Diagnostics handles. See
+[submission and reusable benchmarks](../../docs/render-submission.md) for APIs,
+budgets, shader interfaces, lifetime contracts and example configuration.

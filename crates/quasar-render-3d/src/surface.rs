@@ -62,6 +62,38 @@ pub struct SurfaceRenderState3D {
     max_shadows: usize,
 }
 impl SurfaceRenderState3D {
+    pub fn with_submission(
+        gal: &mut VulkanicGal,
+        max_lights: usize,
+        max_shadows: usize,
+        submission: SubmissionConfig,
+    ) -> GalResult<Self> {
+        if max_lights > 4096 || max_shadows > 16 {
+            return Err(GalError::invalid_argument(
+                "surface light/shadow budget exceeded",
+            ));
+        }
+        Ok(Self {
+            lit: LitRenderState3D {
+                core: RenderState3D::new_submission_configured(
+                    gal,
+                    Some(DEFAULT_SURFACE_FRAGMENT_SHADER),
+                    48 + max_lights.max(1) * 64,
+                    16 + max_shadows.max(1) * 96,
+                    submission,
+                )?,
+                max_lights,
+            },
+            max_shadows,
+        })
+    }
+    pub fn work_stats(&self) -> RenderWork {
+        self.lit.work_stats()
+    }
+    #[cfg(feature = "diagnostics")]
+    pub fn set_diagnostics(&mut self, d: quasar_diagnostics::Diagnostics) {
+        self.lit.set_diagnostics(d);
+    }
     /// Zero shadow capacity supports normal-map-only use with no shadow passes.
     pub fn new(gal: &mut VulkanicGal, max_lights: usize, max_shadows: usize) -> GalResult<Self> {
         Self::with_fragment_shader(
@@ -99,7 +131,7 @@ impl SurfaceRenderState3D {
                     gal,
                     Some(fragment),
                     48 + max_lights.max(1) * 64,
-                    16 + max_shadows * 96,
+                    16 + max_shadows.max(1) * 96,
                 )?,
                 max_lights,
             },

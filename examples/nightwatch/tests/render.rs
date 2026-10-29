@@ -15,7 +15,9 @@ fn world_weapon_flash_hud_resize_and_release_compose() {
     let normal = target
         .render(&mut gal, |gal, t| graphics.commands(gal, t, &w, false))
         .unwrap();
-    assert!(graphics.stats().draws > 100);
+    assert!(graphics.work_stats().visible > 100);
+    assert!(graphics.stats().draws < 100);
+    assert!(graphics.work_stats().culled > 0);
     let unique: std::collections::BTreeSet<_> =
         normal.rgba.as_chunks::<4>().0.iter().copied().collect();
     assert!(unique.len() > 100);
@@ -35,7 +37,7 @@ fn world_weapon_flash_hud_resize_and_release_compose() {
         "directional/flashlight shadows must affect world pixels"
     );
     assert!(
-        graphics.stats().draws < shadow_draws / 2,
+        graphics.stats().draws < shadow_draws,
         "disabled shadows omit caster passes"
     );
     graphics.set_effects(false, false);
@@ -96,6 +98,85 @@ fn world_weapon_flash_hud_resize_and_release_compose() {
         .unwrap();
     assert_eq!(resized.rgba.len(), 320 * 240 * 4);
     graphics.release(&mut gal).unwrap();
+    target.release(&mut gal).unwrap();
+    gal.retire_through(gal.latest_submission_id()).unwrap();
+    assert_eq!(
+        gal.metrics().resource_creates,
+        gal.metrics().resource_destroys
+    );
+}
+
+#[test]
+#[ignore = "requires GPU"]
+fn optimized_frames_match_scalar_reference_with_independent_shadow_culling() {
+    use nightwatch::render::GraphicsOptions;
+    use quasar_render_3d::SubmissionConfig;
+    let mut gal =
+        VulkanicGal::create(BackendChoice::Vulkan, "nightwatch optimization parity").unwrap();
+    let mut reference = Graphics::with_submission(
+        &mut gal,
+        GraphicsOptions {
+            shadow_resolution: 128,
+            ..GraphicsOptions::default()
+        },
+        SubmissionConfig::default(),
+    )
+    .unwrap();
+    let mut batched = Graphics::with_submission(
+        &mut gal,
+        GraphicsOptions {
+            shadow_resolution: 128,
+            ..GraphicsOptions::default()
+        },
+        SubmissionConfig {
+            instancing: true,
+            ..SubmissionConfig::default()
+        },
+    )
+    .unwrap();
+    let mut culled = Graphics::with_submission(
+        &mut gal,
+        GraphicsOptions {
+            shadow_resolution: 128,
+            ..GraphicsOptions::default()
+        },
+        SubmissionConfig {
+            instancing: true,
+            frustum_culling: true,
+            ..SubmissionConfig::default()
+        },
+    )
+    .unwrap();
+    let mut target = OffscreenTarget::new(&mut gal, 640, 360).unwrap();
+    let mut w = World::new(42);
+    for frame in 0..6 {
+        if frame > 0 {
+            for _ in 0..20 {
+                w.update(nightwatch::world::autoplay(&w));
+            }
+        }
+        if frame == 3 {
+            w.flashlight = false;
+        }
+        let hash = w.state_hash();
+        let a = target
+            .render(&mut gal, |gal, t| reference.commands(gal, t, &w, false))
+            .unwrap();
+        let b = target
+            .render(&mut gal, |gal, t| batched.commands(gal, t, &w, false))
+            .unwrap();
+        let c = target
+            .render(&mut gal, |gal, t| culled.commands(gal, t, &w, false))
+            .unwrap();
+        assert_eq!(a.rgba, b.rgba, "batching parity frame {frame}");
+        assert_eq!(a.rgba, c.rgba, "camera/light culling parity frame {frame}");
+        assert_eq!(hash, w.state_hash());
+        assert!(batched.stats().draws < reference.stats().draws / 4);
+        assert!(culled.work_stats().culled > 0);
+    }
+    reference.release(&mut gal).unwrap();
+    batched.release(&mut gal).unwrap();
+    culled.release(&mut gal).unwrap();
     target.release(&mut gal).unwrap();
     gal.retire_through(gal.latest_submission_id()).unwrap();
     assert_eq!(

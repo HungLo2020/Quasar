@@ -11,9 +11,15 @@ default = ["vulkan"]
 vulkan = ["vulkanic-gal/vulkan"]
 opengl = ["vulkanic-gal/opengl"]
 wgpu = ["vulkanic-gal/wgpu"]
+visibility = ["dep:quasar-spatial"]
+config = ["dep:quasar-config"]
+diagnostics = ["dep:quasar-diagnostics"]
 
 [dependencies]
 vulkanic-gal = { workspace = true }
+quasar-spatial = { workspace = true, optional = true }
+quasar-config = { workspace = true, optional = true }
+quasar-diagnostics = { workspace = true, optional = true }
 
 [dev-dependencies]
 quasar-frame = { workspace = true, features = ["vulkan"] }

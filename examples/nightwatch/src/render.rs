@@ -23,6 +23,7 @@ pub struct Graphics {
     view: Handle,
     textures: Textures,
     stats: RendererStats,
+    work: RenderWork,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct GraphicsOptions {
@@ -75,8 +76,23 @@ impl Graphics {
         Self::with_options(gal, GraphicsOptions::default())
     }
     pub fn with_options(gal: &mut VulkanicGal, options: GraphicsOptions) -> GalResult<Self> {
-        let mut world = SurfaceRenderState3D::new(gal, 16, 2)?;
-        let mut weapon = match SurfaceRenderState3D::new(gal, 8, 2) {
+        Self::with_submission(
+            gal,
+            options,
+            SubmissionConfig {
+                instancing: true,
+                frustum_culling: true,
+                ..SubmissionConfig::default()
+            },
+        )
+    }
+    pub fn with_submission(
+        gal: &mut VulkanicGal,
+        options: GraphicsOptions,
+        submission: SubmissionConfig,
+    ) -> GalResult<Self> {
+        let mut world = SurfaceRenderState3D::with_submission(gal, 16, 2, submission)?;
+        let mut weapon = match SurfaceRenderState3D::with_submission(gal, 8, 2, submission) {
             Ok(x) => x,
             Err(e) => {
                 let _ = world.release(gal);
@@ -117,13 +133,14 @@ impl Graphics {
             owned.extend([normal_concrete, normal_concrete_view]);
             let (normal_metal, normal_metal_view) = geometry::upload_normal(gal, true)?;
             owned.extend([normal_metal, normal_metal_view]);
-            let shadows = ShadowRenderState3D::new(
+            let shadows = ShadowRenderState3D::with_submission(
                 gal,
                 ShadowConfig {
                     resolution: options.shadow_resolution,
                     max_depth_bytes: 96 * 1024 * 1024,
                     ..ShadowConfig::default()
                 },
+                submission,
             )?;
             Ok((
                 normal_concrete,
@@ -164,7 +181,16 @@ impl Graphics {
             view,
             textures: Textures::default(),
             stats: RendererStats::default(),
+            work: RenderWork::default(),
         })
+    }
+    pub fn work_stats(&self) -> RenderWork {
+        self.work
+    }
+    pub fn set_diagnostics(&mut self, d: quasar_diagnostics::Diagnostics) {
+        self.world.set_diagnostics(d.clone());
+        self.weapon.set_diagnostics(d.clone());
+        self.shadows.set_diagnostics(d);
     }
     pub fn stats(&self) -> RendererStats {
         self.stats
@@ -402,6 +428,11 @@ impl Graphics {
             DisplayOptions::default(),
             LoadOp::Load,
         )?;
+        self.work = self.world.work_stats();
+        self.work += self.weapon.work_stats();
+        if shadow_frame.is_some() {
+            self.work += self.shadows.work_stats();
+        }
         self.stats = RendererStats {
             draws: (world.stats.draws + gun.stats.draws + hud.stats.batches + shadow_stats.draws)
                 as u64,
@@ -831,8 +862,29 @@ pub fn screenshot_with_options(
     path: &std::path::Path,
     options: GraphicsOptions,
 ) -> Result<()> {
+    screenshot_with_submission(
+        w,
+        width,
+        height,
+        path,
+        options,
+        SubmissionConfig {
+            instancing: true,
+            frustum_culling: true,
+            ..SubmissionConfig::default()
+        },
+    )
+}
+pub fn screenshot_with_submission(
+    w: &World,
+    width: u32,
+    height: u32,
+    path: &std::path::Path,
+    options: GraphicsOptions,
+    submission: SubmissionConfig,
+) -> Result<()> {
     let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "Nightwatch screenshot")?;
-    let mut graphics = Graphics::with_options(&mut gal, options)?;
+    let mut graphics = Graphics::with_submission(&mut gal, options, submission)?;
     let mut target = quasar_frame::OffscreenTarget::new(&mut gal, width, height)?;
     let result = target.render(&mut gal, |gal, target| {
         graphics.commands(gal, target, w, false)

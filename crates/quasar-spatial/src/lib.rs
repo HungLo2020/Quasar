@@ -34,7 +34,7 @@
 mod geometry;
 mod grid;
 
-pub use geometry::{Aabb, Frustum, Plane, Ray};
+pub use geometry::{Aabb, ClipDepth, Frustum, Plane, Ray};
 pub use grid::{
     GridConfig, GridMemory, Neighbor, RayHit, SpatialError, SpatialGrid, SpatialResult,
 };

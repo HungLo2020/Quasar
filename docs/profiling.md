@@ -3,7 +3,8 @@
 The measurement foundation of issue #18 is implemented by the independently
 usable `quasar-profile` crate and the shared GAL/frame measurements exposed by
 VulkanicGAL and `quasar-frame`. Live benchmark integration with configured
-regression thresholds remains outstanding. Profiling does not require a custom
+regression thresholds is available through `BenchmarkSession`, demonstrated by
+Nightwatch; see [submission benchmarks](render-submission.md). Profiling does not require a custom
 build system or editor.
 
 ## Pipeline
@@ -58,8 +59,11 @@ same device/driver and compare distributions, not absolute numbers across hosts.
   on Linux, plus selected compile checks on Windows/macOS. It does not run the
   ignored GPU tests or native rendering/benchmark matrix. Those checks are
   available locally through `tools/full_checks.py` or individual test commands.
-- `ProfileThresholds::check` is opt-in and currently exercised only by unit
-  tests. Live benchmarks emit measurements without applying those limits. The
+- `ProfileThresholds::check` remains opt-in. `BenchmarkSession` applies configured
+  limits in live Nightwatch runs; native validation verifies a threshold failure
+  writes its artifact, releases resources and exits unsuccessfully. Other example
+  integrations that use `FrameProfiler` directly still emit measurements without
+  applying those limits. The
   stored composition fixture test checks metric shape and statistical
   consistency, not a new run's performance against the historical artifact.
 - CI does not claim GPU performance from compile-only runs or compare

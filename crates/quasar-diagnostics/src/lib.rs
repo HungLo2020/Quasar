@@ -27,5 +27,5 @@ mod sink;
 pub use diagnostics::{Counter, Diagnostics, DiagnosticsConfig, Gauge, Span};
 #[cfg(feature = "timing")]
 pub use diagnostics::{FrameStats, FrameTimer};
-pub use record::{Failure, Field, Level, Record, SpanId, Value};
+pub use record::{Failure, Field, Level, ParseLevelError, Record, SpanId, Value};
 pub use sink::{CallbackSink, MemorySink, NullSink, Sink, TextSink};
