@@ -207,6 +207,47 @@ fn gpu_indexed_masks_priority_and_rgba_match_reference() {
         assert_eq!(r.stats().texture_upload_bytes, 0);
     }
 }
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "native GPU pixel parity and mask batching; run explicitly"]
+fn gpu_identical_mask_writers_batch_and_match_reference() {
+    let mut r = Renderer2D::headless().unwrap();
+    let t = Textures::default();
+    let mut c = Canvas::new(34, 34).unwrap();
+    c.set_pixel_state(PixelState {
+        reference: 0x20,
+        write_mask: 0xff,
+        color_write: false,
+        ..Default::default()
+    });
+    c.rect(Rect::new(0., 0., 17., 34.), [255; 4]);
+    c.set_pixel_state(PixelState {
+        read_mask: 0x30,
+        reference: 0x20,
+        write_mask: 0xf0,
+        color_write: false,
+        ..Default::default()
+    });
+    // Overlapping writers include passing and failing comparisons, with
+    // overlapping read/write masks. Identical writes preserve the comparison.
+    for y in 0..16 {
+        for x in 0..16 {
+            c.rect(Rect::new((x * 2) as f32, (y * 2) as f32, 3., 3.), [255; 4]);
+        }
+    }
+    c.set_pixel_state(PixelState {
+        read_mask: 0xf0,
+        reference: 0x20,
+        ..Default::default()
+    });
+    c.rect(Rect::new(0., 0., 34., 34.), [200, 40, 20, 255]);
+    assert_eq!(
+        r.render_to_image(&c, &t).unwrap(),
+        reference::rasterize(&c, &t).unwrap()
+    );
+    assert_eq!(r.stats().batches, 3);
+}
+
 #[cfg(feature = "assets")]
 #[test]
 fn mounted_png_assets_share_cache_and_pixel_storage_with_textures() {
@@ -288,4 +329,83 @@ fn gpu_all_256_indices_match_expanded_rgba_and_reference() {
     let cpu = reference::rasterize(&c, &t).unwrap();
     let gpu = r.render_to_image(&c, &t).unwrap();
     assert!(gpu.iter().zip(&cpu).all(|(a, b)| a.abs_diff(*b) <= 1));
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "native GPU ordered color blending and coverage in mask-writer batches"]
+fn gpu_batched_mask_writers_preserve_color_order_and_transparent_coverage() {
+    let mut r = Renderer2D::headless().unwrap();
+    for use_palette in [false, true] {
+        let mut textures = Textures::default();
+        let colors = [
+            [0, 0, 0, 0],
+            [240, 20, 40, 255],
+            [20, 220, 60, 85],
+            [40, 60, 240, 255],
+        ];
+        let indices = [0u8, 1, 2, 3, 3, 2, 1, 0];
+        let image = if use_palette {
+            indexed(&mut textures, 4, 2, &indices)
+        } else {
+            textures.insert(
+                Image::new(
+                    4,
+                    2,
+                    indices
+                        .iter()
+                        .flat_map(|&i| colors[i as usize])
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            )
+        };
+        let bank = palette(&mut textures, &colors);
+        let mut c = Canvas::new(34, 34).unwrap();
+        c.set_pixel_state(PixelState {
+            reference: 0x20,
+            write_mask: 0xff,
+            color_write: false,
+            ..Default::default()
+        });
+        c.rect(Rect::new(0., 0., 17., 34.), [255; 4]);
+        if use_palette {
+            c.set_palette(Some(PaletteBinding {
+                texture: bank,
+                transparent_index: Some(0),
+            }));
+        }
+        c.set_pixel_state(PixelState {
+            read_mask: 0x30,
+            reference: 0x20,
+            write_mask: 0xf0,
+            alpha_min: 1,
+            ..Default::default()
+        });
+        for draw in 0..6 {
+            c.set_clip(Some(Rect::new(draw as f32, 1., 30., 31.)));
+            let mut sprite = Sprite::new(image, Rect::new(draw as f32 * 2., draw as f32, 20., 24.));
+            sprite.tint = Color([255, 255 - draw * 20, 180 + draw * 10, 255]);
+            c.sprite_flipped(sprite, draw % 2 == 0, draw % 3 == 0);
+        }
+        c.set_palette(None);
+        c.set_clip(None);
+        c.set_pixel_state(PixelState {
+            read_mask: 0xf0,
+            reference: 0x20,
+            ..Default::default()
+        });
+        c.rect(Rect::new(0., 32., 34., 2.), [200, 40, 20, 255]);
+        let expected = reference::rasterize(&c, &textures).unwrap();
+        let actual = r.render_to_image(&c, &textures).unwrap();
+        assert!(
+            actual
+                .iter()
+                .zip(&expected)
+                .all(|(a, b)| a.abs_diff(*b) <= 1),
+            "ordered writer parity failed, indexed={use_palette}"
+        );
+        assert_eq!(r.stats().batches, 3);
+        assert_eq!(r.stats().quads, 8);
+    }
 }

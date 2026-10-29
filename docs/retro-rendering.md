@@ -108,10 +108,13 @@ capture rules and restore the previous pixel state:
   when scenery hides their color. Holes claim nothing, so a later sprite can
   appear through them. Game-owned priority/OAM sorting stays outside Quasar.
 
-Each helper emits two quads. Generic mask-write quads are separate ordered draws;
-read-only/ordinary compatible quads still batch. A new priority group can clear
-its sprite bit using a mask-only rectangle before drawing more sprites. All
-rules operate in final logical-screen space after the existing transforms.
+Each helper emits two quads. Adjacent quads with identical texture, palette,
+filter and pixel state batch, including mask writers. A passing replacement
+writes the same reference bits used by its comparison, so another identical
+writer sees the same pass/fail result; color blending retains primitive order.
+A new priority group can clear its sprite bit using a mask-only rectangle before
+drawing more sprites. All rules operate in final logical-screen space after the
+existing transforms.
 
 The CPU implementation uses a private byte plane allocated only for masked
 canvases. GPU execution uses existing GAL stencil pipelines and a private

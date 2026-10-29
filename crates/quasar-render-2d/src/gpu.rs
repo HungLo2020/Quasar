@@ -1417,12 +1417,13 @@ impl RenderState2D {
                 q.filter.unwrap_or(options.filter)
             };
             let palette = q.palette.map_or(q.texture, |p| p.texture);
+            // Identical stencil replacements preserve the comparison result,
+            // including where read/write masks overlap; draw order stays intact.
             if let Some(batch) = batches.last_mut()
                 && batch.texture == q.texture
                 && batch.filter == filter
                 && batch.palette == palette
                 && batch.pixels == q.pixels
-                && q.pixels.write_mask == 0
             {
                 batch.count += 1;
             } else {
