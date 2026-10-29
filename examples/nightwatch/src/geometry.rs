@@ -2,9 +2,41 @@
 use quasar_render_3d::Vertex;
 use vulkanic_gal::{commands::BufferImageCopyRegion, resources::*, *};
 pub(crate) fn upload_white(gal: &mut VulkanicGal) -> GalResult<(Handle, Handle)> {
+    upload_rgba(gal, 1, 1, vec![255; 4])
+}
+pub(crate) fn upload_normal(gal: &mut VulkanicGal, metal: bool) -> GalResult<(Handle, Handle)> {
+    let mut pixels = Vec::with_capacity(64 * 64 * 4);
+    let height = |x: f32, y: f32| {
+        if metal {
+            (x * std::f32::consts::TAU * 4.).sin() * (y * std::f32::consts::TAU * 4.).sin() * 0.012
+        } else {
+            (x * std::f32::consts::TAU * 7.).sin() * (y * std::f32::consts::TAU * 5.).cos() * 0.004
+                + (x * std::f32::consts::TAU * 13.).cos() * 0.0015
+        }
+    };
+    for y in 0..64 {
+        for x in 0..64 {
+            let (u, v) = (x as f32 / 64., y as f32 / 64.);
+            let dx = (height(u + 1. / 64., v) - height(u - 1. / 64., v)) * 32.;
+            let dy = (height(u, v + 1. / 64.) - height(u, v - 1. / 64.)) * 32.;
+            let length = (dx * dx + dy * dy + 1.).sqrt();
+            for n in [-dx / length, -dy / length, 1. / length] {
+                pixels.push(((n * 0.5 + 0.5) * 255.).round() as u8);
+            }
+            pixels.push(255);
+        }
+    }
+    upload_rgba(gal, 64, 64, pixels)
+}
+fn upload_rgba(
+    gal: &mut VulkanicGal,
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+) -> GalResult<(Handle, Handle)> {
     let size = Extent3d {
-        width: 1,
-        height: 1,
+        width,
+        height,
         depth: 1,
     };
     let texture = gal.create_texture(TextureDesc {
@@ -33,7 +65,7 @@ pub(crate) fn upload_white(gal: &mut VulkanicGal) -> GalResult<(Handle, Handle)>
     };
     let upload = match gal.create_buffer(BufferDesc {
         label: "playground-white-upload".into(),
-        size: 4,
+        size: pixels.len() as u64,
         memory: MemoryDomain::Upload,
         usages: vec![BufferUsage::TransferSrc, BufferUsage::HostWrite],
     }) {
@@ -52,7 +84,7 @@ pub(crate) fn upload_white(gal: &mut VulkanicGal) -> GalResult<(Handle, Handle)>
                 CommandOp::HostWriteBuffer {
                     buffer: upload,
                     offset: 0,
-                    data: vec![255; 4],
+                    data: pixels,
                 },
                 CommandOp::Barrier(ResourceBarrier {
                     resource: upload,
@@ -73,8 +105,8 @@ pub(crate) fn upload_white(gal: &mut VulkanicGal) -> GalResult<(Handle, Handle)>
                 CommandOp::CopyBufferToTexture(BufferImageCopyRegion {
                     buffer: upload,
                     buffer_offset: 0,
-                    bytes_per_row: 4,
-                    rows_per_image: 1,
+                    bytes_per_row: width * 4,
+                    rows_per_image: height,
                     texture,
                     texture_mip: 0,
                     texture_layer: 0,

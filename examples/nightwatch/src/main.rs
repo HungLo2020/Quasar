@@ -38,7 +38,17 @@ fn run() -> Result<()> {
         );
         if let Some(path) = settings.screenshot {
             #[cfg(feature = "graphics")]
-            nightwatch::render::screenshot(&world, settings.width, settings.height, &path)?;
+            nightwatch::render::screenshot_with_options(
+                &world,
+                settings.width,
+                settings.height,
+                &path,
+                nightwatch::render::GraphicsOptions {
+                    shadows: settings.shadows,
+                    normal_maps: settings.normal_maps,
+                    shadow_resolution: settings.shadow_resolution,
+                },
+            )?;
             #[cfg(not(feature = "graphics"))]
             {
                 let _ = path;

@@ -89,7 +89,14 @@ impl App {
                 max_frames_in_flight: 3,
             },
         )?;
-        self.graphics = Some(Graphics::new(&mut gal)?);
+        self.graphics = Some(Graphics::with_options(
+            &mut gal,
+            nightwatch::render::GraphicsOptions {
+                shadows: self.settings.shadows,
+                normal_maps: self.settings.normal_maps,
+                shadow_resolution: self.settings.shadow_resolution,
+            },
+        )?);
         self.surface = Some(FrameSurface::new(size.width.max(1), size.height.max(1)));
         self.gal = Some(gal);
         if self.settings.audio {
@@ -136,6 +143,20 @@ impl Application for App {
     fn frame_update(&mut self, c: &mut AppContext<'_>) -> Result<Flow> {
         if self.done {
             return Ok(Flow::Exit);
+        }
+        if let Some(graphics) = &mut self.graphics {
+            let (mut shadows, mut normals) = graphics.effects();
+            if c.input.pressed(Key::KeyH) {
+                shadows = !shadows;
+                c.input.consume_pressed(Key::KeyH);
+            }
+            if c.input.pressed(Key::KeyN) {
+                normals = !normals;
+                c.input.consume_pressed(Key::KeyN);
+            }
+            graphics.set_effects(shadows, normals);
+            self.settings.shadows = shadows;
+            self.settings.normal_maps = normals;
         }
         if c.input.pressed(Key::F11) {
             if let Some(window) = c.window {
@@ -284,11 +305,16 @@ impl Application for App {
             self.world.state_hash()
         );
         if let Some(path) = &self.settings.screenshot {
-            nightwatch::render::screenshot(
+            nightwatch::render::screenshot_with_options(
                 &self.world,
                 self.settings.width,
                 self.settings.height,
                 path,
+                nightwatch::render::GraphicsOptions {
+                    shadows: self.settings.shadows,
+                    normal_maps: self.settings.normal_maps,
+                    shadow_resolution: self.settings.shadow_resolution,
+                },
             )?;
         }
         Ok(())

@@ -42,9 +42,10 @@ retain their shader behavior, 160-byte draw payload and no light-buffer cost.
 | Resource lifetimes | Existing submission receipts and explicit release, including light upload slots |
 | Backends | Backend-neutral GAL API and GLSL; verification notes below distinguish actual runs from compile checks |
 
-Normal maps/tangents, metallic/roughness PBR, lightmaps/probes, shadow maps,
-HDR exposure/tonemapping, clustered assignment and postprocessing remain future
-stages. This milestone does not add dynamic 2D lighting. The optional fragment
+Normal maps and directional/spotlight shadow maps are available through the
+additive [surface/shadow path](shadows-3d.md), leaving this lit ABI unchanged.
+Authored tangents, metallic/roughness PBR, lightmaps/probes, HDR exposure/tonemapping,
+clustered assignment and postprocessing remain future stages. This milestone does not add dynamic 2D lighting. The optional fragment
 shader extension allows custom shading now; custom resource layouts or additional
 passes use direct GAL composition instead of being silently forced into the
 built-in material layout.

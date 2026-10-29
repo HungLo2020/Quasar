@@ -2,13 +2,23 @@
 //! assets, draw ordering, frame targets, submission and presentation.
 mod lighting;
 mod math;
+mod shadows;
+mod surface;
 pub use lighting::DEFAULT_LIT_FRAGMENT_SHADER;
 pub use lighting::{
     Attenuation, ColorSpace, Light, Lighting, LitCamera3D, LitDraw3D, LitMaterial, LitPassOptions,
     LitRenderState3D, ShadingModel,
 };
 pub use math::Mat4;
+pub use shadows::{
+    PreparedShadows, ShadowBinding, ShadowCaster, ShadowConfig, ShadowFilter, ShadowRenderState3D,
+    ShadowSettings, ShadowStats, ShadowView,
+};
 use std::collections::BTreeMap;
+pub use surface::{
+    DEFAULT_SURFACE_FRAGMENT_SHADER, NormalMap, SurfaceDraw3D, SurfaceMaterial,
+    SurfaceRenderState3D,
+};
 use vulkanic_gal::{commands::SubmissionUsage, resources::*, *};
 
 #[derive(Clone, Copy, Debug)]
@@ -186,10 +196,17 @@ pub struct Prepared3D {
 struct Slot {
     uniform: Handle,
     capacity: usize,
-    sets: BTreeMap<(Handle, Handle), Handle>,
+    sets: BTreeMap<(Handle, Handle, Handle, Handle), Handle>,
     passes: BTreeMap<Handle, Handle>,
     usage: SubmissionUsage,
     lights: Option<Handle>,
+    shadows: Option<Handle>,
+}
+struct EmptyShadow {
+    texture: Handle,
+    view: Handle,
+    sampler: Handle,
+    pair: Handle,
 }
 /// Rendering state on a caller-owned device. Always use its construction GAL.
 /// Keeps bounded transient slots; release explicitly before dropping.
@@ -199,12 +216,15 @@ pub struct RenderState3D {
     vertex: Handle,
     fragment: Handle,
     sampler: Handle,
-    pairs: BTreeMap<Handle, Handle>,
+    normal_sampler: Option<Handle>,
+    empty_shadow: Option<EmptyShadow>,
+    pairs: BTreeMap<(Handle, bool), Handle>,
     pipelines: BTreeMap<(TextureFormat, TextureFormat, bool, bool), Handle>,
     slots: Vec<Slot>,
     stride: usize,
     uniform_size: usize,
     light_buffer_size: usize,
+    shadow_buffer_size: usize,
 }
 impl RenderState3D {
     pub fn new(gal: &mut VulkanicGal) -> GalResult<Self> {
@@ -215,7 +235,21 @@ impl RenderState3D {
         lit_fragment: Option<&str>,
         light_buffer_size: usize,
     ) -> GalResult<Self> {
-        let uniform_size = if lit_fragment.is_some() { 192 } else { 160 };
+        Self::new_surface_configured(gal, lit_fragment, light_buffer_size, 0)
+    }
+    fn new_surface_configured(
+        gal: &mut VulkanicGal,
+        lit_fragment: Option<&str>,
+        light_buffer_size: usize,
+        shadow_buffer_size: usize,
+    ) -> GalResult<Self> {
+        let uniform_size = if shadow_buffer_size > 0 {
+            208
+        } else if lit_fragment.is_some() {
+            192
+        } else {
+            160
+        };
         let mut created = Vec::new();
         let result = (|| {
             if gal.capabilities().shader_conventions.glsl_dialect != GlslDialect::ExplicitBindings
@@ -233,6 +267,13 @@ impl RenderState3D {
             if lit_fragment.is_some() {
                 bindings.push(desc(3, ResourceBindingKind::StorageBuffer, 0));
             }
+            if shadow_buffer_size > 0 {
+                bindings.extend([
+                    desc(4, ResourceBindingKind::CombinedTextureSampler, 0),
+                    desc(5, ResourceBindingKind::CombinedTextureSampler, 0),
+                    desc(6, ResourceBindingKind::StorageBuffer, 0),
+                ]);
+            }
             let resource_layout = gal.create_resource_layout(ResourceLayoutDesc {
                 label: "3d-resources".into(),
                 bindings,
@@ -247,7 +288,11 @@ impl RenderState3D {
                 "3d-vertex",
                 ShaderStage::Vertex,
                 if lit_fragment.is_some() {
-                    include_str!("lit.vert")
+                    if shadow_buffer_size > 0 {
+                        include_str!("surface.vert")
+                    } else {
+                        include_str!("lit.vert")
+                    }
                 } else {
                     include_str!("mesh.vert")
                 },
@@ -270,12 +315,83 @@ impl RenderState3D {
                 comparison: None,
             })?;
             created.push(sampler);
+            let normal_sampler = if shadow_buffer_size > 0 {
+                let h = gal.create_sampler(SamplerDesc {
+                    label: "3d-normal-sampler".into(),
+                    min_filter: SamplerFilter::Linear,
+                    mag_filter: SamplerFilter::Linear,
+                    mip_filter: SamplerFilter::Nearest,
+                    address_u: SamplerAddressMode::Repeat,
+                    address_v: SamplerAddressMode::Repeat,
+                    address_w: SamplerAddressMode::Repeat,
+                    comparison: None,
+                })?;
+                created.push(h);
+                Some(h)
+            } else {
+                None
+            };
+            // An 8-byte, never-sampled depth array satisfies the fixed shader layout
+            // for normal-mapped draws without requiring a shadow renderer or passes.
+            let empty_shadow = if shadow_buffer_size > 0 {
+                let texture = gal.create_texture(TextureDesc {
+                    label: "3d-empty-shadow".into(),
+                    dimension: TextureDimension::D2,
+                    format: TextureFormat::Depth32Float,
+                    extent: Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth: 1,
+                    },
+                    mip_levels: 1,
+                    array_layers: 2,
+                    usages: vec![TextureUsage::Sampled],
+                })?;
+                created.push(texture);
+                let view = gal.create_texture_view(TextureViewDesc {
+                    label: "3d-empty-shadow-view".into(),
+                    texture,
+                    format: TextureFormat::Depth32Float,
+                    base_mip: 0,
+                    mip_count: 1,
+                    base_layer: 0,
+                    layer_count: 2,
+                })?;
+                created.push(view);
+                let sampler = gal.create_sampler(SamplerDesc {
+                    label: "3d-empty-shadow-sampler".into(),
+                    min_filter: SamplerFilter::Nearest,
+                    mag_filter: SamplerFilter::Nearest,
+                    mip_filter: SamplerFilter::Nearest,
+                    address_u: SamplerAddressMode::ClampToEdge,
+                    address_v: SamplerAddressMode::ClampToEdge,
+                    address_w: SamplerAddressMode::ClampToEdge,
+                    comparison: Some(CompareOp::LessOrEqual),
+                })?;
+                created.push(sampler);
+                let pair = gal.create_combined_texture_sampler(CombinedTextureSamplerDesc {
+                    label: "3d-empty-shadow-pair".into(),
+                    texture_view: view,
+                    sampler,
+                })?;
+                created.push(pair);
+                Some(EmptyShadow {
+                    texture,
+                    view,
+                    sampler,
+                    pair,
+                })
+            } else {
+                None
+            };
             Ok(Self {
                 resource_layout,
                 layout,
                 vertex,
                 fragment,
                 sampler,
+                normal_sampler,
+                empty_shadow,
                 pairs: BTreeMap::new(),
                 pipelines: BTreeMap::new(),
                 slots: Vec::new(),
@@ -284,6 +400,7 @@ impl RenderState3D {
                     .next_power_of_two(),
                 uniform_size,
                 light_buffer_size,
+                shadow_buffer_size,
             })
         })();
         if result.is_err() {
@@ -399,9 +516,29 @@ impl RenderState3D {
                     return Err(error);
                 }
             };
+            let shadows = if self.shadow_buffer_size > 0 {
+                match buffer(
+                    gal,
+                    "3d-shadow-parameters",
+                    self.shadow_buffer_size,
+                    BufferUsage::Storage,
+                ) {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        let _ = gal.retire(uniform);
+                        if let Some(h) = lights {
+                            let _ = gal.retire(h);
+                        }
+                        return Err(e);
+                    }
+                }
+            } else {
+                None
+            };
             self.slots.push(Slot {
                 uniform,
                 lights,
+                shadows,
                 capacity: bytes.next_power_of_two(),
                 sets: BTreeMap::new(),
                 passes: BTreeMap::new(),
@@ -464,7 +601,7 @@ impl RenderState3D {
                     "3D material needs a sampled 2D floating-point/normalized view",
                 ));
             }
-            let pair = if let Some(h) = self.pairs.get(&draw.material.texture_view) {
+            let pair = if let Some(h) = self.pairs.get(&(draw.material.texture_view, false)) {
                 *h
             } else {
                 let h = gal.create_combined_texture_sampler(CombinedTextureSamplerDesc {
@@ -472,11 +609,53 @@ impl RenderState3D {
                     texture_view: draw.material.texture_view,
                     sampler: self.sampler,
                 })?;
-                self.pairs.insert(draw.material.texture_view, h);
+                self.pairs.insert((draw.material.texture_view, false), h);
                 h
             };
+            let surface = lighting.and_then(|frame| frame.surface.as_ref());
+            let normal = surface
+                .and_then(|frame| frame.materials[i].normal_map)
+                .map_or(draw.material.texture_view, |map| map.texture_view);
+            let normal_pair = if surface.and_then(|f| f.materials[i].normal_map).is_some() {
+                let info = gal.texture_view_info(normal)?;
+                if info.dimension != TextureDimension::D2
+                    || info.range.layer_count != 1
+                    || (surface.and_then(|f| f.materials[i].normal_map).is_some()
+                        && info.format != TextureFormat::Rgba8Unorm)
+                    || !info.usages.contains(&TextureUsage::Sampled)
+                {
+                    return Err(GalError::invalid_argument(
+                        "normal map requires a sampled RGBA8 UNORM 2D view",
+                    ));
+                }
+                if let Some(h) = self.pairs.get(&(normal, true)) {
+                    *h
+                } else {
+                    let h = gal.create_combined_texture_sampler(CombinedTextureSamplerDesc {
+                        label: "3d-normal-map".into(),
+                        texture_view: normal,
+                        sampler: self.normal_sampler.unwrap(),
+                    })?;
+                    self.pairs.insert((normal, true), h);
+                    h
+                }
+            } else {
+                pair
+            };
+            let shadow_view = surface.map_or(Handle::NULL, |frame| {
+                frame
+                    .shadows
+                    .map_or(self.empty_shadow.as_ref().unwrap().view, |s| s.view)
+            });
             let slot = &mut self.slots[index];
-            let key = (draw.mesh.vertices, draw.material.texture_view);
+            let key = (
+                draw.mesh.vertices,
+                draw.material.texture_view,
+                surface
+                    .and_then(|frame| frame.materials[i].normal_map)
+                    .map_or(Handle::NULL, |map| map.texture_view),
+                shadow_view,
+            );
             if let std::collections::btree_map::Entry::Vacant(entry) = slot.sets.entry(key) {
                 let mut bindings = vec![
                     binding(
@@ -507,6 +686,31 @@ impl RenderState3D {
                         lights,
                         ResourceBindingKind::StorageBuffer,
                         Some(self.light_buffer_size as u64),
+                        vec![],
+                    ));
+                }
+                if let Some(surface) = surface {
+                    bindings.push(binding(
+                        4,
+                        normal_pair,
+                        ResourceBindingKind::CombinedTextureSampler,
+                        None,
+                        vec![],
+                    ));
+                    bindings.push(binding(
+                        5,
+                        surface
+                            .shadows
+                            .map_or(self.empty_shadow.as_ref().unwrap().pair, |s| s.pair),
+                        ResourceBindingKind::CombinedTextureSampler,
+                        None,
+                        vec![],
+                    ));
+                    bindings.push(binding(
+                        6,
+                        slot.shadows.unwrap(),
+                        ResourceBindingKind::StorageBuffer,
+                        Some(self.shadow_buffer_size as u64),
                         vec![],
                     ));
                 }
@@ -567,6 +771,21 @@ impl RenderState3D {
             if let Some(frame) = lighting {
                 values.truncate(36); // viewProjection, model, base tint
                 values.extend(frame.materials[i].parameters());
+                if let Some(surface) = &frame.surface {
+                    values[46] = f32::from(surface.materials[i].receives_shadows);
+                    values[47] = f32::from(surface.materials[i].normal_map.is_some());
+                    values.extend(surface.materials[i].normal_map.map_or(
+                        [1., 1., 0., 1.],
+                        |map| {
+                            [
+                                map.uv_scale[0],
+                                map.uv_scale[1],
+                                map.strength,
+                                if map.flip_y { -1. } else { 1. },
+                            ]
+                        },
+                    ));
+                }
             }
             let data: Vec<u8> = values.into_iter().flat_map(f32::to_ne_bytes).collect();
             uniforms[i * self.stride..i * self.stride + self.uniform_size].copy_from_slice(&data);
@@ -675,6 +894,49 @@ impl RenderState3D {
             let before_pass = operations.len() - 1;
             operations.splice(before_pass..before_pass, upload);
         }
+        if let Some(surface) = lighting.and_then(|frame| frame.surface.as_ref()) {
+            let shadow_buffer = slot.shadows.unwrap();
+            let mut bytes = Vec::new();
+            let records = surface.shadows.map_or(&[][..], |s| s.records.as_slice());
+            for v in [records.len() as f32, 0., 0., 0.] {
+                bytes.extend(v.to_ne_bytes());
+            }
+            for record in records {
+                for v in record {
+                    bytes.extend(v.to_ne_bytes());
+                }
+            }
+            let dependency = surface.shadows.map_or_else(
+                || {
+                    barrier(
+                        self.empty_shadow.as_ref().unwrap().texture,
+                        TextureUsageState::Undefined,
+                        TextureUsageState::ShaderRead,
+                    )
+                },
+                |s| CommandOp::TrackSubmission(s.usage.clone()),
+            );
+            let upload = [
+                dependency,
+                barrier(
+                    shadow_buffer,
+                    TextureUsageState::ShaderRead,
+                    TextureUsageState::TransferDst,
+                ),
+                CommandOp::HostWriteBuffer {
+                    buffer: shadow_buffer,
+                    offset: 0,
+                    data: bytes,
+                },
+                barrier(
+                    shadow_buffer,
+                    TextureUsageState::TransferDst,
+                    TextureUsageState::ShaderRead,
+                ),
+            ];
+            let before_pass = operations.len() - 1;
+            operations.splice(before_pass..before_pass, upload);
+        }
         operations.extend(work);
         operations.push(CommandOp::EndPass);
         Ok(Prepared3D {
@@ -735,6 +997,9 @@ impl RenderState3D {
             if let Some(lights) = s.lights {
                 gal.retire(lights)?;
             }
+            if let Some(shadows) = s.shadows {
+                gal.retire(shadows)?;
+            }
         }
         for h in std::mem::take(&mut self.pairs).into_values() {
             gal.retire(h)?;
@@ -750,6 +1015,14 @@ impl RenderState3D {
             self.resource_layout,
         ] {
             gal.retire(h)?;
+        }
+        if let Some(normal_sampler) = self.normal_sampler.take() {
+            gal.retire(normal_sampler)?;
+        }
+        if let Some(empty) = self.empty_shadow.take() {
+            for h in [empty.pair, empty.sampler, empty.view, empty.texture] {
+                gal.retire(h)?;
+            }
         }
         self.layout = Handle::NULL;
         Ok(())

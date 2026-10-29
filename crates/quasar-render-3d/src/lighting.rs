@@ -273,13 +273,14 @@ impl From<PassOptions> for LitPassOptions {
 /// Opt-in renderer with the same GAL command/lifetime contract as RenderState3D.
 /// No window, scene, ECS, frame coordinator, or implicit submission is created.
 pub struct LitRenderState3D {
-    core: RenderState3D,
-    max_lights: usize,
+    pub(crate) core: RenderState3D,
+    pub(crate) max_lights: usize,
 }
 pub(crate) struct LightingFrame<'a> {
     pub bytes: Vec<u8>,
     pub materials: &'a [LitMaterial],
     pub depth_before: TextureUsageState,
+    pub surface: Option<surface::SurfaceFrame<'a>>,
 }
 impl LitRenderState3D {
     /// A fixed per-slot light budget, 0..=4096. Overflow is an explicit error.
@@ -321,7 +322,19 @@ impl LitRenderState3D {
         draws: &[LitDraw3D<'_>],
         options: impl Into<LitPassOptions>,
     ) -> GalResult<Prepared3D> {
-        let options = options.into();
+        self.prepare_internal(gal, target, camera, lighting, draws, options.into(), None)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_internal(
+        &mut self,
+        gal: &mut VulkanicGal,
+        target: Handle,
+        camera: LitCamera3D,
+        lighting: Lighting<'_>,
+        draws: &[LitDraw3D<'_>],
+        options: LitPassOptions,
+        surface: Option<surface::SurfaceFrame<'_>>,
+    ) -> GalResult<Prepared3D> {
         if draws.len() > 4096 {
             return Err(GalError::invalid_argument("lit draw budget exceeds 4096"));
         }
@@ -395,6 +408,7 @@ impl LitRenderState3D {
                 bytes,
                 materials: &materials,
                 depth_before: options.depth_before,
+                surface,
             }),
         )
     }

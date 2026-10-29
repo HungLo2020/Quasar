@@ -1,4 +1,4 @@
-//! Column-major matrices, right-handed world, Vulkan [0,1] clip depth.
+//! Column-major matrices, right-handed world, Vulkan `[0,1]` clip depth.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Mat4(pub [[f32; 4]; 4]);
 impl Mat4 {
@@ -78,6 +78,38 @@ impl Mat4 {
             [0., 0., near * z, 0.],
         ]))
     }
+    /// Right-handed orthographic projection with `[0,1]` clip depth.
+    pub fn orthographic(
+        left: f32,
+        right: f32,
+        bottom: f32,
+        top: f32,
+        near: f32,
+        far: f32,
+    ) -> Option<Self> {
+        if ![left, right, bottom, top, near, far]
+            .iter()
+            .all(|x| x.is_finite())
+            || right <= left
+            || top <= bottom
+            || near < 0.
+            || far <= near
+        {
+            return None;
+        }
+        let projection = Self([
+            [2. / (right - left), 0., 0., 0.],
+            [0., 2. / (top - bottom), 0., 0.],
+            [0., 0., 1. / (near - far), 0.],
+            [
+                -(right + left) / (right - left),
+                -(top + bottom) / (top - bottom),
+                near / (near - far),
+                1.,
+            ],
+        ]);
+        projection.finite().then_some(projection)
+    }
     pub fn transform(self, v: [f32; 4]) -> [f32; 4] {
         std::array::from_fn(|r| (0..4).map(|c| self.0[c][r] * v[c]).sum())
     }
@@ -111,6 +143,24 @@ impl std::ops::Mul for Mat4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn orthographic_bounds_and_depth_match_shadow_clip_convention() {
+        let p = Mat4::orthographic(-2., 6., -3., 1., 0.1, 20.).unwrap();
+        for (v, expected) in [
+            ([-2., -3., -0.1, 1.], [-1., -1., 0., 1.]),
+            ([6., 1., -20., 1.], [1., 1., 1., 1.]),
+        ] {
+            for (a, b) in p.transform(v).into_iter().zip(expected) {
+                assert!((a - b).abs() < 1e-5);
+            }
+        }
+        assert!(Mat4::orthographic(1., -1., -1., 1., 0.1, 10.).is_none());
+        assert!(Mat4::orthographic(-1., 1., 1., 1., 0.1, 10.).is_none());
+        assert!(Mat4::orthographic(-1., 1., -1., 1., -1., 10.).is_none());
+        assert!(Mat4::orthographic(-1., 1., -1., 1., 10., 1.).is_none());
+        assert!(Mat4::orthographic(f32::NAN, 1., -1., 1., 0.1, 10.).is_none());
+        assert!(Mat4::orthographic(0., f32::MIN_POSITIVE / 100., -1., 1., 0.1, 10.).is_none());
+    }
     #[test]
     fn perspective_maps_near_and_far_to_vulkan_depth() {
         let p = Mat4::perspective(1., 1.5, 0.1, 100.).unwrap();

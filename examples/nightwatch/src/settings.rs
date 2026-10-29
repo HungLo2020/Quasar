@@ -16,13 +16,16 @@ pub struct Settings {
     pub fullscreen: bool,
     pub audio: bool,
     pub audio_device: Option<String>,
+    pub shadows: bool,
+    pub normal_maps: bool,
+    pub shadow_resolution: u32,
 }
 impl Settings {
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Option<Self>> {
         let common = CommonArgs::parse_from(args)?;
         if common.help {
             println!(
-                "Nightwatch - Quasar lighting FPS\n\nWASD move, mouse look, LMB fire, 1/2 weapons, R reload, SPACE jump, SHIFT sprint, F flashlight, ESC pause, ENTER restart, F11 fullscreen.\n\n--headless --ticks N --autoplay --seed N --resolution WxH --frames N --screenshot PATH --benchmark --benchmark-file PATH --fullscreen --no-audio --audio-device NAME --version"
+                "Nightwatch - Quasar lighting FPS\n\nWASD move, mouse look, LMB fire, 1/2 weapons, R reload, SPACE jump, SHIFT sprint, F flashlight, H shadows, N normal maps, ESC pause, ENTER restart, F11 fullscreen.\n\n--headless --ticks N --autoplay --seed N --resolution WxH --frames N --screenshot PATH --benchmark --benchmark-file PATH --no-shadows --no-normal-maps --shadow-resolution N --fullscreen --no-audio --audio-device NAME --version"
             );
             return Ok(None);
         }
@@ -53,6 +56,9 @@ impl Settings {
             fullscreen: common.fullscreen.unwrap_or(false),
             audio: !common.no_audio.unwrap_or(false),
             audio_device: common.audio_device,
+            shadows: true,
+            normal_maps: true,
+            shadow_resolution: 1024,
         };
         let mut args = common.remaining.into_iter();
         while let Some(arg) = args.next() {
@@ -61,6 +67,11 @@ impl Settings {
                 "--seed" => s.seed = args.next().ok_or("missing seed")?.parse()?,
                 "--frames" => s.frames = Some(args.next().ok_or("missing frames")?.parse()?),
                 "--autoplay" => s.autoplay = true,
+                "--no-shadows" => s.shadows = false,
+                "--no-normal-maps" => s.normal_maps = false,
+                "--shadow-resolution" => {
+                    s.shadow_resolution = args.next().ok_or("missing shadow resolution")?.parse()?
+                }
                 "--screenshot" => {
                     s.screenshot = Some(args.next().ok_or("missing screenshot path")?.into())
                 }
@@ -72,6 +83,7 @@ impl Settings {
             || s.ticks == 0
             || s.ticks > 10_000_000
             || s.frames == Some(0)
+            || !(32..=2048).contains(&s.shadow_resolution)
         {
             return Err("dimensions/tick/frame budget out of range".into());
         }
@@ -82,5 +94,35 @@ impl Settings {
             s.frames = Some(240);
         }
         Ok(Some(s))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn effect_options_and_shadow_memory_bounds() {
+        let parse = |args: &[&str]| Settings::parse(args.iter().map(|s| s.to_string()));
+        let defaults = parse(&[]).unwrap().unwrap();
+        assert!(defaults.shadows && defaults.normal_maps);
+        assert_eq!(defaults.shadow_resolution, 1024);
+        let off = parse(&[
+            "--no-shadows",
+            "--no-normal-maps",
+            "--shadow-resolution",
+            "2048",
+        ])
+        .unwrap()
+        .unwrap();
+        assert!(!off.shadows && !off.normal_maps);
+        assert_eq!(off.shadow_resolution, 2048);
+        for args in [
+            vec!["--shadow-resolution", "0"],
+            vec!["--shadow-resolution", "4096"],
+            vec!["--shadow-resolution"],
+            vec!["--shadow-resolution", "nan"],
+        ] {
+            assert!(parse(&args).is_err());
+        }
     }
 }

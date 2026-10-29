@@ -47,10 +47,13 @@ extern "C" {
     fn spvBinaryDestroy(binary: *mut SpvBinary);
 }
 
-/// Passes that make Vulkan GLSL output readable by naga, in order. Inlining
-/// first removes calls that take images or samplers, so splitting never has
-/// to retype a function parameter.
+/// Passes that make Vulkan GLSL output readable by naga, in order. Normalize
+/// returns before inlining resource-taking calls, so splitting never has to
+/// retype a function parameter.
 const NAGA_COMPATIBILITY_PASSES: &[&CStr] = &[
+    // Structured loops may return early (for example shadow lookups).
+    // Normalize those exits before the exhaustive inliner visits them.
+    c"--merge-return",
     c"--inline-entry-points-exhaustive",
     c"--eliminate-dead-functions",
     c"--split-combined-image-sampler",
@@ -194,6 +197,57 @@ mod tests {
         )
         .validate(&module)
         .expect("split module validates");
+    }
+
+    #[test]
+    fn inlines_shadow_lookup_with_early_returns_inside_loop() {
+        let source = "#version 450\n\
+            layout(set=0,binding=0) uniform sampler2DArrayShadow shadow;\n\
+            layout(location=0) in vec2 uv;\n\
+            layout(location=0) out vec4 color;\n\
+            float lookup(int count) {\n\
+                for(int i=0;i<count;i++) {\n\
+                    if(uv.x<0.0) return 1.0;\n\
+                    return texture(shadow,vec4(uv,float(i),0.5));\n\
+                }\n\
+                return 1.0;\n\
+            }\n\
+            void main() { color=vec4(lookup(2)); }\n";
+        let spirv = crate::backends::spirv::compile_glsl_cached(
+            crate::resources::ShaderStage::Fragment,
+            source,
+            "shadow-early-return",
+            "main",
+        )
+        .expect("shader compiles");
+        let split = split_combined_image_samplers(&words(&spirv)).expect("passes run");
+        let bytes: Vec<u8> = split.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let mut module = naga::front::spv::parse_u8_slice(&bytes, &Default::default())
+            .expect("naga parses early-return shadow lookup");
+        let samplers: Vec<_> = module
+            .global_variables
+            .iter()
+            .filter_map(|(handle, global)| {
+                matches!(
+                    module.types[global.ty].inner,
+                    naga::TypeInner::Sampler { .. }
+                )
+                .then_some(handle)
+            })
+            .collect();
+        for handle in samplers {
+            module.global_variables[handle]
+                .binding
+                .as_mut()
+                .unwrap()
+                .binding += 100;
+        }
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("early-return lookup validates");
     }
 
     #[test]

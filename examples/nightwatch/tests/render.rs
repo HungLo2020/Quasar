@@ -19,6 +19,49 @@ fn world_weapon_flash_hud_resize_and_release_compose() {
     let unique: std::collections::BTreeSet<_> =
         normal.rgba.as_chunks::<4>().0.iter().copied().collect();
     assert!(unique.len() > 100);
+    let shadow_draws = graphics.stats().draws;
+    let world_difference = |a: &[u8], b: &[u8]| {
+        (100..290)
+            .flat_map(|y| (40..600).map(move |x| (y * 640 + x) * 4))
+            .filter(|i| a[*i..*i + 3] != b[*i..*i + 3])
+            .count()
+    };
+    graphics.set_effects(false, true);
+    let no_shadows = target
+        .render(&mut gal, |gal, t| graphics.commands(gal, t, &w, false))
+        .unwrap();
+    assert!(
+        world_difference(&normal.rgba, &no_shadows.rgba) > 100,
+        "directional/flashlight shadows must affect world pixels"
+    );
+    assert!(
+        graphics.stats().draws < shadow_draws / 2,
+        "disabled shadows omit caster passes"
+    );
+    graphics.set_effects(false, false);
+    let plain = target
+        .render(&mut gal, |gal, t| graphics.commands(gal, t, &w, false))
+        .unwrap();
+    assert!(
+        world_difference(&plain.rgba, &no_shadows.rgba) > 100,
+        "normal maps must affect world pixels"
+    );
+    graphics.set_effects(true, true);
+    let restored = target
+        .render(&mut gal, |gal, t| graphics.commands(gal, t, &w, false))
+        .unwrap();
+    assert_eq!(
+        normal.rgba, restored.rgba,
+        "runtime toggles must be reversible"
+    );
+    graphics.resize_shadow_maps(&mut gal, 256).unwrap();
+    let low_resolution = target
+        .render(&mut gal, |gal, t| graphics.commands(gal, t, &w, false))
+        .unwrap();
+    assert_ne!(
+        normal.rgba, low_resolution.rgba,
+        "shadow resolution must change filtering"
+    );
     w.update(Input {
         fire: true,
         ..Input::default()

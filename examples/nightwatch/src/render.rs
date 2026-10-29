@@ -9,14 +9,35 @@ use quasar_render_3d::*;
 use vulkanic_gal::{resources::*, *};
 
 pub struct Graphics {
-    world: LitRenderState3D,
-    weapon: LitRenderState3D,
+    world: SurfaceRenderState3D,
+    weapon: SurfaceRenderState3D,
+    shadows: ShadowRenderState3D,
+    options: GraphicsOptions,
+    normal_concrete: Handle,
+    normal_concrete_view: Handle,
+    normal_metal: Handle,
+    normal_metal_view: Handle,
     hud: RenderState2D,
     cube: Mesh,
     texture: Handle,
     view: Handle,
     textures: Textures,
     stats: RendererStats,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct GraphicsOptions {
+    pub shadows: bool,
+    pub normal_maps: bool,
+    pub shadow_resolution: u32,
+}
+impl Default for GraphicsOptions {
+    fn default() -> Self {
+        Self {
+            shadows: true,
+            normal_maps: true,
+            shadow_resolution: 1024,
+        }
+    }
 }
 #[derive(Clone, Copy)]
 struct Instance {
@@ -51,8 +72,11 @@ impl Instance {
 }
 impl Graphics {
     pub fn new(gal: &mut VulkanicGal) -> GalResult<Self> {
-        let mut world = LitRenderState3D::new(gal, 16)?;
-        let mut weapon = match LitRenderState3D::new(gal, 8) {
+        Self::with_options(gal, GraphicsOptions::default())
+    }
+    pub fn with_options(gal: &mut VulkanicGal, options: GraphicsOptions) -> GalResult<Self> {
+        let mut world = SurfaceRenderState3D::new(gal, 16, 2)?;
+        let mut weapon = match SurfaceRenderState3D::new(gal, 8, 2) {
             Ok(x) => x,
             Err(e) => {
                 let _ = world.release(gal);
@@ -87,7 +111,51 @@ impl Graphics {
                 return Err(e);
             }
         };
+        let mut owned = vec![];
+        let resources = (|| {
+            let (normal_concrete, normal_concrete_view) = geometry::upload_normal(gal, false)?;
+            owned.extend([normal_concrete, normal_concrete_view]);
+            let (normal_metal, normal_metal_view) = geometry::upload_normal(gal, true)?;
+            owned.extend([normal_metal, normal_metal_view]);
+            let shadows = ShadowRenderState3D::new(
+                gal,
+                ShadowConfig {
+                    resolution: options.shadow_resolution,
+                    max_depth_bytes: 96 * 1024 * 1024,
+                    ..ShadowConfig::default()
+                },
+            )?;
+            Ok((
+                normal_concrete,
+                normal_concrete_view,
+                normal_metal,
+                normal_metal_view,
+                shadows,
+            ))
+        })();
+        let (normal_concrete, normal_concrete_view, normal_metal, normal_metal_view, shadows) =
+            match resources {
+                Ok(r) => r,
+                Err(e) => {
+                    for h in owned.into_iter().rev() {
+                        let _ = gal.retire(h);
+                    }
+                    let _ = cube.release(gal);
+                    let _ = hud.release(gal);
+                    let _ = weapon.release(gal);
+                    let _ = world.release(gal);
+                    let _ = gal.retire(view);
+                    let _ = gal.retire(texture);
+                    return Err(e);
+                }
+            };
         Ok(Self {
+            shadows,
+            options,
+            normal_concrete,
+            normal_concrete_view,
+            normal_metal,
+            normal_metal_view,
             world,
             weapon,
             hud,
@@ -101,7 +169,27 @@ impl Graphics {
     pub fn stats(&self) -> RendererStats {
         self.stats
     }
-    fn draws<'a>(cube: &'a Mesh, view: Handle, instances: &[Instance]) -> Vec<LitDraw3D<'a>> {
+    pub fn set_effects(&mut self, shadows: bool, normal_maps: bool) {
+        self.options.shadows = shadows;
+        self.options.normal_maps = normal_maps;
+    }
+    pub fn effects(&self) -> (bool, bool) {
+        (self.options.shadows, self.options.normal_maps)
+    }
+    pub fn resize_shadow_maps(&mut self, gal: &mut VulkanicGal, resolution: u32) -> GalResult<()> {
+        self.world.clear_bindings(gal)?;
+        self.weapon.clear_bindings(gal)?;
+        self.shadows.resize(gal, resolution)?;
+        self.options.shadow_resolution = resolution;
+        Ok(())
+    }
+    fn draws<'a>(
+        cube: &'a Mesh,
+        view: Handle,
+        instances: &[Instance],
+        normal_view: Option<Handle>,
+        receive: bool,
+    ) -> Vec<SurfaceDraw3D<'a>> {
         instances
             .iter()
             .map(|i| {
@@ -115,10 +203,19 @@ impl Graphics {
                 material.specular = [i.specular; 3];
                 material.shininess = 48.;
                 material.emissive = i.emissive;
-                LitDraw3D {
+                let mut surface = SurfaceMaterial::from(material);
+                surface.receives_shadows = receive;
+                if !i.unlit {
+                    surface.normal_map = normal_view.map(|view| NormalMap {
+                        uv_scale: [2.; 2],
+                        strength: 0.5,
+                        ..NormalMap::new(view)
+                    });
+                }
+                SurfaceDraw3D {
                     mesh: cube,
                     model: i.model,
-                    material,
+                    material: surface,
                 }
             })
             .collect()
@@ -161,7 +258,8 @@ impl Graphics {
                 attenuation: Attenuation::Smooth,
             });
         }
-        if w.flashlight {
+        let flashlight_index = w.flashlight.then_some(lights.len());
+        if flashlight_index.is_some() {
             lights.push(Light::Spot {
                 position: eye,
                 direction: f,
@@ -183,7 +281,53 @@ impl Graphics {
             });
         }
         let instances = scene(w);
-        let draws = Self::draws(&self.cube, self.view, &instances);
+        let draws = Self::draws(
+            &self.cube,
+            self.view,
+            &instances,
+            self.options
+                .normal_maps
+                .then_some(self.normal_concrete_view),
+            true,
+        );
+        let casters: Vec<_> = draws
+            .iter()
+            .filter(|d| d.material.lit.shading != ShadingModel::Unlit)
+            .map(SurfaceDraw3D::shadow_caster)
+            .collect();
+        let mut views = vec![];
+        if self.options.shadows {
+            let vp = Mat4::orthographic(-23., 23., -23., 23., 0.1, 90.).unwrap()
+                * Mat4::look_at([-12.5, 50., 15.], [0., 0., 0.], [0., 0., -1.]).unwrap();
+            views.push(ShadowView {
+                light_index: 0,
+                view_projection: vp,
+                settings: ShadowSettings {
+                    normal_bias: 0.025,
+                    bias: 0.0006,
+                    ..ShadowSettings::default()
+                },
+                casters: &casters,
+            });
+            if let Some(light_index) = flashlight_index {
+                views.push(ShadowView {
+                    light_index,
+                    view_projection: Mat4::perspective(0.96, 1., 0.08, 24.).unwrap() * view,
+                    settings: ShadowSettings {
+                        normal_bias: 0.02,
+                        bias: 0.0002,
+                        ..ShadowSettings::default()
+                    },
+                    casters: &casters,
+                });
+            }
+        }
+        let shadow_frame = (!views.is_empty())
+            .then(|| self.shadows.prepare(gal, &views))
+            .transpose()?;
+        let shadow_stats = shadow_frame
+            .as_ref()
+            .map_or(ShadowStats::default(), |s| s.stats);
         let world = self.world.prepare(
             gal,
             target,
@@ -197,13 +341,20 @@ impl Graphics {
                 output_color_space: ColorSpace::Srgb,
             },
             &draws,
+            shadow_frame.as_ref().map(PreparedShadows::binding),
             PassOptions {
                 clear_color: Some([0.014, 0.022, 0.035, 1.]),
                 clear_depth: true,
             },
         )?;
         let weapon_instances = weapon(w);
-        let draws = Self::draws(&self.cube, self.view, &weapon_instances);
+        let draws = Self::draws(
+            &self.cube,
+            self.view,
+            &weapon_instances,
+            self.options.normal_maps.then_some(self.normal_metal_view),
+            false,
+        );
         let mut gun_lights = vec![Light::Directional {
             direction: [-0.5, -0.6, -1.],
             color: [0.65, 0.8, 1.],
@@ -231,6 +382,7 @@ impl Graphics {
                 output_color_space: ColorSpace::Srgb,
             },
             &draws,
+            None,
             LitPassOptions {
                 pass: PassOptions {
                     clear_color: None,
@@ -241,7 +393,7 @@ impl Graphics {
         )?;
         let mut canvas = Canvas::new(extent.width, extent.height)
             .map_err(|e| GalError::invalid_argument(e.to_string()))?;
-        hud(&mut canvas, w, paused);
+        hud(&mut canvas, w, paused, self.effects());
         let hud = self.hud.prepare(
             gal,
             &canvas,
@@ -251,11 +403,13 @@ impl Graphics {
             LoadOp::Load,
         )?;
         self.stats = RendererStats {
-            draws: (world.stats.draws + gun.stats.draws + hud.stats.batches) as u64,
+            draws: (world.stats.draws + gun.stats.draws + hud.stats.batches + shadow_stats.draws)
+                as u64,
             geometry_upload_bytes: hud.stats.geometry_upload_bytes as u64,
             texture_upload_bytes: hud.stats.texture_upload_bytes as u64,
             uniform_upload_bytes: (world.stats.uniform_upload_bytes
-                + gun.stats.uniform_upload_bytes) as u64,
+                + gun.stats.uniform_upload_bytes
+                + shadow_stats.uniform_upload_bytes) as u64,
         };
         let attachment = gal.pass_target_color_attachment(target)?;
         let between = || {
@@ -271,7 +425,8 @@ impl Graphics {
                 })],
             })
         };
-        let mut commands = vec![world.commands];
+        let mut commands: Vec<_> = shadow_frame.into_iter().map(|s| s.commands).collect();
+        commands.push(world.commands);
         if target.kind() != Some(HandleKind::FrameTarget) {
             commands.push(between());
         }
@@ -290,10 +445,19 @@ impl Graphics {
     pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
         self.world.release(gal)?;
         self.weapon.release(gal)?;
+        self.shadows.release(gal)?;
         self.hud.release(gal)?;
         self.cube.release(gal)?;
         gal.retire(self.view)?;
         gal.retire(self.texture)?;
+        for h in [
+            self.normal_concrete_view,
+            self.normal_concrete,
+            self.normal_metal_view,
+            self.normal_metal,
+        ] {
+            gal.retire(h)?;
+        }
         Ok(())
     }
 }
@@ -531,7 +695,7 @@ fn weapon(w: &World) -> Vec<Instance> {
     }
     out
 }
-fn hud(c: &mut Canvas, w: &World, paused: bool) {
+fn hud(c: &mut Canvas, w: &World, paused: bool, effects: (bool, bool)) {
     let sw = c.width() as f32;
     let sh = c.height() as f32;
     let scale = (sw / 960.).clamp(0.7, 1.8);
@@ -540,6 +704,15 @@ fn hud(c: &mut Canvas, w: &World, paused: bool) {
     text(
         [26., 24. + 14. * scale],
         "SECTOR 09  //  QUASAR LIGHTING LAB",
+        [117, 150, 160, 255],
+    );
+    text(
+        [26., 24. + 28. * scale],
+        &format!(
+            "H SHADOWS {}   N NORMAL MAPS {}",
+            if effects.0 { "ON" } else { "OFF" },
+            if effects.1 { "ON" } else { "OFF" }
+        ),
         [117, 150, 160, 255],
     );
     text(
@@ -649,8 +822,17 @@ fn hud(c: &mut Canvas, w: &World, paused: bool) {
     }
 }
 pub fn screenshot(w: &World, width: u32, height: u32, path: &std::path::Path) -> Result<()> {
+    screenshot_with_options(w, width, height, path, GraphicsOptions::default())
+}
+pub fn screenshot_with_options(
+    w: &World,
+    width: u32,
+    height: u32,
+    path: &std::path::Path,
+    options: GraphicsOptions,
+) -> Result<()> {
     let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "Nightwatch screenshot")?;
-    let mut graphics = Graphics::new(&mut gal)?;
+    let mut graphics = Graphics::with_options(&mut gal, options)?;
     let mut target = quasar_frame::OffscreenTarget::new(&mut gal, width, height)?;
     let result = target.render(&mut gal, |gal, target| {
         graphics.commands(gal, target, w, false)

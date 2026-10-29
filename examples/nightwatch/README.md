@@ -24,6 +24,7 @@ leaves the game playable.
 | R | Reload; ammunition reserves are unlimited |
 | Shift / Space | Sprint / jump |
 | F | Toggle flashlight |
+| H / N | Toggle shadows / normal maps (status shown on HUD) |
 | Escape | Pause/resume; quit after death |
 | Click while paused / Q while paused | Resume / quit |
 | Enter after death | Restart |
@@ -38,8 +39,8 @@ host frame rate.
 
 ## Independent components
 
-The rendering adapter owns one VulkanicGAL instance, a lit world renderer, a lit
-first-person weapon renderer and a 2D HUD renderer. They share meshes, a texture,
+The rendering adapter owns one VulkanicGAL instance, a surface world renderer, a surface
+first-person weapon renderer, an explicit shadow-map renderer and a 2D HUD renderer. They share meshes, a texture,
 targets and one frame submission. The example records direct GAL attachment
 barriers between offscreen passes; native attachments use GAL-managed frame
 transitions. The weapon clears depth after the world through an
@@ -47,7 +48,8 @@ explicit `LitPassOptions` dependency, so it stays visible near cover without
 creating another device or copying a framebuffer.
 
 Directional/colored point/spot lights, an unlit/emissive path, per-pixel
-Lambert/Blinn–Phong shading and explicit linear/sRGB handling use public
+Lambert/Blinn–Phong shading, directional sun shadows, perspective flashlight
+shadows, procedural concrete/metal normal maps and explicit linear/sRGB handling use public
 `quasar-render-3d` APIs. `quasar-nav` supplies bounded A* queries; the game owns
 agents and steering. Simple fixed-step axis movement against static boxes
 belongs to this sample, rather than imposing a physics dependency on rendering.
@@ -58,7 +60,8 @@ a window, GPU, audio device or `quasar-app`. The desktop adapter opts into the
 runner. A future scene/ECS integration can generate the same draw/light values
 without replacing this game-owned representation. See
 [lighting architecture](../../docs/lighting-3d.md) for shader extension and
-resource contracts.
+resource contracts. The [surface/shadow contract](../../docs/shadows-3d.md)
+explains the independent caster/receiver API and map lifetime rules.
 
 ## CLI and headless operation
 
@@ -78,7 +81,12 @@ cargo test -p nightwatch --no-default-features
 cargo test -p nightwatch --test render -- --ignored --test-threads=1
 ```
 
-Additional options: `--fullscreen`, `--audio-device NAME`, `--help`, `--version`.
+Additional options: `--fullscreen`, `--audio-device NAME`, `--no-shadows`,
+`--no-normal-maps`, `--shadow-resolution N`, `--help`, `--version`.
+Shadow resolution defaults to 1024 and accepts 32..=2048. Two maps across at most
+three in-flight slots use at most 24 MiB at 1024 or 96 MiB at 2048. Slots allocate
+lazily. Disabling shadows omits caster passes; normal maps remain independently
+usable. H/N toggle effects live without changing gameplay state.
 `--benchmark` disables requested vsync, enables GPU timestamps, and defaults to a
 240-frame run; `--benchmark-file` also enables it. `--frames` counts native
 rendered frames. GPU benchmarks require native mode. Configuration files and
@@ -90,9 +98,15 @@ platform. They do not claim bitwise cross-platform replay compatibility.
 
 ## Scope and limitations
 
-This is a low-poly lighting/gameplay example. Shadows, PBR/normal maps, baked
-lighting, HDR tonemapping and general animation skinning remain future renderer
-milestones. Humanoids and weapons use game-owned rigid-part animation. The
+This is a low-poly lighting/gameplay example. Directional shadows use one fixed
+orthographic volume; flashlight shadows use one perspective map. Both use 3×3
+PCF and explicit depth/normal bias. Arena cover and animated zombie parts cast
+shadows; the first-person weapon receives local lighting/normal maps without
+world shadows, avoiding a world/viewmodel coordinate mismatch. Normal textures
+are generated from procedural concrete and metal height fields.
+
+Cascaded/point-light shadows, PBR, baked lighting, HDR tonemapping and general
+animation skinning remain future renderer milestones. Humanoids and weapons use game-owned rigid-part animation. The
 built-in forward path shades every supplied light; this example selects a small
 bounded set rather than benchmarking thousands of lights. World and weapon
 passes are opaque and explicitly encode sRGB; transparent/HDR consumers should
@@ -102,6 +116,9 @@ No editor/runtime scene work, external game migration, GitHub workflow or
 release operation is required to build or run the example.
 
 ## Verification and measured baseline
+
+The table below records the earlier lighting-only build before shadow mapping;
+it is retained for comparison and does not describe the current default effects.
 
 Local Linux x86-64 verification uses Vulkan on an RTX 2070. Automated X11 input
 checks exercise movement, mouse fire, weapon switching/reload, jump, flashlight,
@@ -130,3 +147,24 @@ compile, but the current OpenGL shader conventions fail the renderer's explicit
 binding/[0,1] depth requirements; construction returns `UnsupportedFeature`.
 A separate capability-rejection test covers that boundary. No separate renderer
 or silent backend fallback is introduced to hide it.
+
+With shadows and normal maps enabled, the same debug/validation/Xvfb setup now
+produces the following 180-frame results (172 retained samples):
+
+| Metric | p50 | p99 |
+|---|---:|---:|
+| CPU frame | 66.66 ms | 74.23 ms |
+| CPU submission | 49.91 ms | 55.83 ms |
+| GPU frame | 0.888 ms | 0.999 ms |
+| Draw calls | 750 | 758 |
+| Host writes | 208,208 B | 210,256 B |
+| Blocking/device-idle waits | 0 / 0 | 0 / 0 |
+
+The two caster passes increase draw/validation work substantially. This debug
+build is CPU-bound in submission; these numbers establish functionality and cost,
+not a real-time performance target. Caster culling, batching and submission
+profiling are useful next performance work. Maximum resource creation after
+warmup was three objects in a frame, with no leaks at teardown. Native tests also
+pause the game, toggle H/N, verify world pixels change, then verify restoring both
+effects restores the image exactly. The surface/shadow GPU tests pass through
+both Vulkan and wgpu on this machine.

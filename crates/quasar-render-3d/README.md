@@ -19,7 +19,8 @@ OpenGL-backed GAL.
   normal GAL commands. Color/depth load or clear policy is explicit.
 
 Draws preserve caller order. Sort opaque/transparent objects as appropriate;
-there is no automatic scene sorting, animation, PBR, shadow system or culling.
+there is no automatic scene sorting, animation, PBR or culling. Optional
+directional/spotlight shadow mapping is described below.
 Meshes are uploaded once into host-visible GAL buffers. Per-frame uniforms use
 three bounded completion-tracked slots; geometry is not uploaded each frame.
 Renderers never acquire a surface or present it. First-use mesh uploads submit
@@ -93,3 +94,22 @@ See [3D lighting architecture](../../docs/lighting-3d.md) for shader extension,
 color space, bounded resources, depth transitions, validation and the staged
 capability matrix. [Nightwatch](../../examples/nightwatch/README.md) demonstrates
 lit world/weapon passes, direct GAL barriers and a 2D HUD on one device/frame.
+
+## Optional shadows and normal maps
+
+`SurfaceMaterial` wraps `LitMaterial` with a normal map and shadow-reception flag;
+`SurfaceRenderState3D` records the extended shading path. Pass `None` for shadows
+to use normal maps independently. Existing meshes and legacy/lit APIs are unchanged.
+
+`ShadowRenderState3D` accepts explicit borrowed caster slices and light matrices,
+then returns depth-map commands and a completion-tracked binding for receivers.
+It supports directional and spotlight maps, alpha cutouts, raster/depth/normal
+bias, hard comparison and 3×3/5×5 PCF. Maps use bounded per-frame array slots;
+there is no required scene registry, ECS or frame runner. Applications retain
+control of map coverage, caster selection, draw order and GAL submission.
+
+See [shadows and normal-mapped surfaces](../../docs/shadows-3d.md) for usage,
+resource budgets, ordering/lifetime requirements, shader ABI and limitations.
+[Nightwatch](../../examples/nightwatch/README.md) demonstrates sun/flashlight
+shadows, moving rigid-part casters, procedural concrete/metal normal maps,
+a first-person weapon and a 2D HUD in one GAL frame.
