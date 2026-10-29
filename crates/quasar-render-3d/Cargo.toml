@@ -11,11 +11,13 @@ default = ["vulkan"]
 vulkan = ["vulkanic-gal/vulkan"]
 opengl = ["vulkanic-gal/opengl"]
 wgpu = ["vulkanic-gal/wgpu"]
+model-assets = ["dep:quasar-assets"]
 visibility = ["dep:quasar-spatial"]
 config = ["dep:quasar-config"]
 diagnostics = ["dep:quasar-diagnostics"]
 
 [dependencies]
+quasar-assets = { workspace = true, optional = true, features = ["model"] }
 vulkanic-gal = { workspace = true }
 quasar-spatial = { workspace = true, optional = true }
 quasar-config = { workspace = true, optional = true }

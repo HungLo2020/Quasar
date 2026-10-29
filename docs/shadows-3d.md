@@ -148,7 +148,8 @@ depth bias and normal bias; sampling holds inverse resolution, PCF radius,
 strength and reserved. `info.x` stores the map count as a float.
 
 The std140 draw uniform appends vec4 normalMap (UV scales, strength, Y sign).
-`options.zw` select shadow reception and normal-map use. The existing lit ABI is
+`options.z` uses bit 0 for shadow reception, bit 1 for two-sided normals and
+bit 2 for opaque alpha; `options.w` selects normal-map use. The existing lit ABI is
 unchanged; use the surface source for this extended interface. Different layouts
 or passes can still be built directly with GAL on the same device.
 

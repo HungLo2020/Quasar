@@ -20,10 +20,13 @@ void main() {
     vec4 texel=texture(image,uv);
     if(drawData.options.y>0.5) texel.rgb=decodeSRGB(texel.rgb);
     vec4 base=texel*drawData.tint;
+    if(drawData.options.z>=4.0) base.a=1.0;
     if(base.a<drawData.emissiveCutoff.a) discard;
     vec3 result=base.rgb;
     if(drawData.options.x>0.5) {
-        vec3 n=safeNormal(worldNormal), viewDirection=safeNormal(lighting.eye.xyz-worldPosition);
+        vec3 n=safeNormal(worldNormal);
+        if(mod(floor(drawData.options.z/2.0),2.0)>0.5 && !gl_FrontFacing) n=-n;
+        vec3 viewDirection=safeNormal(lighting.eye.xyz-worldPosition);
         result=base.rgb*lighting.ambient.rgb;
         for(int i=0;i<int(lighting.info.x);i++) {
             Light light=lighting.lights[i];

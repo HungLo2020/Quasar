@@ -57,6 +57,29 @@ impl AssetPath {
         }
         Ok(Self(input.to_owned()))
     }
+    /// Resolve a file-relative dependency, normalizing dot segments without escaping the virtual root.
+    pub fn resolve_relative(&self, relative: &str) -> Result<Self, AssetError> {
+        if relative.starts_with('/') || relative.contains(['\\', ':', '?', '#']) {
+            return Err(AssetError::invalid(
+                "dependency must be a relative asset path",
+            ));
+        }
+        let mut parts: Vec<_> = self.0.split('/').collect();
+        parts.pop();
+        for part in relative.split('/') {
+            match part {
+                "." => {}
+                ".." => {
+                    if parts.pop().is_none() {
+                        return Err(AssetError::invalid("dependency escapes virtual asset root"));
+                    }
+                }
+                "" => return Err(AssetError::invalid("empty dependency path segment")),
+                p => parts.push(p),
+            }
+        }
+        Self::parse(parts.join("/"))
+    }
     pub fn as_str(&self) -> &str {
         &self.0
     }

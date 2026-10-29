@@ -313,6 +313,15 @@ impl AssetServer {
             })
             .collect()
     }
+    pub fn read_limited(
+        &self,
+        path: impl AsRef<str>,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, AssetError> {
+        let path = AssetPath::parse(path)?;
+        let (source, relative) = self.resolve(&path)?;
+        source.read_limited(&AssetPath::parse(relative)?, max_bytes)
+    }
     pub fn read(&self, path: impl AsRef<str>) -> Result<Vec<u8>, AssetError> {
         let path = AssetPath::parse(path)?;
         let (source, relative) = self.resolve(&path)?;
@@ -442,9 +451,14 @@ impl AssetServer {
                 "mount prefix is not a file",
             )
         })?;
-        let bytes = source.read(&relative)?;
-        let context = LoadContext::new(&path, &bytes, &source_name, loader.schema_version());
-        let loaded = loader.load(&context)?;
+        let bytes = source.read_limited(&relative, loader.max_source_bytes())?;
+        let resolver = |path: &AssetPath, limit: usize| self.read_limited(path, limit);
+        let context = LoadContext::new(&path, &bytes, &source_name, loader.schema_version())
+            .with_resolver(&resolver);
+        let mut loaded = loader.load(&context)?;
+        loaded.dependencies.extend(context.read_dependencies());
+        loaded.dependencies.sort();
+        loaded.dependencies.dedup();
         if loaded.schema_version != loader.schema_version() {
             return Err(AssetError::at(
                 AssetErrorKind::Schema,

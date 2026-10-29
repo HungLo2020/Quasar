@@ -184,3 +184,83 @@ fn optimized_frames_match_scalar_reference_with_independent_shadow_culling() {
         gal.metrics().resource_destroys
     );
 }
+
+#[test]
+#[ignore = "requires GPU"]
+fn authored_asset_reload_is_transactional_and_keeps_the_game_world_unchanged() {
+    use nightwatch::render::GraphicsOptions;
+    use quasar_render_3d::SubmissionConfig;
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let destination = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&entry.path(), &destination);
+            } else {
+                std::fs::copy(entry.path(), destination).unwrap();
+            }
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    copy_dir(&Graphics::default_asset_root(), dir.path());
+    let mut gal =
+        VulkanicGal::create(BackendChoice::Vulkan, "Nightwatch asset replacement").unwrap();
+    let mut graphics = Graphics::with_asset_root(
+        &mut gal,
+        GraphicsOptions {
+            shadow_resolution: 128,
+            ..GraphicsOptions::default()
+        },
+        SubmissionConfig {
+            instancing: true,
+            frustum_culling: true,
+            ..SubmissionConfig::default()
+        },
+        dir.path(),
+    )
+    .unwrap();
+    let mut target = OffscreenTarget::new(&mut gal, 640, 360).unwrap();
+    let world = World::new(42);
+    let hash = world.state_hash();
+    let before = target
+        .render(&mut gal, |gal, t| graphics.commands(gal, t, &world, false))
+        .unwrap();
+    let pending = graphics
+        .commands(&mut gal, target.target(), &world, false)
+        .unwrap();
+    assert!(graphics.reload_assets(&mut gal).is_err());
+    drop(pending);
+    graphics.reload_assets(&mut gal).unwrap();
+    let same = target
+        .render(&mut gal, |gal, t| graphics.commands(gal, t, &world, false))
+        .unwrap();
+    assert_eq!(before.rgba, same.rgba);
+    let model_path = dir.path().join("survival-kit/workbench.glb");
+    let original = std::fs::read(&model_path).unwrap();
+    std::fs::write(&model_path, b"not glTF").unwrap();
+    assert!(graphics.reload_assets(&mut gal).is_err());
+    let fallback = target
+        .render(&mut gal, |gal, t| graphics.commands(gal, t, &world, false))
+        .unwrap();
+    assert_eq!(
+        before.rgba, fallback.rgba,
+        "failed reload keeps old GPU generations"
+    );
+    std::fs::write(&model_path, original).unwrap();
+    let palette = dir.path().join("blaster-kit/Textures/colormap.png");
+    quasar_render_2d::write_png(&palette, 1, 1, &[0, 255, 0, 255]).unwrap();
+    graphics.reload_assets(&mut gal).unwrap();
+    let changed = target
+        .render(&mut gal, |gal, t| graphics.commands(gal, t, &world, false))
+        .unwrap();
+    assert_ne!(before.rgba, changed.rgba);
+    assert_eq!(hash, world.state_hash());
+    graphics.release(&mut gal).unwrap();
+    target.release(&mut gal).unwrap();
+    gal.retire_through(gal.latest_submission_id()).unwrap();
+    assert_eq!(
+        gal.metrics().resource_creates,
+        gal.metrics().resource_destroys
+    );
+}

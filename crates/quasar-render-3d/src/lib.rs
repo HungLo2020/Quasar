@@ -2,8 +2,12 @@
 //! assets, draw ordering, frame targets, submission and presentation.
 mod lighting;
 mod math;
+#[cfg(feature = "model-assets")]
+mod model_assets;
 mod shadows;
 mod submission;
+#[cfg(feature = "model-assets")]
+pub use model_assets::{MaterialConversion, ModelUploadOptions, UploadedModel, UploadedTexture};
 mod surface;
 pub use lighting::DEFAULT_LIT_FRAGMENT_SHADER;
 pub use lighting::{
@@ -32,10 +36,19 @@ pub struct Vertex {
 }
 /// Immutable uploaded geometry on one GAL. Explicitly release when no prepared
 /// command copies remain. Submitted uses are retired by GAL, without idle waits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MeshFacePolicy {
+    #[default]
+    Legacy,
+    SingleSided,
+    DoubleSided,
+}
 pub struct Mesh {
     vertices: Handle,
     indices: Handle,
     count: u32,
+    face_policy: MeshFacePolicy,
+    opaque_alpha: bool,
     usage: SubmissionUsage,
     bounds: ([f32; 3], [f32; 3]),
 }
@@ -127,6 +140,8 @@ impl Mesh {
             vertices: vb,
             indices: ib,
             count: indices.len() as u32,
+            face_policy: MeshFacePolicy::Legacy,
+            opaque_alpha: false,
             bounds: (
                 std::array::from_fn(|axis| {
                     vertices
@@ -143,6 +158,13 @@ impl Mesh {
             ),
             usage: SubmissionUsage::default(),
         })
+    }
+    /// Ignore sampled/tint alpha on lit/surface paths, as required by opaque model materials.
+    pub fn set_opaque_alpha(&mut self, opaque: bool) {
+        self.opaque_alpha = opaque;
+    }
+    pub fn set_face_policy(&mut self, policy: MeshFacePolicy) {
+        self.face_policy = policy;
     }
     /// Conservative mesh-space minimum/maximum positions, retained at upload.
     pub fn local_bounds(&self) -> ([f32; 3], [f32; 3]) {
@@ -243,7 +265,8 @@ pub struct RenderState3D {
     normal_sampler: Option<Handle>,
     empty_shadow: Option<EmptyShadow>,
     pairs: BTreeMap<(Handle, bool), Handle>,
-    pipelines: BTreeMap<(TextureFormat, TextureFormat, bool, bool), Handle>,
+    sampler_overrides: BTreeMap<(Handle, bool), Handle>,
+    pipelines: BTreeMap<(TextureFormat, TextureFormat, bool, bool, bool, bool), Handle>,
     slots: Vec<Slot>,
     stride: usize,
     uniform_size: usize,
@@ -261,6 +284,27 @@ impl RenderState3D {
     }
     pub fn with_submission(gal: &mut VulkanicGal, submission: SubmissionConfig) -> GalResult<Self> {
         Self::new_submission_configured(gal, None, 0, 0, submission)
+    }
+    /// Caller owns the sampler. New views can be registered while old frames are pending.
+    pub fn set_texture_sampler(
+        &mut self,
+        gal: &mut VulkanicGal,
+        view: Handle,
+        sampler: Handle,
+        normal: bool,
+    ) -> GalResult<()> {
+        let key = (view, normal);
+        if self.sampler_overrides.get(&key) == Some(&sampler) {
+            return Ok(());
+        }
+        if self.pairs.contains_key(&key) {
+            let associations = std::mem::take(&mut self.sampler_overrides);
+            let result = self.clear_bindings(gal);
+            self.sampler_overrides = associations;
+            result?;
+        }
+        self.sampler_overrides.insert(key, sampler);
+        Ok(())
     }
     pub fn work_stats(&self) -> RenderWork {
         self.work
@@ -482,6 +526,7 @@ impl RenderState3D {
                 normal_sampler,
                 empty_shadow,
                 pairs: BTreeMap::new(),
+                sampler_overrides: BTreeMap::new(),
                 pipelines: BTreeMap::new(),
                 slots: Vec::new(),
                 stride: (gal.capabilities().limits.uniform_buffer_offset_alignment as usize)
@@ -752,7 +797,11 @@ impl RenderState3D {
                 let h = gal.create_combined_texture_sampler(CombinedTextureSamplerDesc {
                     label: "3d-image".into(),
                     texture_view: draw.material.texture_view,
-                    sampler: self.sampler,
+                    sampler: self
+                        .sampler_overrides
+                        .get(&(draw.material.texture_view, false))
+                        .copied()
+                        .unwrap_or(self.sampler),
                 })?;
                 self.pairs.insert((draw.material.texture_view, false), h);
                 h
@@ -779,7 +828,11 @@ impl RenderState3D {
                     let h = gal.create_combined_texture_sampler(CombinedTextureSamplerDesc {
                         label: "3d-normal-map".into(),
                         texture_view: normal,
-                        sampler: self.normal_sampler.unwrap(),
+                        sampler: self
+                            .sampler_overrides
+                            .get(&(normal, true))
+                            .copied()
+                            .unwrap_or(self.normal_sampler.unwrap()),
                     })?;
                     self.pairs.insert((normal, true), h);
                     h
@@ -881,6 +934,8 @@ impl RenderState3D {
                 depth,
                 draw.material.transparent,
                 draw.material.depth_write,
+                draw.mesh.face_policy == MeshFacePolicy::SingleSided,
+                draw.mesh.face_policy == MeshFacePolicy::SingleSided && mirrored(draw.model),
             );
             if let std::collections::btree_map::Entry::Vacant(entry) = self.pipelines.entry(key) {
                 let h = gal.create_graphics_pipeline(GraphicsPipelineDesc {
@@ -889,8 +944,16 @@ impl RenderState3D {
                     vertex_shader: self.vertex,
                     fragment_shader: self.fragment,
                     topology: PrimitiveTopology::Triangles,
-                    cull_mode: CullMode::None,
-                    front_face: FrontFace::CounterClockwise,
+                    cull_mode: if key.4 {
+                        CullMode::Back
+                    } else {
+                        CullMode::None
+                    },
+                    front_face: if key.5 {
+                        FrontFace::Clockwise
+                    } else {
+                        FrontFace::CounterClockwise
+                    },
                     provoking_vertex: ProvokingVertex::First,
                     raster_y_direction: RasterYDirection::Up,
                     blend: if draw.material.transparent {
@@ -925,8 +988,14 @@ impl RenderState3D {
             if let Some(frame) = lighting {
                 values.truncate(36); // viewProjection, model, base tint
                 values.extend(frame.materials[i].parameters());
+                let material_flags = if draw.mesh.face_policy == MeshFacePolicy::DoubleSided {
+                    2.
+                } else {
+                    0.
+                } + if draw.mesh.opaque_alpha { 4. } else { 0. };
+                values[46] = material_flags;
                 if let Some(surface) = &frame.surface {
-                    values[46] = f32::from(surface.materials[i].receives_shadows);
+                    values[46] = f32::from(surface.materials[i].receives_shadows) + material_flags;
                     values[47] = f32::from(surface.materials[i].normal_map.is_some());
                     values.extend(surface.materials[i].normal_map.map_or(
                         [1., 1., 0., 1.],
@@ -1176,6 +1245,7 @@ impl RenderState3D {
         for h in std::mem::take(&mut self.pairs).into_values() {
             gal.retire(h)?;
         }
+        self.sampler_overrides.clear();
         Ok(())
     }
     pub fn release_targets(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
@@ -1302,4 +1372,12 @@ fn barrier(resource: Handle, before: TextureUsageState, after: TextureUsageState
         src_queue: QueueClass::Graphics,
         dst_queue: QueueClass::Graphics,
     })
+}
+
+fn mirrored(m: Mat4) -> bool {
+    let a = m.0;
+    a[0][0] * (a[1][1] * a[2][2] - a[2][1] * a[1][2])
+        - a[1][0] * (a[0][1] * a[2][2] - a[2][1] * a[0][2])
+        + a[2][0] * (a[0][1] * a[1][2] - a[1][1] * a[0][2])
+        < 0.
 }

@@ -178,3 +178,13 @@ python3 tools/benchmark_runs.py --spec cases.json --output /tmp/render-runs --re
 The runner rejects empty measurements, failed processes and existing output
 files. Raw runs remain available for inspecting variance; it does not silently
 average away outliers or impose timing limits across machines.
+
+## Imported model generations
+
+Optional [model assets](model-assets-3d.md) use this same draw/instance path with
+per-view sampler policies. Clearing binding caches resets those associations;
+rebind live model samplers after cache invalidation. Surface draw `options.z`
+is now a small flag mask: bit 0 receives shadows, bit 1 flips backface normals
+for double-sided materials, and bit 2 forces opaque alpha. The new flags are
+selected only by explicit mesh face/alpha policy; legacy meshes retain prior
+behavior. Scalar and instanced payload sizes and binding locations are unchanged.

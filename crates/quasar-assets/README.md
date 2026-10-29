@@ -44,7 +44,8 @@ println!("{}", text.0);
   registered explicitly; the server never guesses a decoder from an extension.
   `LoadContext` exposes bytes, path, source name, schema version and
   `require_schema_version`. `BytesLoader`/`Bytes` provide a baseline raw loader;
-  format-specific loaders stay in games or domain crates.
+  format-specific loaders stay optional. The `gltf` feature provides the
+  static 3D loader described below.
 - **Typed handles.** `Handle<T>` is cheap to clone, dereferences to `T`, records
   its path/id/schema version, and keeps the value alive even if the cache evicts
   it.
@@ -141,3 +142,16 @@ Headless tests cover path rejection, longest-prefix mounts, symlink escape
 rejection, typed cache hits, eviction, live handles after cache clear, dependency
 ordering/cycles, unload restrictions, schema mismatch, missing sources/loaders,
 memory/file sources and Basalt mounts.
+
+## Optional 3D model assets
+
+The dependency-free `model` feature exposes CPU geometry/material/image/sampler
+and transform data. `gltf` adds bounded glTF/GLB loading with PNG/JPEG images,
+mounted external dependencies, base64 buffers, flat-normal generation and
+explicit unsupported-feature errors. No renderer or runtime object model is
+required. `ModelLimits` supplies per-import budgets; recorded external reads
+participate in existing dependency invalidation and async loading.
+
+`LoadContext::read_relative`, `read_limited` and loader source-byte budgets are
+also available to other format loaders. See [3D model assets](../../docs/model-assets-3d.md)
+for scope, URI handling, cache/revision policy, GPU adapters and validation.

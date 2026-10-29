@@ -14,6 +14,18 @@ use std::{
 pub trait AssetSource: Send + Sync {
     fn name(&self) -> &str;
     fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError>;
+    /// Read with a caller budget. Custom sources may override to enforce it before allocation.
+    fn read_limited(&self, path: &AssetPath, max_bytes: usize) -> Result<Vec<u8>, AssetError> {
+        let bytes = self.read(path)?;
+        if bytes.len() > max_bytes {
+            return Err(AssetError::at(
+                AssetErrorKind::Budget,
+                path,
+                "dependency exceeds read budget",
+            ));
+        }
+        Ok(bytes)
+    }
     fn exists(&self, path: &AssetPath) -> bool {
         self.read(path).is_ok()
     }
@@ -83,6 +95,11 @@ impl AssetSource for FileSource {
         &self.name
     }
     fn read(&self, path: &AssetPath) -> Result<Vec<u8>, AssetError> {
+        self.read_limited(path, self.max_file_bytes)
+    }
+    fn read_limited(&self, path: &AssetPath, max_bytes: usize) -> Result<Vec<u8>, AssetError> {
+        use std::io::Read;
+        let max_bytes = max_bytes.min(self.max_file_bytes);
         let joined = self.root.join(path.to_path_buf());
         let canonical = fs::canonicalize(&joined).map_err(|error| {
             let kind = match error.kind() {
@@ -107,19 +124,31 @@ impl AssetSource for FileSource {
                 "asset is not a regular file",
             ));
         }
-        if metadata.len() > self.max_file_bytes as u64 {
+        if metadata.len() > max_bytes as u64 {
             return Err(AssetError::at(
                 AssetErrorKind::Budget,
                 path,
                 format!(
                     "file is {} bytes; source limit is {} bytes",
                     metadata.len(),
-                    self.max_file_bytes
+                    max_bytes
                 ),
             ));
         }
-        fs::read(&canonical)
-            .map_err(|error| AssetError::at(AssetErrorKind::Io, path, error.to_string()))
+        let file = fs::File::open(&canonical)
+            .map_err(|error| AssetError::at(AssetErrorKind::Io, path, error.to_string()))?;
+        let mut bytes = Vec::with_capacity((metadata.len() as usize).min(max_bytes));
+        file.take((max_bytes as u64).saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|error| AssetError::at(AssetErrorKind::Io, path, error.to_string()))?;
+        if bytes.len() > max_bytes {
+            return Err(AssetError::at(
+                AssetErrorKind::Budget,
+                path,
+                "asset grew beyond read budget",
+            ));
+        }
+        Ok(bytes)
     }
     fn exists(&self, path: &AssetPath) -> bool {
         let Ok(joined) = fs::canonicalize(self.root.join(path.to_path_buf())) else {
@@ -172,6 +201,19 @@ impl AssetSource for MemorySource {
         self.files.get(path).cloned().ok_or_else(|| {
             AssetError::at(AssetErrorKind::NotFound, path, "memory asset is missing")
         })
+    }
+    fn read_limited(&self, path: &AssetPath, max_bytes: usize) -> Result<Vec<u8>, AssetError> {
+        let bytes = self.files.get(path).ok_or_else(|| {
+            AssetError::at(AssetErrorKind::NotFound, path, "memory asset is missing")
+        })?;
+        if bytes.len() > max_bytes {
+            return Err(AssetError::at(
+                AssetErrorKind::Budget,
+                path,
+                "dependency exceeds read budget",
+            ));
+        }
+        Ok(bytes.clone())
     }
     fn exists(&self, path: &AssetPath) -> bool {
         self.files.contains_key(path)

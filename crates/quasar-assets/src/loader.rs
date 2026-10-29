@@ -73,12 +73,16 @@ pub trait Asset: Send + Sync + 'static {
     }
 }
 
+type DependencyResolver<'a> = dyn Fn(&AssetPath, usize) -> Result<Vec<u8>, AssetError> + 'a;
+
 /// Context passed to a typed loader.
 pub struct LoadContext<'a> {
     path: &'a AssetPath,
     bytes: &'a [u8],
     source: &'a str,
     schema_version: u32,
+    resolver: Option<&'a DependencyResolver<'a>>,
+    reads: std::cell::RefCell<std::collections::BTreeSet<AssetPath>>,
 }
 impl<'a> LoadContext<'a> {
     pub(crate) fn new(
@@ -92,7 +96,33 @@ impl<'a> LoadContext<'a> {
             bytes,
             source,
             schema_version,
+            resolver: None,
+            reads: Default::default(),
         }
+    }
+    pub(crate) fn with_resolver(mut self, resolver: &'a DependencyResolver<'a>) -> Self {
+        self.resolver = Some(resolver);
+        self
+    }
+    /// Read through mounted sources and automatically register successful dependency reads.
+    pub fn read_relative(
+        &self,
+        relative: &str,
+        max_bytes: usize,
+    ) -> Result<(AssetPath, Vec<u8>), AssetError> {
+        let path = self.path.resolve_relative(relative)?;
+        let resolver = self.resolver.ok_or_else(|| {
+            AssetError::new(
+                AssetErrorKind::Configuration,
+                "dependency resolver is unavailable",
+            )
+        })?;
+        let bytes = resolver(&path, max_bytes)?;
+        self.reads.borrow_mut().insert(path.clone());
+        Ok((path, bytes))
+    }
+    pub(crate) fn read_dependencies(&self) -> Vec<AssetPath> {
+        self.reads.borrow().iter().cloned().collect()
     }
     pub fn path(&self) -> &AssetPath {
         self.path
@@ -134,6 +164,9 @@ pub trait AssetLoader: Send + Sync + 'static {
     fn schema_version(&self) -> u32 {
         1
     }
+    fn max_source_bytes(&self) -> usize {
+        usize::MAX
+    }
     fn load(&self, context: &LoadContext<'_>) -> Result<Self::Asset, AssetError>;
 }
 
@@ -147,6 +180,7 @@ pub(crate) struct ErasedAsset {
 pub(crate) trait ErasedLoader: Send + Sync {
     fn load(&self, context: &LoadContext<'_>) -> Result<ErasedAsset, AssetError>;
     fn schema_version(&self) -> u32;
+    fn max_source_bytes(&self) -> usize;
 }
 
 impl<L: AssetLoader> ErasedLoader for L {
@@ -164,5 +198,8 @@ impl<L: AssetLoader> ErasedLoader for L {
     }
     fn schema_version(&self) -> u32 {
         AssetLoader::schema_version(self)
+    }
+    fn max_source_bytes(&self) -> usize {
+        AssetLoader::max_source_bytes(self)
     }
 }

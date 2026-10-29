@@ -36,9 +36,15 @@
 #[cfg(feature = "async")]
 mod async_runtime;
 mod error;
+#[cfg(feature = "gltf")]
+mod gltf_loader;
 #[cfg(feature = "hot-reload")]
 mod hot_reload;
 mod loader;
+#[cfg(feature = "model")]
+pub mod model;
+#[cfg(feature = "gltf")]
+pub use gltf_loader::GltfLoader;
 mod path;
 mod server;
 mod source;

@@ -1,0 +1,56 @@
+{
+  "author": "Kenney",
+  "license": "CC0-1.0",
+  "packs": [
+    {
+      "name": "blaster-kit",
+      "source": "https://kenney.nl/assets/blaster-kit",
+      "archive_sha256": "91e3093e95427d59625e7e2ce2d0399b861600160fd0b4ada7714796b67cea8c",
+      "files": [
+        {
+          "path": "blaster-kit/blaster-d.glb",
+          "sha256": "c05bf6af6cded1bc76e32e455507f5d1a21cd58503ce66de33ca39e597b28280"
+        },
+        {
+          "path": "blaster-kit/blaster-f.glb",
+          "sha256": "ea389c88b7d90ede2763e1f2b5834b9fbaaaa56b8a51ebdf21f61ec46d716320"
+        },
+        {
+          "path": "blaster-kit/crate-medium.glb",
+          "sha256": "187c32592fedaecbbb84152102bbf536f733cbc0c2cfee60828fb18a4803619c"
+        },
+        {
+          "path": "blaster-kit/crate-wide.glb",
+          "sha256": "0a17a51b274d238c09ade21674b70742bd5f1703f7b0e8974b6d0b2b92a58c8b"
+        },
+        {
+          "path": "blaster-kit/Textures/colormap.png",
+          "sha256": "4d0867c3c3c8c539106f91fbc0987d0e1b7d2811362d1daed593169c7d3b0fdc"
+        }
+      ]
+    },
+    {
+      "name": "survival-kit",
+      "source": "https://kenney.nl/assets/survival-kit",
+      "archive_sha256": "c3586341b5932c87eb43d75d915434f47daed168b17ed36a03e8ca9977c7443e",
+      "files": [
+        {
+          "path": "survival-kit/barrel.glb",
+          "sha256": "3a0d12f6bdd1badd361f64ce0fbbf878a4ccfc2de8ff1ac4ed4c1aea2a9ee04a"
+        },
+        {
+          "path": "survival-kit/workbench.glb",
+          "sha256": "bf72d2d535fa29127e5078a6c4c2023a74fa5cd7d02d91ad550e897e088e1dc8"
+        },
+        {
+          "path": "survival-kit/metal-panel.glb",
+          "sha256": "834d387590b599c68d8b7ef0e35410adbf53f5b5abafc82cd24df04a8d3c03c2"
+        },
+        {
+          "path": "survival-kit/Textures/colormap.png",
+          "sha256": "6ca023be9f12e8c2358fcf94320c8a894b4c05a3dd0bad1f5c268312053caca1"
+        }
+      ]
+    }
+  ]
+}

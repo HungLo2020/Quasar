@@ -38,7 +38,7 @@ fn run() -> Result<()> {
         );
         if let Some(path) = &settings.screenshot {
             #[cfg(feature = "graphics")]
-            nightwatch::render::screenshot_with_submission(
+            nightwatch::render::screenshot_with_asset_root(
                 &world,
                 settings.width,
                 settings.height,
@@ -49,6 +49,7 @@ fn run() -> Result<()> {
                     shadow_resolution: settings.shadow_resolution,
                 },
                 settings.submission(),
+                settings.asset_root.as_deref(),
             )?;
             #[cfg(not(feature = "graphics"))]
             {

@@ -144,6 +144,7 @@ pub struct ShadowRenderState3D {
     owned: Vec<Handle>,
     slots: Vec<ShadowSlot>,
     pairs: BTreeMap<Handle, Handle>,
+    sampler_overrides: BTreeMap<Handle, Handle>,
     stride: usize,
     submission: SubmissionConfig,
     work: RenderWork,
@@ -292,6 +293,7 @@ impl ShadowRenderState3D {
                 owned,
                 slots: vec![],
                 pairs: BTreeMap::new(),
+                sampler_overrides: BTreeMap::new(),
                 stride: (gal.capabilities().limits.uniform_buffer_offset_alignment as usize)
                     .max(if submission.instancing { 16 } else { 144 })
                     .next_power_of_two(),
@@ -307,6 +309,24 @@ impl ShadowRenderState3D {
                 Err(e)
             }
         }
+    }
+    pub fn set_texture_sampler(
+        &mut self,
+        gal: &mut VulkanicGal,
+        view: Handle,
+        sampler: Handle,
+    ) -> GalResult<()> {
+        if self.sampler_overrides.get(&view) == Some(&sampler) {
+            return Ok(());
+        }
+        if self.pairs.contains_key(&view) {
+            let associations = std::mem::take(&mut self.sampler_overrides);
+            let result = self.clear_bindings(gal);
+            self.sampler_overrides = associations;
+            result?;
+        }
+        self.sampler_overrides.insert(view, sampler);
+        Ok(())
     }
     pub fn work_stats(&self) -> RenderWork {
         self.work
@@ -596,7 +616,11 @@ impl ShadowRenderState3D {
                     let p = gal.create_combined_texture_sampler(CombinedTextureSamplerDesc {
                         label: "3d-shadow-alpha".into(),
                         texture_view: c.texture_view,
-                        sampler: self.sampler,
+                        sampler: self
+                            .sampler_overrides
+                            .get(&c.texture_view)
+                            .copied()
+                            .unwrap_or(self.sampler),
                     })?;
                     self.pairs.insert(c.texture_view, p);
                     p
@@ -858,6 +882,7 @@ impl ShadowRenderState3D {
         for h in std::mem::take(&mut self.pairs).into_values() {
             gal.retire(h)?;
         }
+        self.sampler_overrides.clear();
         Ok(())
     }
     pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {

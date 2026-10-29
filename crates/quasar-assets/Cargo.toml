@@ -8,6 +8,8 @@ publish.workspace = true
 
 [features]
 default = []
+model = []
+gltf = ["model", "dep:gltf", "dep:image", "dep:base64", "dep:percent-encoding"]
 serde = ["dep:serde"]
 storage = ["dep:quasar-storage"]
 diagnostics = ["dep:quasar-diagnostics"]
@@ -15,6 +17,10 @@ async = []
 hot-reload = ["async", "dep:notify"]
 
 [dependencies]
+gltf = { version = "1.4.1", default-features = false, features = ["utils", "names", "extensions", "KHR_materials_unlit", "KHR_texture_transform"], optional = true }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"], optional = true }
+base64 = { version = "0.22", optional = true }
+percent-encoding = { version = "2", optional = true }
 serde = { workspace = true, optional = true }
 quasar-storage = { workspace = true, optional = true }
 quasar-diagnostics = { workspace = true, optional = true }

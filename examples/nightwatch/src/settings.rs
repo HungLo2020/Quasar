@@ -12,6 +12,7 @@ pub struct Settings {
     pub height: u32,
     pub frames: Option<u64>,
     pub screenshot: Option<PathBuf>,
+    pub asset_root: Option<PathBuf>,
     pub benchmark_file: Option<PathBuf>,
     pub benchmark: bool,
     pub fullscreen: bool,
@@ -37,7 +38,7 @@ impl Settings {
     ) -> Result<Option<Self>> {
         let common = CommonArgs::parse_from(args)?;
         if common.help {
-            println!("{}",common.help("Nightwatch - Quasar lighting FPS","WASD move, mouse look, LMB fire, 1/2 weapons, R reload, SPACE jump, SHIFT sprint, F flashlight, H shadows, N normal maps, ESC pause.\n--ticks N --autoplay --seed N --frames N --screenshot PATH --no-shadows --no-normal-maps --shadow-resolution N --no-instancing --no-culling --validation --no-validation\nConfig files: TOML/JSON; renderer settings use render.*, benchmark settings use benchmark.*; --set overrides files/environment."));
+            println!("{}",common.help("Nightwatch - Quasar lighting FPS","WASD move, mouse look, LMB fire, 1/2 weapons, R reload, SPACE jump, SHIFT sprint, F flashlight, H shadows, N normal maps, F5 reload models, ESC pause.\n--asset-root PATH --ticks N --autoplay --seed N --frames N --screenshot PATH --no-shadows --no-normal-maps --shadow-resolution N --no-instancing --no-culling --validation --no-validation\nConfig files: TOML/JSON; renderer settings use render.*, benchmark settings use benchmark.*; --set overrides files/environment."));
             return Ok(None);
         }
         if common.version {
@@ -61,6 +62,7 @@ impl Settings {
             ("game.seed", 42u64.into()),
             ("game.frames", 0u64.into()),
             ("game.screenshot", "".into()),
+            ("assets.root", "".into()),
             ("render.shadows", true.into()),
             ("render.normal_maps", true.into()),
             ("render.shadow_resolution", 1024u64.into()),
@@ -92,6 +94,7 @@ impl Settings {
                 ("common.benchmark_file", "NIGHTWATCH_BENCHMARK_FILE"),
                 ("common.log_level", "NIGHTWATCH_LOG_LEVEL"),
                 ("render.instancing", "NIGHTWATCH_INSTANCING"),
+                ("assets.root", "NIGHTWATCH_ASSET_ROOT"),
                 ("render.frustum_culling", "NIGHTWATCH_FRUSTUM_CULLING"),
                 ("render.validation", "NIGHTWATCH_VALIDATION"),
             ],
@@ -116,6 +119,10 @@ impl Settings {
                 "--screenshot" => (
                     "game.screenshot",
                     args.next().ok_or("missing screenshot path")?.clone().into(),
+                ),
+                "--asset-root" => (
+                    "assets.root",
+                    args.next().ok_or("missing asset root")?.clone().into(),
                 ),
                 "--autoplay" => ("game.autoplay", true.into()),
                 "--no-shadows" => ("render.shadows", false.into()),
@@ -159,6 +166,7 @@ impl Settings {
                 n => Some(n),
             },
             screenshot: optional("game.screenshot")?.map(PathBuf::from),
+            asset_root: optional("assets.root")?.map(PathBuf::from),
             benchmark_file: optional("common.benchmark_file")?.map(PathBuf::from),
             benchmark: config.get_bool("common.benchmark")?,
             shadows: config.get_bool("render.shadows")?,

@@ -1,6 +1,6 @@
 # Nightwatch
 
-A playable, procedural first-person zombie survival example for Quasar's opt-in
+A playable first-person zombie survival example for Quasar's opt-in
 3D lighting/material path. All gameplay is ordinary game-owned Rust data; there
 is no ECS, scene graph, object registry or required authored scene format.
 
@@ -29,6 +29,7 @@ leaves the game playable.
 | Click while paused / Q while paused | Resume / quit |
 | Enter after death | Restart |
 | F11 | Toggle fullscreen |
+| F5 | Reload model/image assets; keep the previous generation if loading fails |
 
 Focus loss pauses interactive play and releases the cursor. Resume deliberately
 with Escape or a click. Mouse look is updated per frame; normal simulation uses
@@ -92,7 +93,8 @@ usable. H/N toggle effects live without changing gameplay state.
 rendered frames. GPU benchmarks require native mode. Configuration files and repeatable `--set` overrides use quasar-config
 precedence; see [submission/configuration](../../docs/render-submission.md) for
 the TOML/JSON schema, environment mappings and live benchmark thresholds.
-All assets and effect PCM are generated locally; no asset download is needed.
+Selected model/image assets are bundled under `assets`; floor, lights, hands,
+enemies and effect PCM remain generated locally. No runtime download is needed.
 
 Simulation hashes support repeatability checks on the same floating-point
 platform. They do not claim bitwise cross-platform replay compatibility.
@@ -192,7 +194,7 @@ frames, repeated three times per case, produced these medians of each run's p50:
 | Instancing + culling, validation on | 10.14 ms | 0.191 ms | 0.920 ms | 28 | 112,160 B |
 | Previous commit, validation off | 11.22 ms | 0.313 ms | 0.839 ms | 750 | 208,208 B |
 | Instancing + culling, validation off | 10.23 ms | 0.133 ms | 0.920 ms | 28 | 112,160 B |
-| Current scalar path, validation off | 11.51 ms | 0.344 ms | 0.883 ms | 750 | 208,208 B |
+| Current scalar path before model imports, validation off | 11.51 ms | 0.344 ms | 0.883 ms | 750 | 208,208 B |
 | Instancing without culling, validation off | 10.62 ms | 0.143 ms | 0.857 ms | 32 | 143,376 B |
 
 Validation and Vulkan command-label environment settings match between old/new
@@ -208,3 +210,28 @@ builds and validation settings; the earlier 67 ms debug number is not an
 optimized baseline. See the reusable
 [benchmark runner and configuration](../../docs/render-submission.md) for
 reproducing cases and retaining raw measurements.
+
+## Authored model assets
+
+The scene now uses Kenney CC0 low-poly blasters as pistol/rifle, modular crates,
+barrels, a workbench and wall panels. The source files, licenses, archive hashes
+and per-file hashes are recorded in [assets/README.md](assets/README.md) and
+[assets/manifest.json](assets/manifest.json). They are stylized guns with game
+material tints, rather than replicas of real weapons.
+
+The glTF loader and GPU adapter are public Quasar APIs. Nightwatch owns only its
+asset selection, cover placement and animation policy. Recoil moves the loaded
+weapon; named magazine parts move during reload. Crate clips are explicitly
+imported at their default pose. Existing collision/navigation remains game-owned;
+box colliders conservatively approximate the imported cover and barrel groups.
+
+`--asset-root PATH`, `assets.root` in TOML/JSON, and `NIGHTWATCH_ASSET_ROOT` select
+an editable copy with the same pack layout. F5 stages replacements for the whole
+selection; a broken/missing file leaves the previous models usable and reports
+the error through diagnostics. Texture files participate in dependency tracking.
+Run without graphics to retain the independent simulation-only dependency set.
+
+The earlier 28-draw benchmark above predates these authored models. The new scene
+has multiple meshes and image bindings; its draw count is a different workload.
+See [3D asset loading](../../docs/model-assets-3d.md) for the implementation,
+supported subset and reload/retirement tests.

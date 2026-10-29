@@ -2,6 +2,8 @@
 #[cfg(feature = "graphics")]
 mod geometry;
 #[cfg(feature = "graphics")]
+mod models;
+#[cfg(feature = "graphics")]
 pub mod render;
 pub mod settings;
 pub mod world;

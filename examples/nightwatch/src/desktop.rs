@@ -156,7 +156,12 @@ impl App {
                 Field::new("validation", gal.full_validation()),
             ],
         );
-        self.graphics = Some(Graphics::with_submission(
+        let asset_root = self
+            .settings
+            .asset_root
+            .clone()
+            .unwrap_or_else(Graphics::default_asset_root);
+        self.graphics = Some(Graphics::with_asset_root(
             &mut gal,
             nightwatch::render::GraphicsOptions {
                 shadows: self.settings.shadows,
@@ -164,6 +169,7 @@ impl App {
                 shadow_resolution: self.settings.shadow_resolution,
             },
             self.settings.submission(),
+            &asset_root,
         )?);
         self.graphics
             .as_mut()
@@ -229,6 +235,17 @@ impl Application for App {
             graphics.set_effects(shadows, normals);
             self.settings.shadows = shadows;
             self.settings.normal_maps = normals;
+        }
+        if c.input.pressed(Key::F5) {
+            if let (Some(gal), Some(graphics)) = (&mut self.gal, &mut self.graphics) {
+                match graphics.reload_assets(gal) {
+                    Ok(()) => self.diagnostics.info("nightwatch", "models_reloaded"),
+                    Err(e) => self
+                        .diagnostics
+                        .failure("nightwatch", "model_reload_failed", &e),
+                }
+            }
+            c.input.consume_pressed(Key::F5);
         }
         if c.input.pressed(Key::F11) {
             if let Some(window) = c.window {
@@ -384,7 +401,7 @@ impl Application for App {
             self.world.state_hash()
         );
         if let Some(path) = &self.settings.screenshot {
-            nightwatch::render::screenshot_with_submission(
+            nightwatch::render::screenshot_with_asset_root(
                 &self.world,
                 self.settings.width,
                 self.settings.height,
@@ -395,6 +412,7 @@ impl Application for App {
                     shadow_resolution: self.settings.shadow_resolution,
                 },
                 self.settings.submission(),
+                self.settings.asset_root.as_deref(),
             )?;
         }
         Ok(())

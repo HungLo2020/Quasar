@@ -129,3 +129,16 @@ counts and instance upload bytes. Optional `config` and `diagnostics` features
 provide existing Config adapters and explicit Diagnostics handles. See
 [submission and reusable benchmarks](../../docs/render-submission.md) for APIs,
 budgets, shader interfaces, lifetime contracts and example configuration.
+
+## Optional uploaded models and textures
+
+The `model-assets` feature adapts quasar-assets CPU model data to the caller's
+GAL. `UploadedModel` owns a replaceable GPU generation and exposes ordinary
+surface draws; `UploadedTexture` provides RGBA uploads, color/normal-aware mips
+and explicit sampler ownership. Applications opt into classic PBR approximation
+and retain control of asset loading, posing, replacement and submission.
+
+Imported materials preserve alpha behavior, single/double-sided policy and
+mirrored winding. Existing mesh/material APIs and default face policy remain
+available. See [model asset architecture](../../docs/model-assets-3d.md) for
+budgets, sampler registration and command/descriptor lifetime requirements.

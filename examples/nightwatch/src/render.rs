@@ -24,6 +24,7 @@ pub struct Graphics {
     textures: Textures,
     stats: RendererStats,
     work: RenderWork,
+    models: crate::models::Models,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct GraphicsOptions {
@@ -91,6 +92,19 @@ impl Graphics {
         options: GraphicsOptions,
         submission: SubmissionConfig,
     ) -> GalResult<Self> {
+        Self::with_asset_root(
+            gal,
+            options,
+            submission,
+            &crate::models::Models::default_root(),
+        )
+    }
+    pub fn with_asset_root(
+        gal: &mut VulkanicGal,
+        options: GraphicsOptions,
+        submission: SubmissionConfig,
+        root: &std::path::Path,
+    ) -> GalResult<Self> {
         let mut world = SurfaceRenderState3D::with_submission(gal, 16, 2, submission)?;
         let mut weapon = match SurfaceRenderState3D::with_submission(gal, 8, 2, submission) {
             Ok(x) => x,
@@ -142,32 +156,48 @@ impl Graphics {
                 },
                 submission,
             )?;
+            let models = match crate::models::Models::load(gal, root) {
+                Ok(m) => m,
+                Err(e) => {
+                    let mut shadows = shadows;
+                    let _ = shadows.release(gal);
+                    return Err(e);
+                }
+            };
             Ok((
                 normal_concrete,
                 normal_concrete_view,
                 normal_metal,
                 normal_metal_view,
                 shadows,
+                models,
             ))
         })();
-        let (normal_concrete, normal_concrete_view, normal_metal, normal_metal_view, shadows) =
-            match resources {
-                Ok(r) => r,
-                Err(e) => {
-                    for h in owned.into_iter().rev() {
-                        let _ = gal.retire(h);
-                    }
-                    let _ = cube.release(gal);
-                    let _ = hud.release(gal);
-                    let _ = weapon.release(gal);
-                    let _ = world.release(gal);
-                    let _ = gal.retire(view);
-                    let _ = gal.retire(texture);
-                    return Err(e);
+        let (
+            normal_concrete,
+            normal_concrete_view,
+            normal_metal,
+            normal_metal_view,
+            shadows,
+            models,
+        ) = match resources {
+            Ok(r) => r,
+            Err(e) => {
+                for h in owned.into_iter().rev() {
+                    let _ = gal.retire(h);
                 }
-            };
+                let _ = cube.release(gal);
+                let _ = hud.release(gal);
+                let _ = weapon.release(gal);
+                let _ = world.release(gal);
+                let _ = gal.retire(view);
+                let _ = gal.retire(texture);
+                return Err(e);
+            }
+        };
         Ok(Self {
             shadows,
+            models,
             options,
             normal_concrete,
             normal_concrete_view,
@@ -190,7 +220,20 @@ impl Graphics {
     pub fn set_diagnostics(&mut self, d: quasar_diagnostics::Diagnostics) {
         self.world.set_diagnostics(d.clone());
         self.weapon.set_diagnostics(d.clone());
-        self.shadows.set_diagnostics(d);
+        self.shadows.set_diagnostics(d.clone());
+        self.models.set_diagnostics(d);
+    }
+    pub fn default_asset_root() -> std::path::PathBuf {
+        crate::models::Models::default_root()
+    }
+    pub fn asset_root(&self) -> &std::path::Path {
+        &self.models.root
+    }
+    pub fn reload_assets(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
+        self.world.clear_bindings(gal)?;
+        self.weapon.clear_bindings(gal)?;
+        self.shadows.clear_bindings(gal)?;
+        self.models.reload(gal)
     }
     pub fn stats(&self) -> RendererStats {
         self.stats
@@ -256,6 +299,8 @@ impl Graphics {
         let extent = gal.pass_target_extent(target)?;
         let aspect = extent.width as f32 / extent.height as f32;
         let projection = Mat4::perspective(80.0f32.to_radians(), aspect, 0.04, 100.).unwrap();
+        self.models
+            .bind(gal, &mut self.world, &mut self.weapon, &mut self.shadows)?;
         let eye = w.player;
         let f = w.forward();
         let view = Mat4::look_at(
@@ -307,7 +352,7 @@ impl Graphics {
             });
         }
         let instances = scene(w);
-        let draws = Self::draws(
+        let mut draws = Self::draws(
             &self.cube,
             self.view,
             &instances,
@@ -316,6 +361,49 @@ impl Graphics {
                 .then_some(self.normal_concrete_view),
             true,
         );
+        for (index, o) in w.obstacles.iter().enumerate() {
+            let asset = if index == 4 {
+                5
+            } else if index % 3 == 2 && (o.half[0] - o.half[2]).abs() < 0.5 {
+                4
+            } else if o.half[0] > o.half[2] * 1.3 {
+                3
+            } else {
+                2
+            };
+            let mut imported = if asset == 4 {
+                [-1., 1.]
+                    .into_iter()
+                    .flat_map(|side| {
+                        self.models.gpu[asset].draws(self.models.fit_uniform(
+                            asset,
+                            [
+                                o.center[0] + side * o.half[0] * 0.5,
+                                o.center[1],
+                                o.center[2],
+                            ],
+                            [o.half[0] * 0.48, o.half[1], o.half[2]],
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                self.models.gpu[asset].draws(self.models.fit(asset, o.center, o.half))
+            };
+            // Muted industrial finishes are game material choices; source textures stay unchanged.
+            for draw in &mut imported {
+                for (c, tint) in [0.5, 0.65, 0.28].into_iter().enumerate() {
+                    draw.material.lit.base.tint[c] *= tint;
+                }
+            }
+            draws.extend(imported);
+        }
+        for z in [-10., -4., 2., 8.] {
+            draws.extend(self.models.gpu[6].draws(self.models.fit(
+                6,
+                [14.3, 2.2, z],
+                [0.035, 1.0, 1.2],
+            )));
+        }
         let casters: Vec<_> = draws
             .iter()
             .filter(|d| d.material.lit.shading != ShadingModel::Unlit)
@@ -374,13 +462,32 @@ impl Graphics {
             },
         )?;
         let weapon_instances = weapon(w);
-        let draws = Self::draws(
+        let mut draws = Self::draws(
             &self.cube,
             self.view,
             &weapon_instances,
             self.options.normal_maps.then_some(self.normal_metal_view),
             false,
         );
+        let (root, reload) = weapon_pose(w);
+        let gun_index = usize::from(w.weapon == Weapon::Rifle);
+        let gun_scale = if gun_index == 0 { 0.65 } else { 0.75 };
+        let gun_root = root
+            * Mat4::translation(0., 0., -0.14 + w.recoil * 0.035)
+            * Mat4::scale(gun_scale, gun_scale, gun_scale);
+        for (i, instance) in self.models.gpu[gun_index].instances().iter().enumerate() {
+            let parent = if instance.name == "magazine" {
+                gun_root * Mat4::translation(0., -reload * 0.28, reload * 0.08)
+            } else {
+                gun_root
+            };
+            let mut draw = self.models.gpu[gun_index].draw(i, parent).unwrap();
+            draw.material.receives_shadows = false;
+            for (c, tint) in [0.5, 0.65, 0.25].into_iter().enumerate() {
+                draw.material.lit.base.tint[c] *= tint;
+            }
+            draws.push(draw);
+        }
         let mut gun_lights = vec![Light::Directional {
             direction: [-0.5, -0.6, -1.],
             color: [0.65, 0.8, 1.],
@@ -478,6 +585,7 @@ impl Graphics {
         self.weapon.release(gal)?;
         self.shadows.release(gal)?;
         self.hud.release(gal)?;
+        self.models.release(gal)?;
         self.cube.release(gal)?;
         gal.retire(self.view)?;
         gal.retire(self.texture)?;
@@ -536,23 +644,6 @@ fn scene(w: &World) -> Vec<Instance> {
             [0.025, 1.8, 0.035],
             [0.22, 0.25, 0.26],
         );
-    }
-    for o in &w.obstacles {
-        add(o.center, o.half, o.color);
-        for y in [-0.65, 0.65] {
-            add(
-                [o.center[0], o.center[1] + o.half[1] * y, o.center[2]],
-                [o.half[0] + 0.025, 0.04, o.half[2] + 0.025],
-                [0.07, 0.09, 0.09],
-            );
-        }
-        for x in [-1., 1.] {
-            add(
-                [o.center[0] + x * o.half[0], o.center[1], o.center[2]],
-                [0.045, o.half[1], o.half[2] + 0.03],
-                [0.15, 0.17, 0.16],
-            );
-        }
     }
     for (position, color) in [
         ([-9., 3., -7.], [0.1, 0.7, 1.]),
@@ -648,7 +739,7 @@ fn scene(w: &World) -> Vec<Instance> {
     }
     out
 }
-fn weapon(w: &World) -> Vec<Instance> {
+fn weapon_pose(w: &World) -> (Mat4, f32) {
     let reload = if w.reload_ticks > 0 {
         (w.reload_ticks as f32
             / if w.weapon == Weapon::Pistol {
@@ -664,6 +755,10 @@ fn weapon(w: &World) -> Vec<Instance> {
     let bob = (w.distance_walked * 7.).sin() * 0.008;
     let root = Mat4::translation(0.23 + bob, -0.20 - reload * 0.35, -0.46 + w.recoil * 0.08)
         * Mat4::rotation_x(w.recoil * 0.17 + reload * 0.65);
+    (root, reload)
+}
+fn weapon(w: &World) -> Vec<Instance> {
+    let (root, _) = weapon_pose(w);
     let mut out = vec![];
     let mut add = |c, h, color| out.push(Instance::cube(c, h, color).transformed(root));
     // Hands, grip, reciprocating slide/receiver and a separate barrel/sight assembly.
@@ -673,37 +768,7 @@ fn weapon(w: &World) -> Vec<Instance> {
         [0.07, 0.06, 0.10],
         [0.14, 0.17, 0.16],
     );
-    add([0., -0.07, 0.05], [0.055, 0.12, 0.07], [0.065, 0.075, 0.08]);
     let rifle = w.weapon == Weapon::Rifle;
-    add(
-        [0., 0.035, -0.10 + w.recoil * 0.035],
-        [0.065, 0.055, if rifle { 0.25 } else { 0.17 }],
-        [0.22, 0.27, 0.30],
-    );
-    add([0., -0.02, -0.12], [0.058, 0.035, 0.18], [0.08, 0.10, 0.11]);
-    add(
-        [0., 0.025, if rifle { -0.46 } else { -0.30 }],
-        [0.025, 0.025, if rifle { 0.14 } else { 0.035 }],
-        [0.12, 0.15, 0.16],
-    );
-    add([0., 0.10, -0.23], [0.014, 0.025, 0.025], [0.08, 0.09, 0.10]);
-    add([0., 0.105, 0.025], [0.05, 0.018, 0.018], [0.05, 0.06, 0.06]);
-    if rifle {
-        add([0., -0.13, -0.10], [0.045, 0.13, 0.06], [0.10, 0.13, 0.12]);
-        add(
-            [-0.05, -0.045, -0.30],
-            [0.07, 0.065, 0.12],
-            [0.15, 0.12, 0.09],
-        );
-        add([0., 0.02, 0.24], [0.045, 0.065, 0.14], [0.12, 0.15, 0.14]);
-        for x in -2..3 {
-            add(
-                [0., 0.102, x as f32 * 0.06 - 0.1],
-                [0.06, 0.006, 0.012],
-                [0.12, 0.14, 0.15],
-            );
-        }
-    }
     if w.muzzle_ticks > 0 {
         let z = if rifle { -0.65 } else { -0.40 };
         let pulse = w.muzzle_ticks as f32 / 4.;
@@ -883,8 +948,21 @@ pub fn screenshot_with_submission(
     options: GraphicsOptions,
     submission: SubmissionConfig,
 ) -> Result<()> {
+    screenshot_with_asset_root(w, width, height, path, options, submission, None)
+}
+pub fn screenshot_with_asset_root(
+    w: &World,
+    width: u32,
+    height: u32,
+    path: &std::path::Path,
+    options: GraphicsOptions,
+    submission: SubmissionConfig,
+    root: Option<&std::path::Path>,
+) -> Result<()> {
     let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "Nightwatch screenshot")?;
-    let mut graphics = Graphics::with_submission(&mut gal, options, submission)?;
+    let default = Graphics::default_asset_root();
+    let mut graphics =
+        Graphics::with_asset_root(&mut gal, options, submission, root.unwrap_or(&default))?;
     let mut target = quasar_frame::OffscreenTarget::new(&mut gal, width, height)?;
     let result = target.render(&mut gal, |gal, target| {
         graphics.commands(gal, target, w, false)

@@ -87,6 +87,17 @@ impl SurfaceRenderState3D {
             max_shadows,
         })
     }
+    pub fn set_texture_sampler(
+        &mut self,
+        gal: &mut VulkanicGal,
+        view: Handle,
+        sampler: Handle,
+        normal: bool,
+    ) -> GalResult<()> {
+        self.lit
+            .core
+            .set_texture_sampler(gal, view, sampler, normal)
+    }
     pub fn work_stats(&self) -> RenderWork {
         self.lit.work_stats()
     }
