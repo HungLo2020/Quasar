@@ -1,7 +1,9 @@
 //! Atlas loading and ordered tile submission; never creates a graphics device.
 use crate::*;
+#[cfg(feature = "png")]
+use quasar_render_2d::Image;
 use quasar_render_2d::{
-    Camera2D, Canvas, Color, Filter, Image, Rect, SpriteAtlas, SpriteTransform, Textures,
+    Camera2D, Canvas, Color, Filter, Rect, SpriteAtlas, SpriteTransform, Textures,
 };
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy)]
@@ -30,6 +32,7 @@ pub struct LoadedTilesets {
     definitions: Vec<Tileset>,
 }
 impl LoadedTilesets {
+    #[cfg(feature = "png")]
     /// Loads each unique PNG once. Enforces declared image dimensions and a
     /// 256 MiB aggregate RGBA budget. No GPU or window is initialized.
     pub fn load(map: &Map, root: &AssetRoot, textures: &mut Textures) -> Result<Self> {
@@ -40,10 +43,11 @@ impl LoadedTilesets {
         let mut total = 0usize;
         let result = (|| {
             for set in &map.tilesets {
-                let (id, width, height) = if let Some(info) = images.get(&set.image) {
+                let path = crate::io::relative("", &set.image)?;
+                let (id, width, height) = if let Some(info) = images.get(&path) {
                     *info
                 } else {
-                    let image = Image::load_png(root.resolve(&set.image)?)
+                    let image = Image::load_png(root.resolve(&path)?)
                         .map_err(|e| error("png", e.to_string()))?;
                     total = total
                         .checked_add(image.rgba().len())
@@ -55,26 +59,10 @@ impl LoadedTilesets {
                     let height = image.height();
                     let id = textures.insert(image);
                     inserted.push(id);
-                    images.insert(set.image.clone(), (id, width, height));
+                    images.insert(path, (id, width, height));
                     (id, width, height)
                 };
-                if width != set.image_width || height != set.image_height {
-                    return Err(error(
-                        "atlas",
-                        format!("{} PNG dimensions differ from tileset", set.image),
-                    ));
-                }
-                let atlas = SpriteAtlas::grid(
-                    id,
-                    [width, height],
-                    [set.tile_width, set.tile_height],
-                    set.margin,
-                    set.spacing,
-                )
-                .map_err(|e| error("atlas", e.to_string()))?;
-                if atlas.columns() != set.columns || atlas.len() < set.tile_count {
-                    return Err(error("atlas", "atlas metadata mismatch"));
-                }
+                let atlas = tileset_atlas(set, id, (width, height))?;
                 atlases.push(atlas);
             }
             Ok(Self {
@@ -88,6 +76,37 @@ impl LoadedTilesets {
             }
         }
         result
+    }
+    /// Builds atlas metadata from caller-owned texture identities. No file I/O,
+    /// pixel copy, GPU allocation or texture ownership transfer occurs. The resolver
+    /// runs once per unique image path; register GAL views with RenderState2D first.
+    pub fn from_textures(
+        map: &Map,
+        textures: &Textures,
+        mut resolve: impl FnMut(&str) -> Result<quasar_render_2d::TextureId>,
+    ) -> Result<Self> {
+        map.validate()?;
+        let mut images = BTreeMap::new();
+        let mut atlases = Vec::with_capacity(map.tilesets.len());
+        for set in &map.tilesets {
+            let path = crate::io::relative("", &set.image)?;
+            let id = if let Some(&id) = images.get(&path) {
+                id
+            } else {
+                let id = resolve(&path)?;
+                images.insert(path, id);
+                id
+            };
+            let (width, height) = textures
+                .dimensions(id)
+                .ok_or_else(|| error("atlas", "unknown preloaded texture"))?;
+            let atlas = tileset_atlas(set, id, (width, height))?;
+            atlases.push(atlas);
+        }
+        Ok(Self {
+            atlases,
+            definitions: map.tilesets.clone(),
+        })
     }
     pub fn atlas(&self, index: usize) -> Option<&SpriteAtlas> {
         self.atlases.get(index)
@@ -186,6 +205,7 @@ impl LoadedTilesets {
         })
     }
 }
+#[cfg(feature = "png")]
 pub fn preview(
     runtime: &Runtime,
     root: &AssetRoot,
@@ -215,6 +235,7 @@ pub fn preview(
         .map_err(|e| error("render", e.to_string()))?;
     Ok((pixels, stats))
 }
+#[cfg(feature = "png")]
 pub fn write_png(
     path: impl AsRef<std::path::Path>,
     width: u32,
@@ -229,4 +250,29 @@ pub fn write_png(
         .write_header()
         .and_then(|mut writer| writer.write_image_data(pixels))
         .map_err(|e| error("png", e.to_string()))
+}
+
+fn tileset_atlas(
+    set: &Tileset,
+    id: quasar_render_2d::TextureId,
+    (width, height): (u32, u32),
+) -> Result<SpriteAtlas> {
+    if (width, height) != (set.image_width, set.image_height) {
+        return Err(error(
+            "atlas",
+            format!("{} image dimensions differ from tileset", set.image),
+        ));
+    }
+    let atlas = SpriteAtlas::grid(
+        id,
+        [width, height],
+        [set.tile_width, set.tile_height],
+        set.margin,
+        set.spacing,
+    )
+    .map_err(|e| error("atlas", e.to_string()))?;
+    if atlas.columns() != set.columns || atlas.len() < set.tile_count {
+        return Err(error("atlas", "atlas metadata mismatch"));
+    }
+    Ok(atlas)
 }

@@ -7,7 +7,7 @@ pub mod render;
 mod runtime;
 pub use format::*;
 pub use io::{AssetRoot, load, parse, to_tiled_json, write_bundle};
-pub use runtime::{Bounds, Cell, QueryStats, Runtime};
+pub use runtime::{Bounds, Cell, EditStats, QueryStats, Runtime, TileEdit};
 use std::fmt;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Error {

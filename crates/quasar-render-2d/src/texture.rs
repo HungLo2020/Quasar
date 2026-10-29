@@ -182,3 +182,29 @@ pub fn write_png(
         .map_err(|e| invalid(format!("PNG write: {e}")))?;
     Ok(())
 }
+
+#[cfg(feature = "assets")]
+impl quasar_assets::Asset for Image {
+    fn memory_size(&self) -> usize {
+        self.rgba.len()
+    }
+}
+/// Bounded PNG decoding through the existing mounted asset service/cache.
+#[cfg(feature = "assets")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PngLoader;
+#[cfg(feature = "assets")]
+impl quasar_assets::AssetLoader for PngLoader {
+    type Asset = Image;
+    fn max_source_bytes(&self) -> usize {
+        64 * 1024 * 1024
+    }
+    fn load(
+        &self,
+        context: &quasar_assets::LoadContext<'_>,
+    ) -> std::result::Result<Image, quasar_assets::AssetError> {
+        Image::decode_png(context.bytes()).map_err(|e| {
+            quasar_assets::AssetError::new(quasar_assets::AssetErrorKind::Loader, e.to_string())
+        })
+    }
+}

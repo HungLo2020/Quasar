@@ -297,7 +297,7 @@ fn symlink_escapes_are_rejected() {
     assert!(write_bundle(&map, &assets, root.path().join("dangling.json"), false).is_err());
     assert!(!outside.path().join("not-yet-created.json").exists());
 }
-#[cfg(feature = "render-2d")]
+#[cfg(feature = "png")]
 #[test]
 fn previews_decode_png_and_check_declared_atlas_dimensions() {
     let root = tempfile::tempdir().unwrap();
@@ -342,4 +342,378 @@ fn previews_decode_png_and_check_declared_atlas_dimensions() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn live_batches_are_transactional_and_preserve_existing_storage() {
+    let mut runtime = Runtime::new(parse_fixture(fixture())).unwrap();
+    let buffer = match &runtime.map().layers[0].content {
+        LayerContent::Tiles { chunks } => chunks[0].cells.as_ptr(),
+        _ => unreachable!(),
+    };
+    let before = runtime.map().clone();
+    assert!(
+        runtime
+            .set_tiles(&[
+                TileEdit {
+                    layer: 1,
+                    x: 0,
+                    y: 0,
+                    gid: 2
+                },
+                TileEdit {
+                    layer: 99,
+                    x: 1,
+                    y: 0,
+                    gid: 1
+                }
+            ])
+            .is_err()
+    );
+    assert_eq!(*runtime.map(), before);
+    assert_eq!(runtime.tile(1, 0, 0).unwrap().gid, 1);
+    assert!(
+        runtime
+            .set_tiles(&[TileEdit {
+                layer: 1,
+                x: 0,
+                y: 0,
+                gid: 999
+            }])
+            .is_err()
+    );
+    assert!(runtime.set_tile(1, -1, 0, 1).is_err());
+    let stats = runtime
+        .set_tiles(&[
+            TileEdit {
+                layer: 1,
+                x: 0,
+                y: 0,
+                gid: 2,
+            },
+            TileEdit {
+                layer: 1,
+                x: 0,
+                y: 0,
+                gid: 1 | FLIP_X,
+            },
+        ])
+        .unwrap();
+    assert_eq!(stats.changed_cells, 1);
+    assert!(
+        runtime
+            .collides(
+                1,
+                Bounds {
+                    x: 0.,
+                    y: 0.,
+                    width: 2.,
+                    height: 2.
+                },
+                "solid"
+            )
+            .unwrap()
+    );
+    runtime.set_tile(1, 0, 0, 2).unwrap();
+    assert!(
+        !runtime
+            .collides(
+                1,
+                Bounds {
+                    x: 0.,
+                    y: 0.,
+                    width: 2.,
+                    height: 2.
+                },
+                "solid"
+            )
+            .unwrap()
+    );
+    assert_eq!(stats.indexed_spans, 0);
+    assert_eq!(stats.inserted_cells, 0);
+    let after = match &runtime.map().layers[0].content {
+        LayerContent::Tiles { chunks } => chunks[0].cells.as_ptr(),
+        _ => unreachable!(),
+    };
+    assert_eq!(buffer, after);
+    assert_eq!(runtime.set_tiles(&[]).unwrap(), EditStats::default());
+    runtime.map().validate().unwrap();
+}
+
+#[test]
+fn sparse_incremental_index_matches_full_rebuild_after_random_batches() {
+    let mut map = parse_fixture(fixture());
+    map.infinite = true;
+    let mut runtime = Runtime::new(map).unwrap();
+    let mut seed = 123456789u64;
+    for _ in 0..40 {
+        let mut edits = Vec::new();
+        for _ in 0..64 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            edits.push(TileEdit {
+                layer: 1,
+                x: ((seed >> 16) % 40) as i32 - 20,
+                y: ((seed >> 32) % 20) as i32 - 10,
+                gid: (seed % 3) as u32 | if seed & 4 != 0 { FLIP_X } else { 0 },
+            });
+        }
+        runtime.set_tiles(&edits).unwrap();
+        let rebuilt = Runtime::new(runtime.map().clone()).unwrap();
+        assert_eq!(runtime.stored_cells(), rebuilt.stored_cells());
+        for y in -11..11 {
+            for x in -21..21 {
+                assert_eq!(runtime.tile(1, x, y), rebuilt.tile(1, x, y));
+            }
+        }
+        let bounds = Bounds {
+            x: -42.,
+            y: -22.,
+            width: 84.,
+            height: 44.,
+        };
+        let mut a = Vec::new();
+        let mut b = Vec::new();
+        let sa = runtime.for_each_cell(1, bounds, |c| a.push(c)).unwrap();
+        let sb = rebuilt.for_each_cell(1, bounds, |c| b.push(c)).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(sa.visited_cells, sb.visited_cells);
+        assert_eq!(
+            runtime.animated_tile(0, 0, 60),
+            rebuilt.animated_tile(0, 0, 60)
+        );
+    }
+}
+
+#[test]
+fn map_batch_validates_every_edit_without_copying_or_partial_mutation() {
+    let mut map = parse_fixture(fixture());
+    let before = map.clone();
+    assert!(
+        map.set_tiles(&[
+            TileEdit {
+                layer: 1,
+                x: 0,
+                y: 0,
+                gid: 2
+            },
+            TileEdit {
+                layer: 1,
+                x: 4,
+                y: 0,
+                gid: 1
+            }
+        ])
+        .is_err()
+    );
+    assert_eq!(map, before);
+    map.set_tiles(&[
+        TileEdit {
+            layer: 1,
+            x: 0,
+            y: 0,
+            gid: 2,
+        },
+        TileEdit {
+            layer: 1,
+            x: 1,
+            y: 0,
+            gid: 2,
+        },
+    ])
+    .unwrap();
+    map.validate().unwrap();
+    let mut rectangular = map;
+    rectangular.tile_height = 1;
+    rectangular.tilesets[0].tile_height = 1;
+    rectangular.validate().unwrap();
+    let mut runtime = Runtime::new(rectangular).unwrap();
+    assert!(runtime.set_tile(1, 0, 0, 1 | TRANSPOSE).is_err());
+    assert!(runtime.set_tile(1, i32::MIN, 0, 1).is_err());
+}
+
+#[cfg(feature = "render-2d")]
+#[test]
+fn preloaded_tilesets_share_identity_without_io_and_validate_all_declarations() {
+    use quasar_render_2d::{Image, Textures};
+    use quasar_tilemap::render::LoadedTilesets;
+    let mut map = parse_fixture(fixture());
+    let image = Image::new(4, 2, vec![255; 32]).unwrap();
+    let mut textures = Textures::default();
+    let id = textures.insert(image.clone());
+    assert_eq!(
+        image.rgba().as_ptr(),
+        textures.get(id).unwrap().rgba().as_ptr()
+    );
+    let mut set = map.tilesets[0].clone();
+    set.first_gid = 3;
+    set.image = "./textures/../atlas.png".into();
+    map.tilesets.push(set);
+    let mut calls = 0;
+    let loaded = LoadedTilesets::from_textures(&map, &textures, |path| {
+        calls += 1;
+        assert_eq!(path, "atlas.png");
+        Ok(id)
+    })
+    .unwrap();
+    assert_eq!(calls, 1);
+    assert_eq!(
+        loaded
+            .atlas(0)
+            .unwrap()
+            .sprite(0, quasar_render_2d::Rect::new(0., 0., 2., 2.))
+            .unwrap()
+            .texture,
+        id
+    );
+    assert_eq!(
+        loaded
+            .atlas(1)
+            .unwrap()
+            .sprite(0, quasar_render_2d::Rect::new(0., 0., 2., 2.))
+            .unwrap()
+            .texture,
+        id
+    );
+    let bad = textures.declare_external(8, 2).unwrap();
+    assert!(LoadedTilesets::from_textures(&map, &textures, |_| Ok(bad)).is_err());
+    textures.remove(id);
+    assert!(LoadedTilesets::from_textures(&map, &textures, |_| Ok(id)).is_err());
+}
+
+#[test]
+#[ignore = "release CPU performance comparison; run explicitly with --nocapture"]
+fn benchmark_live_edits_versus_legacy_clone_validate_rebuild() {
+    use std::{hint::black_box, time::Instant};
+    for size in [100u32, 1000, 2048] {
+        let mut map = parse_fixture(fixture());
+        map.width = size;
+        map.height = size;
+        map.layers.truncate(1);
+        map.layers[0].content = LayerContent::Tiles {
+            chunks: vec![Chunk {
+                x: 0,
+                y: 0,
+                width: size,
+                height: size,
+                cells: vec![1; (size * size) as usize],
+            }],
+        };
+        let mut runtime = Runtime::new(map.clone()).unwrap();
+        let edits: Vec<_> = (0..1000)
+            .map(|i| TileEdit {
+                layer: 1,
+                x: i % (size as i32),
+                y: i / (size as i32),
+                gid: 2,
+            })
+            .collect();
+        let start = Instant::now();
+        for e in &edits {
+            let stats = runtime.set_tiles(std::slice::from_ref(e)).unwrap();
+            assert_eq!(stats.indexed_spans, 0);
+            black_box(stats);
+        }
+        std::hint::black_box(runtime.map());
+        let live = start.elapsed();
+        let start = Instant::now();
+        // Exact old one-cell path: full validation, clone, mutate, full validation,
+        // followed by Runtime::new (another validation and index rebuild).
+        for e in edits.iter().take(10) {
+            map.validate().unwrap();
+            let mut candidate = map.clone();
+            let LayerContent::Tiles { chunks } = &mut candidate.layers[0].content else {
+                unreachable!()
+            };
+            chunks[0].cells[(e.y as u32 * size + e.x as u32) as usize] = e.gid;
+            candidate.validate().unwrap();
+            let compiled = black_box(Runtime::new(candidate).unwrap());
+            map = compiled.into_map();
+        }
+        let legacy = start.elapsed();
+        println!(
+            "cells={} live_ns_per_edit={} legacy_ns_per_edit={} speedup={:.1}",
+            size * size,
+            live.as_nanos() / 1000,
+            legacy.as_nanos() / 10,
+            legacy.as_secs_f64() / 10. / (live.as_secs_f64() / 1000.)
+        );
+    }
+}
+
+#[test]
+fn live_edit_budgets_reject_complete_batch_before_any_write() {
+    let mut map = parse_fixture(fixture());
+    map.infinite = true;
+    map.layers[0].content = LayerContent::Tiles {
+        chunks: vec![Chunk {
+            x: 0,
+            y: 0,
+            width: 2048,
+            height: 2048,
+            cells: vec![1; MAX_CELLS],
+        }],
+    };
+    let mut runtime = Runtime::new(map).unwrap();
+    assert!(
+        runtime
+            .set_tiles(&[
+                TileEdit {
+                    layer: 1,
+                    x: 0,
+                    y: 0,
+                    gid: 2
+                },
+                TileEdit {
+                    layer: 1,
+                    x: -1,
+                    y: 0,
+                    gid: 2
+                }
+            ])
+            .is_err()
+    );
+    assert_eq!(runtime.tile(1, 0, 0).unwrap().gid, 1);
+    assert_eq!(runtime.stored_cells(), MAX_CELLS);
+    assert!(runtime.tile(1, -1, 0).is_none());
+    drop(runtime);
+    let mut map = parse_fixture(fixture());
+    map.infinite = true;
+    map.layers[0].content = LayerContent::Tiles {
+        chunks: (0..65536)
+            .map(|x| Chunk {
+                x: x * 2,
+                y: 0,
+                width: 1,
+                height: 1,
+                cells: vec![1],
+            })
+            .collect(),
+    };
+    let mut runtime = Runtime::new(map).unwrap();
+    assert!(runtime.set_tile(1, 1, 0, 2).is_err());
+    assert!(runtime.tile(1, 1, 0).is_none());
+    // Replacing cells never consumes chunk budget, including empty cells.
+    assert_eq!(runtime.set_tile(1, 0, 0, 0).unwrap().indexed_spans, 0);
+    assert_eq!(runtime.tile(1, 0, 0).unwrap().gid, 0);
+}
+
+#[test]
+fn editing_far_edge_of_valid_infinite_chunk_preserves_origin_bound_semantics() {
+    let mut map = parse_fixture(fixture());
+    map.infinite = true;
+    map.layers[0].content = LayerContent::Tiles {
+        chunks: vec![Chunk {
+            x: 1_000_000,
+            y: 1_000_000,
+            width: 2,
+            height: 2,
+            cells: vec![1; 4],
+        }],
+    };
+    map.set_tile(1, 1_000_001, 1_000_001, 2).unwrap();
+    let mut runtime = Runtime::new(map).unwrap();
+    runtime.set_tile(1, 1_000_001, 1_000_001, 1).unwrap();
+    assert_eq!(runtime.tile(1, 1_000_001, 1_000_001).unwrap().gid, 1);
+    assert!(runtime.set_tile(1, 1_000_002, 1_000_001, 2).is_err());
+    runtime.map().validate().unwrap();
 }

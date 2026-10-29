@@ -516,3 +516,247 @@ fn shared_image_registration_rejects_a_3d_view_even_at_depth_one() {
         gal.metrics().resource_destroys
     );
 }
+
+#[test]
+#[ignore = "native GPU preloaded tilemap integration"]
+fn tilemap_uses_shared_gal_atlas_without_png_or_duplicate_uploads() {
+    use quasar_render_2d::{Color, Filter, PixelState};
+    use quasar_tilemap::{
+        Map, Runtime, TileEdit,
+        render::{LoadedTilesets, View},
+    };
+    let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "preloaded tilemap").unwrap();
+    let mut demo = Demo::new(&mut gal).unwrap();
+    let target = Offscreen::new(&mut gal, 8, 8).unwrap();
+    let map:Map=serde_json::from_value(serde_json::json!({
+        "quasar_version":1,"tile_width":4,"tile_height":4,"width":2,"height":2,
+        "tilesets":[{"first_gid":1,"name":"preloaded","image":"never-open-this.png","image_width":8,"image_height":8,"tile_width":4,"tile_height":4,"columns":2,"tile_count":4}],
+        "layers":[{"id":1,"name":"tiles","content":{"kind":"tiles","chunks":[{"x":0,"y":0,"width":2,"height":2,"cells":[1,2,3,4]}]}}]
+    })).unwrap();
+    let loaded =
+        LoadedTilesets::from_textures(&map, &demo.textures, |_| Ok(demo.shared_id)).unwrap();
+    let mut runtime = Runtime::new(map).unwrap();
+    runtime
+        .set_tiles(&[TileEdit {
+            layer: 1,
+            x: 0,
+            y: 0,
+            gid: 1,
+        }])
+        .unwrap();
+    let mut c = Canvas::new(8, 8).unwrap();
+    c.clear = Color::BLACK;
+    loaded
+        .draw_layer(
+            &runtime,
+            1,
+            &mut c,
+            View {
+                x: 0.,
+                y: 0.,
+                width: 8,
+                height: 8,
+                zoom: 1.,
+            },
+            0,
+            Filter::Nearest,
+        )
+        .unwrap();
+    // Exercise private stencil attachment on a caller-owned target with its own depth.
+    c.set_pixel_state(PixelState {
+        reference: 4,
+        write_mask: 4,
+        color_write: false,
+        alpha_min: 1,
+        ..Default::default()
+    });
+    c.sprite(Sprite::new(demo.shared_id, Rect::new(0., 0., 8., 8.)));
+    let prepared = demo
+        .two_d
+        .prepare(
+            &mut gal,
+            &c,
+            &demo.textures,
+            target.target,
+            DisplayOptions::default(),
+            LoadOp::Clear,
+        )
+        .unwrap();
+    assert_eq!(
+        prepared.stats.texture_upload_bytes, 0,
+        "registration must not reupload source texture"
+    );
+    let token = gal
+        .submit(SubmissionBatch {
+            label: "preloaded tiles readback".into(),
+            command_lists: vec![
+                list(
+                    "attachment",
+                    vec![barrier(
+                        target.color,
+                        TextureUsageState::Undefined,
+                        TextureUsageState::ColorAttachment,
+                    )],
+                ),
+                prepared.commands,
+                list(
+                    "readback",
+                    vec![
+                        barrier(
+                            target.color,
+                            TextureUsageState::ColorAttachment,
+                            TextureUsageState::TransferSrc,
+                        ),
+                        CommandOp::CopyTextureToBuffer(copy(
+                            target.readback,
+                            target.color,
+                            target.size,
+                        )),
+                        barrier(
+                            target.readback,
+                            TextureUsageState::TransferDst,
+                            TextureUsageState::TransferSrc,
+                        ),
+                        CommandOp::HostReadBuffer {
+                            buffer: target.readback,
+                            offset: 0,
+                            size: 256,
+                        },
+                    ],
+                ),
+            ],
+        })
+        .unwrap();
+    gal.retire_through(token.submission).unwrap();
+    let read = gal
+        .completed_host_reads()
+        .into_iter()
+        .find(|r| r.buffer == target.readback)
+        .unwrap();
+    for y in 0..8 {
+        for x in 0..8 {
+            let expected = if (x / 2 + y / 2) % 2 == 0 {
+                [225, 170, 75, 255]
+            } else {
+                [35, 135, 185, 255]
+            };
+            assert_eq!(
+                &read.bytes[((y * 8 + x) * 4)..((y * 8 + x) * 4 + 4)],
+                &expected
+            );
+        }
+    }
+    demo.release(&mut gal).unwrap();
+    target.release(&mut gal).unwrap();
+    gal.retire_through(gal.latest_submission_id()).unwrap();
+    assert_eq!(
+        gal.metrics().resource_creates,
+        gal.metrics().resource_destroys
+    );
+}
+
+#[test]
+#[ignore = "native GPU masked overlay preserves caller color/depth target"]
+fn masked_overlay_composes_over_loaded_3d_world() {
+    use quasar_render_2d::PixelState;
+    let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "masked world overlay").unwrap();
+    let mut demo = Demo::new(&mut gal).unwrap();
+    let mut target = Offscreen::new(&mut gal, 320, 240).unwrap();
+    let world = target.image(&mut gal, &mut demo, 0.5, false).unwrap();
+    let mut c = Canvas::new(320, 240).unwrap();
+    c.set_pixel_state(PixelState {
+        reference: 8,
+        write_mask: 8,
+        color_write: false,
+        alpha_min: 1,
+        ..Default::default()
+    });
+    c.rect(Rect::new(12., 18., 16., 12.), [255; 4]);
+    c.set_pixel_state(PixelState {
+        reference: 8,
+        read_mask: 8,
+        ..Default::default()
+    });
+    c.rect(Rect::new(0., 0., 320., 240.), [120, 40, 220, 255]);
+    let mut commands = vec![list(
+        "masked-world-in",
+        vec![barrier(
+            target.color,
+            TextureUsageState::TransferSrc,
+            TextureUsageState::ColorAttachment,
+        )],
+    )];
+    commands.extend(demo.commands(&mut gal, target.target, 0.5, false).unwrap());
+    commands.push(list(
+        "world-to-mask",
+        vec![barrier(
+            target.color,
+            TextureUsageState::ColorAttachment,
+            TextureUsageState::ColorAttachment,
+        )],
+    ));
+    commands.push(
+        demo.two_d
+            .prepare(
+                &mut gal,
+                &c,
+                &demo.textures,
+                target.target,
+                DisplayOptions::default(),
+                LoadOp::Load,
+            )
+            .unwrap()
+            .commands,
+    );
+    commands.push(list(
+        "masked world read",
+        vec![
+            barrier(
+                target.color,
+                TextureUsageState::ColorAttachment,
+                TextureUsageState::TransferSrc,
+            ),
+            CommandOp::CopyTextureToBuffer(copy(target.readback, target.color, target.size)),
+            barrier(
+                target.readback,
+                TextureUsageState::TransferDst,
+                TextureUsageState::TransferSrc,
+            ),
+            CommandOp::HostReadBuffer {
+                buffer: target.readback,
+                offset: 0,
+                size: 320 * 240 * 4,
+            },
+        ],
+    ));
+    let token = gal
+        .submit(SubmissionBatch {
+            label: "masked world".into(),
+            command_lists: commands,
+        })
+        .unwrap();
+    gal.retire_through(token.submission).unwrap();
+    let actual = gal
+        .completed_host_reads()
+        .into_iter()
+        .find(|r| r.buffer == target.readback && r.submission == token.submission)
+        .unwrap()
+        .bytes;
+    for y in 0..240 {
+        for x in 0..320 {
+            let i = (y * 320 + x) * 4;
+            if (12..28).contains(&x) && (18..30).contains(&y) {
+                assert_eq!(&actual[i..i + 4], &[120, 40, 220, 255]);
+            } else {
+                assert_eq!(&actual[i..i + 4], &world[i..i + 4]);
+            }
+        }
+    }
+    demo.release(&mut gal).unwrap();
+    target.release(&mut gal).unwrap();
+    gal.retire_through(gal.latest_submission_id()).unwrap();
+    assert_eq!(
+        gal.metrics().resource_creates,
+        gal.metrics().resource_destroys
+    );
+}

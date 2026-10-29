@@ -76,3 +76,21 @@ area. Neither is a broad hardware performance claim or an end-to-end input laten
 measurement. GPU tests compare rendered pixels with the CPU reference at several
 camera/animation states. Native smoke testing exercises resize, fullscreen and
 zero-sized-surface recovery and checks final resource balance.
+
+## Preloaded assets and retro rendering example
+
+Tilequest loads atlas images through the existing mounted asset service's
+`PngLoader`. The texture store shares its immutable pixels, and
+`LoadedTilesets::from_textures` reuses the resulting texture identity.
+
+The additional example applies a live batch without rebuilding the map index,
+then draws indexed palette banks, background occupancy and overlapping sprites:
+
+```sh
+cargo run --locked -p tilequest --no-default-features --example retro -- /tmp/quasar-retro.png
+cargo run --locked -p tilequest --example retro -- --gpu /tmp/quasar-retro-gpu.png
+```
+
+The first command is CPU-only; `--gpu` compares native GPU pixels with the CPU
+reference. See [retro rendering](../../docs/retro-rendering.md) for semantics,
+resource ownership, performance and the read-only MicroMages/Jackal audit.

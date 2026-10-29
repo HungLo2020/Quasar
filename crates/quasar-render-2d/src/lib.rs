@@ -7,7 +7,11 @@ mod canvas;
 mod font;
 #[cfg(feature = "gpu")]
 mod gpu;
+mod indexed;
 mod math;
+mod pixel;
+pub use indexed::{IndexedImage, Palette, PaletteBinding};
+pub use pixel::{PixelState, Priority2D};
 pub mod reference;
 mod texture;
 pub use atlas::{AnimationClip, AnimationFrame, SpriteAtlas};
@@ -20,6 +24,8 @@ pub use gpu::{
 pub use math::{Camera2D, Color, Rect, Transform2D};
 pub use quasar_core::{DisplayOptions, Filter, Scaling, Viewport};
 use std::{error::Error as StdError, fmt};
+#[cfg(feature = "assets")]
+pub use texture::PngLoader;
 #[cfg(feature = "png")]
 pub use texture::write_png;
 pub use texture::{Image, TextureId, Textures};
@@ -45,3 +51,6 @@ pub(crate) fn invalid(message: impl Into<String>) -> Error {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod retro_tests;

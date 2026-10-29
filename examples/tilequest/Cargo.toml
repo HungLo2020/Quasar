@@ -12,8 +12,9 @@ desktop = ["dep:quasar-app", "quasar-app/desktop", "dep:quasar-window", "quasar-
 
 [dependencies]
 quasar-tilemap.workspace = true
-quasar-render-2d = { workspace = true, features = ["png"] }
+quasar-render-2d = { workspace = true, features = ["assets"] }
 quasar-core.workspace = true
+quasar-assets.workspace = true
 quasar-app = { workspace = true, optional = true }
 quasar-input.workspace = true
 quasar-storage.workspace = true

@@ -238,7 +238,28 @@ pub struct Art {
 impl Art {
     pub fn load(world: &World) -> Result<Self> {
         let mut textures = Textures::default();
-        let tiles = LoadedTilesets::load(world.runtime.map(), &world.root, &mut textures)?;
+        let mut server = quasar_assets::AssetServer::new();
+        server.register(quasar_render_2d::PngLoader);
+        server.mount(
+            "",
+            std::sync::Arc::new(quasar_assets::FileSource::new(world.root.path())?),
+        )?;
+        let mut images = std::collections::BTreeMap::new();
+        for set in &world.runtime.map().tilesets {
+            if !images.contains_key(&set.image) {
+                let asset = server.load::<quasar_render_2d::PngLoader>(&set.image)?;
+                images.insert(set.image.clone(), textures.insert((*asset).clone()));
+            }
+        }
+        let tiles = LoadedTilesets::from_textures(world.runtime.map(), &textures, |path| {
+            images
+                .get(path)
+                .copied()
+                .ok_or_else(|| quasar_tilemap::Error {
+                    code: "atlas",
+                    message: format!("missing preloaded {path}"),
+                })
+        })?;
         let player = tiles.atlas(0).ok_or("missing player atlas")?.clone();
         Ok(Self {
             textures,

@@ -3,6 +3,8 @@ use crate::{Camera2D, Color, Filter, Rect, Result, TextureId, Textures, Transfor
 #[derive(Debug, Clone)]
 pub struct Quad {
     pub texture: TextureId,
+    pub palette: Option<crate::PaletteBinding>,
+    pub pixels: crate::PixelState,
     pub origin: [f32; 2],
     pub x: [f32; 2],
     pub y: [f32; 2],
@@ -48,6 +50,8 @@ pub struct Canvas {
     camera: Camera2D,
     transform: Transform2D,
     clip: Option<Rect>,
+    palette: Option<crate::PaletteBinding>,
+    pixels: crate::PixelState,
 }
 impl Canvas {
     pub fn new(width: u32, height: u32) -> Result<Self> {
@@ -62,6 +66,8 @@ impl Canvas {
             camera: Camera2D::top_left(width, height),
             transform: Transform2D::IDENTITY,
             clip: None,
+            palette: None,
+            pixels: crate::PixelState::default(),
         })
     }
     pub fn width(&self) -> u32 {
@@ -86,6 +92,23 @@ impl Canvas {
     /// `None` restores full-canvas clipping. Captured per draw.
     pub fn set_clip(&mut self, clip: Option<Rect>) {
         self.clip = clip;
+    }
+    pub fn set_palette(&mut self, palette: Option<crate::PaletteBinding>) {
+        self.palette = palette;
+    }
+    pub fn palette(&self) -> Option<crate::PaletteBinding> {
+        self.palette
+    }
+    pub fn set_pixel_state(&mut self, pixels: crate::PixelState) {
+        self.pixels = pixels;
+    }
+    pub fn pixel_state(&self) -> crate::PixelState {
+        self.pixels
+    }
+    pub fn uses_pixel_masks(&self) -> bool {
+        self.quads
+            .iter()
+            .any(|q| q.pixels.read_mask != 0 || q.pixels.write_mask != 0)
     }
     pub fn rect(&mut self, rect: Rect, color: impl Into<Color>) {
         self.sprite(Sprite {
@@ -141,6 +164,8 @@ impl Canvas {
             })
             .unwrap_or(screen);
         self.quads.push(Quad {
+            palette: self.palette,
+            pixels: self.pixels,
             texture: sprite.texture,
             origin: p,
             x: [x[0] - p[0], x[1] - p[1]],
@@ -187,6 +212,14 @@ impl Canvas {
             return Err(invalid("a canvas supports at most 65536 quads"));
         }
         for q in &self.quads {
+            if let Some(p) = q.palette
+                && textures.dimensions(p.texture) != Some((256, 1))
+            {
+                return Err(invalid("palette must reference a live 256x1 texture"));
+            }
+            if q.pixels.exclude_index.is_some() && q.palette.is_none() {
+                return Err(invalid("index coverage requires an indexed draw"));
+            }
             if q.origin
                 .iter()
                 .chain(&q.x)

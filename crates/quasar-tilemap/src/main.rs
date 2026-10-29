@@ -112,7 +112,7 @@ fn run(o: Options) -> Result<Value> {
                     o.gid.ok_or_else(|| usage("set needs --gid"))?,
                 )?;
             }
-            #[cfg(feature = "render-2d")]
+            #[cfg(feature = "png")]
             validate_assets(&map, &root)?;
             let output = o.output.ok_or_else(|| usage("command needs --output"))?;
             write_bundle(&map, &root, &output, o.tiled)?;
@@ -130,7 +130,7 @@ fn usage(message: &str) -> Error {
         message: message.into(),
     }
 }
-#[cfg(feature = "render-2d")]
+#[cfg(feature = "png")]
 fn validate_assets(map: &Map, root: &AssetRoot) -> Result<()> {
     for path in map.asset_paths() {
         root.resolve(&path)?;
@@ -139,11 +139,11 @@ fn validate_assets(map: &Map, root: &AssetRoot) -> Result<()> {
     render::LoadedTilesets::load(map, root, &mut textures)?;
     Ok(())
 }
-#[cfg(not(feature = "render-2d"))]
+#[cfg(not(feature = "png"))]
 fn validate_assets(_: &Map, _: &AssetRoot) -> Result<()> {
-    Err(usage("asset PNG validation needs feature render-2d"))
+    Err(usage("asset PNG validation needs feature png"))
 }
-#[cfg(feature = "render-2d")]
+#[cfg(feature = "png")]
 fn render_command(o: &Options, runtime: &Runtime, root: &AssetRoot, load_ms: f64) -> Result<Value> {
     use quasar_render_2d::{Canvas, Filter, Textures};
     use render::{DrawStats, LoadedTilesets, View};
@@ -203,9 +203,9 @@ fn render_command(o: &Options, runtime: &Runtime, root: &AssetRoot, load_ms: f64
         json!({"ok":true,"iterations":o.iterations,"stored_cells":runtime.stored_cells(),"load_and_index_ms":load_ms,"max_visited_cells":max_cells,"max_emitted_tiles":max_quads,"draw_list_us":{"p50":elapsed[elapsed.len()/2]as f64/1000.,"p95":elapsed[(elapsed.len()-1)*95/100]as f64/1000.},"scope":"CPU indexed culling and draw-list construction; no GPU, decoding excluded"}),
     )
 }
-#[cfg(not(feature = "render-2d"))]
+#[cfg(not(feature = "png"))]
 fn render_command(_: &Options, _: &Runtime, _: &AssetRoot, _: f64) -> Result<Value> {
-    Err(usage("preview/benchmark needs feature render-2d"))
+    Err(usage("preview/benchmark needs feature png"))
 }
 fn main() -> std::process::ExitCode {
     if std::env::args().nth(1).as_deref() == Some("--help") {

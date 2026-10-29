@@ -267,6 +267,27 @@ SECTIONS: list[list] = [
         ]
     ],
     [
+        "retro-2d",
+        [
+            [
+                "Headless indexed rendering and incremental tilemap feature matrix",
+                "cargo test --locked -p quasar-render-2d --no-default-features\ncargo test --locked -p quasar-render-2d --no-default-features --features assets\ncargo test --locked -p quasar-tilemap --no-default-features\ncargo test --locked -p quasar-tilemap --no-default-features --features render-2d\ncargo test --locked -p quasar-tilemap --no-default-features --features png\ncargo test --locked -p tilequest --no-default-features\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,vulkan\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,wgpu\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,opengl"
+            ],
+            [
+                "Native Vulkan indexed pixels, palette lifetimes and shared atlases",
+                "VULKANIC_BACKEND=vulkan cargo test --locked -p quasar-render-2d --all-features -p quasar-composition -p tilequest --lib -- --include-ignored --test-threads=1"
+            ],
+            [
+                "wgpu indexed pixels, palette lifetimes and shared atlases",
+                "VULKANIC_BACKEND=wgpu cargo test --locked -p quasar-render-2d --all-features -p quasar-composition -p tilequest --lib -- --include-ignored --test-threads=1"
+            ],
+            [
+                "CPU-only retro example and GPU example parity",
+                "cargo run --locked -p tilequest --no-default-features --example retro -- /tmp/quasar-retro-cpu.png\ncargo run --locked -p tilequest --example retro -- --gpu /tmp/quasar-retro-gpu.png"
+            ]
+        ]
+    ],
+    [
         "gpu-composition",
         [
             [

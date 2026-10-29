@@ -56,7 +56,7 @@ Build outputs must not alias an asset. Images are shared by normalized path.
 ## Runtime and drawing
 
 `load(path)` returns validated `Map` plus `AssetRoot`; `Runtime::new(map)` builds
-immutable per-layer row/span indexes. `tile`, `for_each_cell`, `collides`,
+per-layer row/span indexes with transactional incremental edits. `tile`, `for_each_cell`, `collides`,
 `objects`, and `objects_in_bounds` operate without a renderer. Queries use half-open
 world-space bounds and layer offsets. Parallax affects drawing only. Collision
 checks a caller-selected boolean property on the layer or the base tile; visual
@@ -64,11 +64,16 @@ animation, hidden layers and opacity do not alter collision. Point objects use
 point inclusion; zero-area rectangles do not collide. `animated_tile` resolves
 explicit caller-provided milliseconds and returns `None` for invalid indices.
 
-`Map::set_tile` validates an edit before replacing the original; rebuild a Runtime
-after edits. It changes an existing chunk cell or adds a single-cell chunk in an unoccupied
-location, subject to map bounds and aggregate limits.
+`Runtime::set_tiles(&[TileEdit { layer, x, y, gid }, ...])` validates a batch before
+changing any cell. Existing cell storage is preserved; new sparse cells update
+only their row/span entries. Duplicate coordinates use the last GID.
+`Map::set_tiles` validates the public document once without cloning it; repeated
+live edits should use Runtime. Structural map changes still require rebuilding.
 `LoadedTilesets::load` decodes PNGs and inserts images into a caller-owned texture
-store. `draw_layer` appends visible tiles to a caller-owned Canvas, culls before
+store. `LoadedTilesets::from_textures` accepts existing image/asset-service or
+registered GAL texture identities without I/O, pixel copies or GPU uploads.
+The optional `png` feature enables file loading and previews; `render-2d` alone
+needs no decoder or GPU. `draw_layer` appends visible tiles to a caller-owned Canvas, culls before
 emitting quads, restores its previous camera, and returns traversal counts. The
 caller decides layer/actor ordering and submits through its existing renderer/GAL.
 The Tilequest example inserts actors between collision and foreground layers.
@@ -84,3 +89,6 @@ cargo run --release -p quasar-tilemap -- benchmark examples/tilequest/assets/isl
 The benchmark reports CPU load/index time and indexed culling/draw-list p50/p95;
 PNG decoding is excluded from the draw-list timing. It does not measure GPU time.
 Tilequest's separate native benchmark measures GPU rendering/presentation.
+
+See [indexed rendering and live tilemaps](../../docs/retro-rendering.md) for palette
+animation, pixel priority, ownership, complexity, game audits and validation.

@@ -188,3 +188,22 @@ This crate is distributed under the MIT license; see the repository
 The initial import retains the backend's process-wide graphics lock, so use
 one GAL at a time. GPU support and portability limits are described in the
 [workspace README](../../README.md). See [provenance and adaptations](UPSTREAM.md).
+
+## Cross-backend numeric diagnostics
+
+On systems with multiple EGL vendors, a surfaceless OpenGL context can select
+Mesa llvmpipe while Vulkan selects a discrete GPU. The interpolation diagnostic
+prints each backend's `DeviceInfo` so this is visible in failed-test output.
+Its exact Frozen/interpolation assertions remain exact; comparing different
+hardware/driver implementations can produce small floating-point differences.
+
+For the NVIDIA release-validation host, selecting the installed NVIDIA EGL
+vendor made both APIs use the RTX 2070 and passed all 229 native GAL tests:
+
+```sh
+__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json \
+  cargo test --locked -p vulkanic-gal --no-default-features --features vulkan,opengl --lib -- --include-ignored --test-threads=1
+```
+
+Use the vendor installed on the validation machine; this is a test-environment
+selection, not a change to default device selection or numeric tolerances.

@@ -678,3 +678,188 @@ fn png_decode_expands_color_types_and_rejects_corruption() {
     );
     assert!(Image::decode_png(std::io::Cursor::new(b"invalid")).is_err());
 }
+
+#[cfg(all(feature = "gpu", feature = "vulkan"))]
+#[test]
+#[ignore = "native GPU palette generations and stencil reservation"]
+fn prepared_palette_generations_and_masks_survive_reverse_submission() {
+    use vulkanic_gal::*;
+    let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "palette generations").unwrap();
+    let mut state = RenderState2D::new(&mut gal).unwrap();
+    let mut textures = Textures::default();
+    let id = textures.insert(IndexedImage::new(2, 2, [1; 4]).unwrap().image().clone());
+    let pa = textures.insert(
+        Palette::new(vec![Color::BLACK, Color([255, 0, 0, 255])])
+            .unwrap()
+            .image(),
+    );
+    let pb = textures.insert(
+        Palette::new(vec![Color::BLACK, Color([0, 0, 255, 255])])
+            .unwrap()
+            .image(),
+    );
+    let mut canvas = Canvas::new(2, 2).unwrap();
+    canvas.set_pixel_state(PixelState {
+        reference: 4,
+        write_mask: 4,
+        ..Default::default()
+    });
+    canvas.set_palette(Some(PaletteBinding {
+        texture: pa,
+        transparent_index: Some(0),
+    }));
+    canvas.sprite(Sprite::new(id, Rect::new(0., 0., 2., 2.)));
+    let (ta, va, rta, ra) = test_target(&mut gal, 2);
+    let (tb, vb, rtb, rb) = test_target(&mut gal, 2);
+    let mut a = state
+        .prepare(
+            &mut gal,
+            &canvas,
+            &textures,
+            rta,
+            DisplayOptions::default(),
+            LoadOp::Clear,
+        )
+        .unwrap();
+    assert_eq!(a.stats.texture_upload_bytes, 16 + 1024);
+    textures.remove(pa);
+    let mut canvas_b = Canvas::new(2, 2).unwrap();
+    canvas_b.set_pixel_state(canvas.pixel_state());
+    canvas_b.set_palette(Some(PaletteBinding {
+        texture: pb,
+        transparent_index: Some(0),
+    }));
+    canvas_b.sprite(Sprite::new(id, Rect::new(0., 0., 2., 2.)));
+    let mut b = state
+        .prepare(
+            &mut gal,
+            &canvas_b,
+            &textures,
+            rtb,
+            DisplayOptions::default(),
+            LoadOp::Clear,
+        )
+        .unwrap();
+    assert_eq!(
+        b.stats.texture_upload_bytes, 1024,
+        "palette swap must not upload indices"
+    );
+    assert!(state.release(&mut gal).is_err());
+    assert!(state.release_targets(&mut gal).is_err());
+    append_readback(&mut a.commands, ta, ra, 2);
+    append_readback(&mut b.commands, tb, rb, 2);
+    for commands in [b.commands, a.commands] {
+        let token = gal
+            .submit(SubmissionBatch {
+                label: "palette reverse".into(),
+                command_lists: vec![commands],
+            })
+            .unwrap();
+        gal.retire_through(token.submission).unwrap();
+    }
+    let reads = gal.completed_host_reads();
+    assert_eq!(
+        reads.iter().find(|r| r.buffer == ra).unwrap().bytes,
+        [255, 0, 0, 255].repeat(4)
+    );
+    assert_eq!(
+        reads.iter().find(|r| r.buffer == rb).unwrap().bytes,
+        [0, 0, 255, 255].repeat(4)
+    );
+    // Submitted generations are retired, mask state clears on the next prepare,
+    // and repeated preparation on the same target reuses all cached GPU resources.
+    let mut again = Canvas::new(2, 2).unwrap();
+    again.set_palette(Some(PaletteBinding {
+        texture: pb,
+        transparent_index: Some(0),
+    }));
+    again.set_pixel_state(PixelState {
+        read_mask: 4,
+        reference: 0,
+        ..Default::default()
+    });
+    again.sprite(Sprite::new(id, Rect::new(0., 0., 2., 2.)));
+    let first = state
+        .prepare(
+            &mut gal,
+            &again,
+            &textures,
+            rtb,
+            DisplayOptions::default(),
+            LoadOp::Clear,
+        )
+        .unwrap();
+    assert_eq!(first.stats.texture_upload_bytes, 0);
+    let token = gal
+        .submit(SubmissionBatch {
+            label: "mask cleared".into(),
+            command_lists: vec![first.commands],
+        })
+        .unwrap();
+    gal.retire_through(token.submission).unwrap();
+    let creates = gal.metrics().resource_creates;
+    let warm = state
+        .prepare(
+            &mut gal,
+            &again,
+            &textures,
+            rtb,
+            DisplayOptions::default(),
+            LoadOp::Clear,
+        )
+        .unwrap();
+    assert_eq!(
+        creates,
+        gal.metrics().resource_creates,
+        "warm preparation must reuse targets, bindings and buffers"
+    );
+    drop(warm);
+    state.release(&mut gal).unwrap();
+    for h in [ra, rb, rta, rtb, va, vb, ta, tb] {
+        gal.retire(h).unwrap();
+    }
+    gal.retire_through(gal.latest_submission_id()).unwrap();
+    assert_eq!(
+        gal.metrics().resource_creates,
+        gal.metrics().resource_destroys
+    );
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "native GPU indexed palette animation reuses dynamic uploads"]
+fn dynamic_palette_updates_only_the_small_palette_texture() {
+    let mut r = Renderer2D::headless().unwrap();
+    let mut t = Textures::default();
+    let index = t.insert(
+        IndexedImage::new(256, 128, vec![1; 256 * 128])
+            .unwrap()
+            .image()
+            .clone(),
+    );
+    let dynamic = r.create_dynamic_texture(&mut t, 256, 1).unwrap();
+    let mut c = Canvas::new(4, 4).unwrap();
+    c.set_palette(Some(PaletteBinding {
+        texture: dynamic.id(),
+        transparent_index: None,
+    }));
+    c.sprite(Sprite::new(index, Rect::new(0., 0., 4., 4.)));
+    for (frame, color) in [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]]
+        .into_iter()
+        .enumerate()
+    {
+        let p = Palette::new(vec![Color::BLACK, Color(color)])
+            .unwrap()
+            .image();
+        r.update_dynamic_texture(dynamic, p.rgba()).unwrap();
+        assert_eq!(r.render_to_image(&c, &t).unwrap(), color.repeat(16));
+        assert_eq!(
+            r.stats().texture_upload_bytes,
+            1024 + if frame == 0 { 256 * 128 * 4 } else { 0 }
+        );
+    }
+    r.render_to_image(&c, &t).unwrap();
+    assert_eq!(r.stats().texture_upload_bytes, 0);
+    r.destroy_dynamic_texture(&mut t, dynamic).unwrap();
+    assert!(r.render_to_image(&c, &t).is_err());
+}

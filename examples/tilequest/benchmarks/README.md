@@ -22,3 +22,8 @@ Present mode is AutoNoVsync; completion polling permits overlap. These timings d
 not measure input latency or the simulation, nor compare against another engine.
 The CPU benchmark process and native benchmark ran sequentially. Driver scheduling,
 clock speeds, compositors and background work can change these numbers.
+
+`retro-2d-cpu.json` records the indexed live-edit versus legacy rebuild comparison
+and a separate fixed-viewport culling comparison against an archived baseline.
+See [the implementation report](../../../docs/retro-rendering-report.md) for
+workload definitions, measured overhead, GPU upload/resource checks and limits.

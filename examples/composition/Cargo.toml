@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 vulkanic-gal = { workspace = true, features = ["vulkan"] }
 quasar-frame.workspace = true
+quasar-tilemap = { path = "../../crates/quasar-tilemap", default-features = false, features = ["render-2d"] }
 quasar-render-2d = { workspace = true, features = ["gpu", "vulkan"] }
 quasar-render-3d = { path = "../../crates/quasar-render-3d" }
 quasar-window.workspace = true

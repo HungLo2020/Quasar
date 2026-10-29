@@ -71,6 +71,10 @@ fn observe(
             super::vulkan::VulkanBackend::new("terrain interpolation observation").unwrap(),
         ))
     };
+    eprintln!(
+        "terrain-interpolation-device: {:?}",
+        gal.backend_info().device
+    );
     let mut owned = Vec::new();
     macro_rules! own {
         ($call:expr) => {{

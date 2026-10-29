@@ -62,8 +62,8 @@ presentation path. Three bounded transient slots track prepared command
 references and GPU completion. Native presentation retains synchronous
 retirement by default; `set_frame_overlap(true)` opts into completion polling.
 Readback explicitly waits. `from_gal` accepts an owned compatible GAL; the GAL
-currently permits one live instance per process. Only Linux Vulkan has been
-verified.
+currently permits one live instance per process. Linux Vulkan and wgpu have pixel-parity coverage. The OpenGL Cargo feature
+compiles, but renderer initialization currently rejects its GLSL convention.
 
 With `default-features = false`, drawing and `reference::rasterize` compile
 without windowing or Vulkan. This CPU reference path supports headless snapshots
@@ -165,3 +165,20 @@ quad coordinates and preserve batching, filtering, tint and camera transforms.
 
 See [quasar-tilemap](../quasar-tilemap/README.md) for map assets and the
 [Tilequest example](../../examples/tilequest/README.md) for native/headless usage.
+
+## Indexed color and pixel priority
+
+`IndexedImage`, `Palette` and per-draw `PaletteBinding` provide nearest-index
+lookup, transparent indices, reusable palette banks and deterministic cycling.
+Ordinary RGBA draws retain their existing behavior. Animate only a small palette
+using the existing `AnimationClip` or `DynamicTexture` APIs.
+
+`PixelState` compares/replaces eight mask bits using alpha or raw-index coverage.
+`Priority2D`, `Canvas::background_sprite` and `Canvas::priority_sprite` reproduce
+background occupancy and first-sprite priority, including hidden sprites that
+block later sprites. CPU reference and GPU stencil implementations share rules.
+Masks reset per canvas/prepare and require no caller-owned depth attachment.
+
+The optional `assets` feature adds a bounded `PngLoader` for `quasar-assets`.
+Loaded image clones share pixels; existing GAL views still use `register_texture`.
+See [the full API, ownership and validation guide](../../docs/retro-rendering.md).

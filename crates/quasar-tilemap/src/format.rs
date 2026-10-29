@@ -344,41 +344,14 @@ impl Map {
     pub fn layer(&self, id: u32) -> Option<&Layer> {
         self.layers.iter().find(|l| l.id == id)
     }
-    /// Edits a stored cell or adds a sparse one-cell chunk. Rebuild Runtime after edits.
+    /// Validates once and atomically edits cells without cloning the map.
+    /// Use Runtime::set_tiles for repeated indexed live edits.
+    pub fn set_tiles(&mut self, edits: &[crate::TileEdit]) -> Result<crate::EditStats> {
+        crate::runtime::edit_map(self, edits)
+    }
     pub fn set_tile(&mut self, layer: u32, x: i32, y: i32, gid: u32) -> Result<()> {
-        self.validate()?;
-        self.resolve(gid)?;
-        let mut candidate = self.clone();
-        let layer = candidate
-            .layers
-            .iter_mut()
-            .find(|l| l.id == layer)
-            .ok_or_else(|| error("layer", "unknown layer"))?;
-        let LayerContent::Tiles { chunks } = &mut layer.content else {
-            return Err(error("layer", "layer is not a tile layer"));
-        };
-        let mut changed = false;
-        for c in chunks.iter_mut() {
-            let dx = i64::from(x) - i64::from(c.x);
-            let dy = i64::from(y) - i64::from(c.y);
-            if dx >= 0 && dy >= 0 && dx < i64::from(c.width) && dy < i64::from(c.height) {
-                c.cells[(dy as u32 * c.width + dx as u32) as usize] = gid;
-                changed = true;
-                break;
-            }
-        }
-        if !changed {
-            chunks.push(Chunk {
-                x,
-                y,
-                width: 1,
-                height: 1,
-                cells: vec![gid],
-            });
-        }
-        candidate.validate()?;
-        *self = candidate;
-        Ok(())
+        self.set_tiles(&[crate::TileEdit { layer, x, y, gid }])
+            .map(|_| ())
     }
     /// Declared image and typed file-property paths, sorted and deduplicated.
     pub fn asset_paths(&self) -> Vec<String> {

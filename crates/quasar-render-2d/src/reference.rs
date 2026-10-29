@@ -14,6 +14,9 @@ pub fn rasterize_with_filter(
         .clear
         .0
         .repeat((canvas.width * canvas.height) as usize);
+    let mut masks = canvas
+        .uses_pixel_masks()
+        .then(|| vec![0u8; (canvas.width * canvas.height) as usize]);
     for q in &canvas.quads {
         let image = textures
             .get(q.texture)
@@ -81,13 +84,41 @@ pub fn rasterize_with_filter(
                 if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
                     continue;
                 }
-                let texel = sample(
+                let mut texel = sample(
                     image,
                     source.x + u * source.width,
                     source.y + v * source.height,
-                    q.filter.unwrap_or(filter),
+                    if q.palette.is_some() {
+                        Filter::Nearest
+                    } else {
+                        q.filter.unwrap_or(filter)
+                    },
                 );
+                if let Some(p) = q.palette {
+                    let index = texel[0] as u8;
+                    if p.transparent_index == Some(index) || q.pixels.exclude_index == Some(index) {
+                        continue;
+                    }
+                    let palette = textures
+                        .get(p.texture)
+                        .ok_or_else(|| crate::invalid("GPU-only palette has no CPU pixels"))?;
+                    texel = sample(palette, index as f32 + 0.5, 0.5, Filter::Nearest);
+                }
                 let src: [f32; 4] = std::array::from_fn(|i| texel[i] * q.color.0[i] as f32 / 255.0);
+                if src[3] < q.pixels.alpha_min as f32 {
+                    continue;
+                }
+                if let Some(masks) = &mut masks {
+                    let mask = &mut masks[(y * canvas.width + x) as usize];
+                    if *mask & q.pixels.read_mask != q.pixels.reference & q.pixels.read_mask {
+                        continue;
+                    }
+                    *mask =
+                        (*mask & !q.pixels.write_mask) | (q.pixels.reference & q.pixels.write_mask);
+                }
+                if !q.pixels.color_write {
+                    continue;
+                }
                 let index = ((y * canvas.width + x) * 4) as usize;
                 for c in 0..4 {
                     let value = if c == 3 {

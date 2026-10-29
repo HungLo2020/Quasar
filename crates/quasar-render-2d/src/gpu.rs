@@ -1,4 +1,6 @@
-use crate::{Canvas, DisplayOptions, Filter, Rect, Sprite, TextureId, Textures, Viewport};
+use crate::{
+    Canvas, DisplayOptions, Filter, PixelState, Rect, Sprite, TextureId, Textures, Viewport,
+};
 use quasar_frame::{CompletionPolicy, FrameSurface};
 #[cfg(any(feature = "vulkan", feature = "wgpu"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -65,7 +67,8 @@ struct Slot {
     geometry_capacity: usize,
     uniform_capacity: usize,
     upload_capacity: usize,
-    sets: BTreeMap<TextureId, [Handle; 2]>,
+    sets: BTreeMap<(TextureId, TextureId), [Handle; 2]>,
+    mask_targets: BTreeMap<Handle, (Handle, Handle, Handle)>,
     passes: BTreeMap<Handle, Handle>,
     usage: SubmissionUsage,
 }
@@ -84,6 +87,8 @@ fn window_surface_desc(size: (u32, u32)) -> FrameSurfaceDesc {
 }
 struct Batch {
     texture: TextureId,
+    palette: TextureId,
+    pixels: PixelState,
     filter: Filter,
     first: u32,
     count: u32,
@@ -539,7 +544,7 @@ pub struct RenderState2D {
     resource_layout: Handle,
     vertex: Handle,
     fragment: Handle,
-    pipelines: BTreeMap<(TextureFormat, Option<TextureFormat>), Handle>,
+    pipelines: BTreeMap<(TextureFormat, Option<TextureFormat>, PixelState), Handle>,
     slots: Vec<Slot>,
     textures: BTreeMap<TextureId, TextureGpu>,
     pending_dynamic: BTreeMap<TextureId, Vec<u8>>,
@@ -564,6 +569,7 @@ impl RenderState2D {
                     desc(0, ResourceBindingKind::CombinedTextureSampler, 0),
                     desc(1, ResourceBindingKind::StorageBuffer, 0),
                     desc(2, ResourceBindingKind::UniformBuffer, 1),
+                    desc(3, ResourceBindingKind::CombinedTextureSampler, 0),
                 ],
             })?;
             created.push(resource_layout);
@@ -896,7 +902,11 @@ impl RenderState2D {
             let removed: Vec<_> = slot
                 .sets
                 .keys()
-                .filter(|id| !dynamic.contains(id) && assets.dimensions(**id).is_none())
+                .filter(|(a, b)| {
+                    [a, b]
+                        .into_iter()
+                        .any(|id| !dynamic.contains(id) && assets.dimensions(*id).is_none())
+                })
                 .copied()
                 .collect();
             for id in removed {
@@ -926,12 +936,18 @@ impl RenderState2D {
         }
         Ok(())
     }
-    fn ensure_set(&mut self, gal: &mut VulkanicGal, index: usize, id: TextureId) -> GalResult<()> {
+    fn ensure_set(
+        &mut self,
+        gal: &mut VulkanicGal,
+        index: usize,
+        id: (TextureId, TextureId),
+    ) -> GalResult<()> {
         let slot = &mut self.slots[index];
         if slot.sets.contains_key(&id) {
             return Ok(());
         }
-        let texture = &self.textures[&id];
+        let texture = &self.textures[&id.0];
+        let palette = self.textures[&id.1].combined[0];
         let mut sets = Vec::new();
         let result = (|| {
             for pair in texture.combined {
@@ -939,6 +955,13 @@ impl RenderState2D {
                     label: "2d-set".into(),
                     layout: self.resource_layout,
                     bindings: vec![
+                        binding(
+                            3,
+                            palette,
+                            ResourceBindingKind::CombinedTextureSampler,
+                            None,
+                            vec![],
+                        ),
                         binding(
                             0,
                             pair,
@@ -974,6 +997,72 @@ impl RenderState2D {
         slot.sets.insert(id, [sets[0], sets[1]]);
         Ok(())
     }
+    fn mask_target(
+        &mut self,
+        gal: &mut VulkanicGal,
+        index: usize,
+        original: Handle,
+        size: Extent3d,
+    ) -> GalResult<(Handle, Handle, Handle)> {
+        let slot = &mut self.slots[index];
+        if let Some(&target) = slot.mask_targets.get(&original) {
+            return Ok(target);
+        }
+        if slot.mask_targets.len() >= 8 {
+            for h in std::mem::take(&mut slot.passes).into_values() {
+                gal.retire(h)?;
+            }
+            for (target, texture, view) in std::mem::take(&mut slot.mask_targets).into_values() {
+                for h in [target, view, texture] {
+                    gal.retire(h)?;
+                }
+            }
+        }
+        let mut created = Vec::new();
+        let result = (|| {
+            let texture = gal.create_texture(TextureDesc {
+                label: "2d-mask".into(),
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Depth24Stencil8,
+                extent: size,
+                mip_levels: 1,
+                array_layers: 1,
+                usages: vec![TextureUsage::DepthStencilAttachment],
+            })?;
+            created.push(texture);
+            let view = gal.create_texture_view(TextureViewDesc {
+                label: "2d-mask-view".into(),
+                texture,
+                format: TextureFormat::Depth24Stencil8,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+            })?;
+            created.push(view);
+            let color = gal.pass_target_color_attachment(original)?;
+            let target = gal.create_render_target(RenderTargetDesc {
+                label: "2d-masked-target".into(),
+                color_views: vec![color],
+                depth_stencil_view: Some(view),
+                extent: size,
+            })?;
+            created.push(target);
+            Ok((target, texture, view))
+        })();
+        match result {
+            Ok(value) => {
+                slot.mask_targets.insert(original, value);
+                Ok(value)
+            }
+            Err(error) => {
+                for h in created.into_iter().rev() {
+                    let _ = gal.retire(h);
+                }
+                Err(error)
+            }
+        }
+    }
     fn acquire_slot(
         &mut self,
         gal: &mut VulkanicGal,
@@ -997,6 +1086,7 @@ impl RenderState2D {
                 uniform_capacity: u,
                 upload_capacity: up,
                 sets: BTreeMap::new(),
+                mask_targets: BTreeMap::new(),
                 passes: BTreeMap::new(),
                 usage: SubmissionUsage::default(),
             });
@@ -1060,6 +1150,11 @@ impl RenderState2D {
         for slot in &mut self.slots {
             for h in std::mem::take(&mut slot.passes).into_values() {
                 gal.retire(h)?;
+            }
+            for (target, texture, view) in std::mem::take(&mut slot.mask_targets).into_values() {
+                for h in [target, view, texture] {
+                    gal.retire(h)?;
+                }
             }
         }
         Ok(())
@@ -1202,8 +1297,14 @@ impl RenderState2D {
         gal: &mut VulkanicGal,
         format: TextureFormat,
         depth: Option<TextureFormat>,
+        pixels: PixelState,
     ) -> GalResult<Handle> {
-        if let Some(pipeline) = self.pipelines.get(&(format, depth)) {
+        let pixels = PixelState {
+            alpha_min: 0,
+            exclude_index: None,
+            ..pixels
+        };
+        if let Some(pipeline) = self.pipelines.get(&(format, depth, pixels)) {
             return Ok(*pipeline);
         }
         let pipeline = gal.create_graphics_pipeline(GraphicsPipelineDesc {
@@ -1216,15 +1317,41 @@ impl RenderState2D {
             front_face: FrontFace::CounterClockwise,
             provoking_vertex: ProvokingVertex::First,
             raster_y_direction: RasterYDirection::Down,
-            blend: BlendMode::Alpha,
+            blend: if pixels.color_write {
+                BlendMode::Alpha
+            } else {
+                BlendMode::DepthMask
+            },
             depth_compare: None,
             depth_write: false,
             depth_bias: None,
             color_formats: vec![format],
             depth_format: depth,
-            stencil: None,
+            stencil: (pixels.read_mask != 0 || pixels.write_mask != 0).then(|| {
+                let face = StencilFaceState {
+                    compare: if pixels.read_mask == 0 {
+                        CompareOp::Always
+                    } else {
+                        CompareOp::Equal
+                    },
+                    reference: pixels.reference as u32,
+                    read_mask: if pixels.read_mask == 0 {
+                        255
+                    } else {
+                        pixels.read_mask as u32
+                    },
+                    write_mask: pixels.write_mask as u32,
+                    fail_op: StencilOp::Keep,
+                    depth_fail_op: StencilOp::Keep,
+                    pass_op: StencilOp::Replace,
+                };
+                StencilState {
+                    front: face,
+                    back: face,
+                }
+            }),
         })?;
-        self.pipelines.insert((format, depth), pipeline);
+        self.pipelines.insert((format, depth, pixels), pipeline);
         Ok(pipeline)
     }
     #[allow(clippy::too_many_arguments)]
@@ -1252,6 +1379,8 @@ impl RenderState2D {
             let source =
                 q.source
                     .unwrap_or(crate::Rect::new(0.0, 0.0, image.0 as f32, image.1 as f32));
+            // Preserve the 80-byte quad ABI: axis padding holds raw u32 words
+            // (indexed flag, transparent/excluded index + 1; alpha threshold).
             let values = [
                 q.origin[0],
                 q.origin[1],
@@ -1259,8 +1388,15 @@ impl RenderState2D {
                 q.x[1],
                 q.y[0],
                 q.y[1],
-                0.0,
-                0.0,
+                f32::from_bits(
+                    u32::from(q.palette.is_some())
+                        | (q.palette
+                            .and_then(|p| p.transparent_index)
+                            .map_or(0, |i| u32::from(i) + 1)
+                            << 1)
+                        | (q.pixels.exclude_index.map_or(0, |i| u32::from(i) + 1) << 10),
+                ),
+                f32::from_bits(u32::from(q.pixels.alpha_min)),
                 source.x / image.0 as f32,
                 source.y / image.1 as f32,
                 (source.x + source.width) / image.0 as f32,
@@ -1275,15 +1411,25 @@ impl RenderState2D {
                 q.clip.y + q.clip.height,
             ];
             data.extend(values.into_iter().flat_map(f32::to_ne_bytes));
-            let filter = q.filter.unwrap_or(options.filter);
+            let filter = if q.palette.is_some() {
+                Filter::Nearest
+            } else {
+                q.filter.unwrap_or(options.filter)
+            };
+            let palette = q.palette.map_or(q.texture, |p| p.texture);
             if let Some(batch) = batches.last_mut()
                 && batch.texture == q.texture
                 && batch.filter == filter
+                && batch.palette == palette
+                && batch.pixels == q.pixels
+                && q.pixels.write_mask == 0
             {
                 batch.count += 1;
             } else {
                 batches.push(Batch {
                     texture: q.texture,
+                    palette,
+                    pixels: q.pixels,
                     filter,
                     first: index as u32,
                     count: 1,
@@ -1294,17 +1440,17 @@ impl RenderState2D {
         self.stats.geometry_upload_bytes = data.len();
         let mut dynamic_uploads: Vec<(TextureId, Vec<u8>, (u32, u32))> = Vec::new();
         let mut seen_dynamic = BTreeSet::new();
-        for batch in &batches {
-            if !seen_dynamic.insert(batch.texture) {
+        for id in batches.iter().flat_map(|b| [b.texture, b.palette]) {
+            if !seen_dynamic.insert(id) {
                 continue;
             }
-            let Some(texture) = self.textures.get(&batch.texture) else {
+            let Some(texture) = self.textures.get(&id) else {
                 continue;
             };
             if !texture.dynamic {
                 continue;
             }
-            let Some(pixels) = self.pending_dynamic.remove(&batch.texture) else {
+            let Some(pixels) = self.pending_dynamic.remove(&id) else {
                 // A dynamic texture that already has GPU contents can be reused
                 // without re-uploading unchanged pixels.
                 if texture.initialized {
@@ -1314,7 +1460,7 @@ impl RenderState2D {
                     "dynamic texture must be updated before it is prepared for drawing",
                 ));
             };
-            let size = assets.dimensions(batch.texture).ok_or_else(|| {
+            let size = assets.dimensions(id).ok_or_else(|| {
                 GalError::invalid_argument("dynamic texture is missing from the texture store")
             })?;
             let expected =
@@ -1326,7 +1472,7 @@ impl RenderState2D {
                     "dynamic texture pixel length changed after staging",
                 ));
             }
-            dynamic_uploads.push((batch.texture, pixels, size));
+            dynamic_uploads.push((id, pixels, size));
         }
         for (id, _, _) in &dynamic_uploads {
             if let Some(texture) = self.textures.get_mut(id) {
@@ -1350,7 +1496,8 @@ impl RenderState2D {
         )?;
         for batch in &batches {
             self.upload(gal, batch.texture, assets)?;
-            self.ensure_set(gal, index, batch.texture)?;
+            self.upload(gal, batch.palette, assets)?;
+            self.ensure_set(gal, index, (batch.texture, batch.palette))?;
         }
         let viewport = Viewport::calculate(
             (canvas.width, canvas.height),
@@ -1373,7 +1520,19 @@ impl RenderState2D {
             let bytes: Vec<_> = values.into_iter().flat_map(f32::to_ne_bytes).collect();
             uniforms[i * self.uniform_stride..i * self.uniform_stride + 32].copy_from_slice(&bytes);
         }
-        let pipeline = self.pipeline(gal, format, depth.map(|(_, _, format)| format))?;
+        let (target, depth) = if canvas.uses_pixel_masks() {
+            let (target, texture, view) = self.mask_target(gal, index, target, size)?;
+            (
+                target,
+                Some((texture, view, TextureFormat::Depth24Stencil8)),
+            )
+        } else {
+            (target, depth)
+        };
+        let pipelines: Vec<_> = batches
+            .iter()
+            .map(|b| self.pipeline(gal, format, depth.map(|(_, _, f)| f), b.pixels))
+            .collect::<GalResult<_>>()?;
         let mut dynamic_commands = Vec::with_capacity(dynamic_uploads.len());
         for (id, pixels, size) in dynamic_uploads {
             let texture = self.textures[&id]
@@ -1392,7 +1551,7 @@ impl RenderState2D {
                 label: "2d-pass".into(),
                 target,
                 color_formats: vec![format],
-                depth_format: None,
+                depth_format: depth.map(|(_, _, f)| f),
             })?;
             slot.passes.insert(target, pass);
         }
@@ -1400,6 +1559,13 @@ impl RenderState2D {
         let attachment = gal.pass_target_color_attachment(target)?;
         let clear = canvas.clear.0;
         let mut operations = Vec::new();
+        if let Some((texture, _, _)) = depth {
+            operations.push(barrier(
+                texture,
+                TextureUsageState::Undefined,
+                TextureUsageState::DepthStencilAttachment,
+            ));
+        }
         if !dynamic_commands.is_empty() {
             let mut copy_regions = Vec::with_capacity(dynamic_commands.len());
             operations.push(barrier(
@@ -1504,16 +1670,17 @@ impl RenderState2D {
                 }],
                 depth_stencil: depth.map(|(_, view, _)| PassAttachment {
                     view,
-                    load_op: AttachmentLoadOp::Load,
+                    load_op: AttachmentLoadOp::Clear,
                     store_op: AttachmentStoreOp::Store,
                     clear_color: None,
                 }),
             },
-            CommandOp::BindGraphicsPipeline(pipeline),
         ]);
         for (i, batch) in batches.iter().enumerate() {
-            let set = slot.sets[&batch.texture][usize::from(batch.filter == Filter::Linear)];
+            let set = slot.sets[&(batch.texture, batch.palette)]
+                [usize::from(batch.filter == Filter::Linear)];
             operations.extend([
+                CommandOp::BindGraphicsPipeline(pipelines[i]),
                 CommandOp::BindResourceSet {
                     pipeline_layout: self.layout,
                     set_index: 0,

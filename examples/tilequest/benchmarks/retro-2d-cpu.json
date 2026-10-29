@@ -1,0 +1,96 @@
+{
+  "profile": "release",
+  "scope": "CPU live edits and indexed draw-list construction; no GPU timing",
+  "cpu": "Intel Core i7-10750H @ 2.60GHz",
+  "baseline_commit": "292dd79dbead0e7e4c4737254d76c89b499bd9de",
+  "implementation": "unstaged working tree",
+  "edits": {
+    "live_iterations": 1000,
+    "legacy_iterations": 10,
+    "measurement": "mean wall time per single-cell edit; legacy uses validation, clone, candidate validation, runtime validation/index rebuild, then transfers document ownership",
+    "cases": [
+      {
+        "stored_cells": 10000,
+        "live_ns_per_edit": 184,
+        "legacy_ns_per_edit": 250188,
+        "speedup": 1356.9
+      },
+      {
+        "stored_cells": 1000000,
+        "live_ns_per_edit": 217,
+        "legacy_ns_per_edit": 23530550,
+        "speedup": 108255.6
+      },
+      {
+        "stored_cells": 4194304,
+        "live_ns_per_edit": 114,
+        "legacy_ns_per_edit": 89805925,
+        "speedup": 786936.0
+      }
+    ]
+  },
+  "culling": {
+    "iterations": 3000,
+    "before": [
+      {
+        "draw_list_us": {
+          "p50": 37.348,
+          "p95": 61.936
+        },
+        "iterations": 3000,
+        "load_and_index_ms": 0.941483,
+        "max_emitted_tiles": 620,
+        "max_visited_cells": 620,
+        "ok": true,
+        "scope": "CPU indexed culling and draw-list construction; no GPU, decoding excluded",
+        "stored_cells": 10000
+      },
+      {
+        "draw_list_us": {
+          "p50": 29.808,
+          "p95": 36.665
+        },
+        "iterations": 3000,
+        "load_and_index_ms": 74.44382800000001,
+        "max_emitted_tiles": 620,
+        "max_visited_cells": 620,
+        "ok": true,
+        "scope": "CPU indexed culling and draw-list construction; no GPU, decoding excluded",
+        "stored_cells": 1000000
+      }
+    ],
+    "after": [
+      {
+        "draw_list_us": {
+          "p50": 32.768,
+          "p95": 40.236
+        },
+        "iterations": 3000,
+        "load_and_index_ms": 0.9587289999999999,
+        "max_emitted_tiles": 620,
+        "max_visited_cells": 620,
+        "ok": true,
+        "scope": "CPU indexed culling and draw-list construction; no GPU, decoding excluded",
+        "stored_cells": 10000
+      },
+      {
+        "draw_list_us": {
+          "p50": 31.862,
+          "p95": 37.583
+        },
+        "iterations": 3000,
+        "load_and_index_ms": 74.544063,
+        "max_emitted_tiles": 620,
+        "max_visited_cells": 620,
+        "ok": true,
+        "scope": "CPU indexed culling and draw-list construction; no GPU, decoding excluded",
+        "stored_cells": 1000000
+      }
+    ]
+  },
+  "notes": [
+    "Local measurements vary with clocks and system load; not a cross-machine guarantee.",
+    "Culling baseline ran from a temporary git archive without changing the working tree.",
+    "Live edit work is independent of unrelated stored cells; clearing retains chunks."
+  ]
+}
