@@ -31,10 +31,10 @@ pub use texture::write_png;
 pub use texture::{Image, TextureId, Textures};
 #[cfg(feature = "text")]
 mod text;
+#[cfg(feature = "gpu")]
+pub use quasar_frame::{Gpu, GpuTiming, GraphicsError, GraphicsResult};
 #[cfg(feature = "text")]
 pub use text::{GpuTextAtlas, TextUploadStats};
-#[cfg(feature = "gpu")]
-pub use vulkanic_gal::{BackendChoice, GalError, GalResult, VulkanicGal};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);

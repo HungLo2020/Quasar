@@ -37,7 +37,7 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `quasar-ui` | Retained in-game menus/HUD: widget tree, stack/grid/absolute layout, DPI/safe areas, focus/modal scopes, text editing, rebinding, themes and consumed-input reporting; optional input/render2d/config/text adapters | Optional quasar-input, quasar-render-2d, quasar-config, quasar-text |
 | `quasar-sim` | Optional fixed-step coordination, deterministic journals, snapshots, replay verification and divergence reports | quasar-core, optional quasar-jobs |
 | `quasar-audio` | WAV/Ogg decode, deterministic mixing, buses, spatial audio, scheduling, streaming Ogg, offline WAV and CPAL output | Optional quasar-storage (settings) |
-| `vulkanic-gal` | Independent extraction of MattMC's graphics abstraction layer | None |
+| `vulkanic-gal` | Minimal re-export of unmodified upstream wgpu | None |
 | `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, optional shaped glyph-atlas pages, camera/transforms, clipping, GPU readback, persistent software-framebuffer presentation | VulkanicGAL, quasar-core, quasar-frame; optional quasar-text |
 | `quasar-tilemap` | Versioned/Tiled maps, indexed tile/object queries, PNG atlases, animation, culled draw lists and CLI | Optional quasar-render-2d |
 | `quasar-render-3d` | Indexed meshes, transforms, legacy and opt-in per-pixel directional/point/spot lighting, classic/unlit and normal-mapped materials, directional/spot shadows, optional instancing/frustum culling, model uploads and shared-GAL passes | VulkanicGAL |
@@ -119,7 +119,7 @@ future additions. Audio is provided by `quasar-audio`; see
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.19`, with workspace package versions set to `0.2.19`.
+release is `v0.2.20`, with workspace package versions set to `0.2.20`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.
@@ -141,47 +141,24 @@ usable directly on a caller-owned GAL.
 
 ### Graphics backend features
 
-VulkanicGAL's backends are Cargo features. `vulkan` is the default and retains
-the existing Vulkan implementation. `opengl` is an optional backend for an
-existing OpenGL context; this repository does not yet create an OpenGL window,
-context or buffer swap. `wgpu` is an optional portability backend that runs the
-same GAL on Vulkan, Metal or Direct3D 12 through wgpu. `quasar-render-2d`,
-`quasar-render-3d` and `quasar-frame` default to Vulkan and forward
-`vulkan`/`opengl`/`wgpu` to the GAL.
+VulkanicGAL re-exports external upstream wgpu 30.0.1 without a private graphics
+implementation. All GPU types retain upstream identity; other Quasar crates import
+them through VulkanicGAL. Renderers use WGSL and native command buffers.
+Defaults forward Vulkan, Metal, DX12 and GLES; select only needed backends:
 
 ```toml
-# Vulkan, the default.
-quasar-render-2d = { path = "crates/quasar-render-2d" }
-
-# OpenGL-only build with no ash/shaderc dependency.
-quasar-render-2d = { path = "crates/quasar-render-2d", default-features = false, features = ["gpu", "opengl"] }
-quasar-render-3d = { path = "crates/quasar-render-3d", default-features = false, features = ["opengl"] }
-
-# wgpu-only build (Metal on macOS, Direct3D 12 or Vulkan elsewhere), no ash.
-quasar-render-2d = { path = "crates/quasar-render-2d", default-features = false, features = ["gpu", "wgpu"] }
+quasar-render-2d = { path = "crates/quasar-render-2d", default-features = false, features = ["gpu", "vulkan"] }
+quasar-render-3d = { path = "crates/quasar-render-3d", default-features = false, features = ["metal"] }
 ```
 
-Games that let players choose a backend pass a `GraphicsBackend` (`auto`,
-`vulkan`, `wgpu-vulkan`, `wgpu-metal`, `wgpu-dx12`, ...) through `GalOptions`;
-`VulkanicGal::backend_info()` (also on `Renderer2D`) reports what actually runs
-for debug screens. Games that do not care get native Vulkan by default. See the
-[VulkanicGAL README](crates/vulkanic-gal/README.md#choosing-and-reporting-the-backend).
-
-`VULKANIC_BACKEND=wgpu` (or `vulkan`, `opengl`, `wgpu-vulkan`, ...) overrides
-automatic selection and the `BackendChoice` constructors, so an existing game
-runs on another compiled-in backend without code changes; explicit
-`GalOptions` choices are only overridden when they allow it:
-
-```sh
-VULKANIC_BACKEND=wgpu cargo run -p starfall --features vulkanic-gal/wgpu
-```
-
-`Renderer2D::headless_with(BackendChoice)` and
-`Renderer2D::from_windowed_gal(...)` request a renderer rather than a Vulkan
-renderer. `for_window` is the window convenience path: Vulkan by default, wgpu in
-builds without Vulkan. Build without
-a backend to use the GAL frontend with a caller-provided backend or for
-diagnostics; backend creation then returns an explicit unsupported error.
+`WGPU_BACKEND=vulkan` (or `metal`, `dx12`, `gl`) and `WGPU_ADAPTER_NAME` select
+adapters in the optional setup helpers. `Adapter::get_info()` reports actual
+selection. `Gpu` exposes native instance, adapter, device and queue; applications
+can record native work alongside both renderers. See the
+[migration guide](docs/native-wgpu-migration.md) and
+[VulkanicGAL README](crates/vulkanic-gal/README.md).
+[Native validation and performance](docs/native-wgpu-validation.md) records the
+workspace/GPU checks, paired baseline measurements and platform limitations.
 
 For opt-in per-pixel 3D lighting, classic/unlit materials and custom fragment
 shaders, directional/spotlight shadows and normal maps, see
@@ -197,8 +174,8 @@ extend this path through optional configuration and diagnostics hooks.
 
 `quasar-render-2d::FramebufferPresenter` presents a tightly packed RGBA8
 software framebuffer through the same GPU quad pipeline, viewport math, and
-surface lifecycle as native 2D rendering. The texture, view, samplers, bindings,
-and per-frame upload slots persist; only pixels are uploaded. Fit/integer
+surface lifecycle as native 2D rendering. The texture ID stays stable; updated pixels create an immutable native texture
+generation, while unchanged frames reuse their generation. Fit/integer
 scaling, nearest/linear filtering, letterboxing, resize, minimized-surface
 deferral, and completion polling match `Renderer2D`. `write_png` and
 `render_to_image` remain available for headless output.
@@ -210,7 +187,7 @@ cargo run -p framebuffer -- --frames 364 --benchmark /tmp/framebuffer-bench.json
 ```
 
 For shared-device composition, `RenderState2D::create_dynamic_texture` and
-`update_dynamic_texture` provide the same persistent-texture path without owning
+`update_dynamic_texture` provide the same snapshot-preserving path without owning
 a window, so software framebuffers can be drawn alongside 3D, native 2D, and
 direct VulkanicGAL passes in one submission. See the
 [framebuffer example](examples/framebuffer/README.md).
@@ -257,9 +234,8 @@ See [quasar-input's API and semantics](crates/quasar-input/README.md).
 ## Build and verify
 
 Use a current stable Rust toolchain (minimum 1.94; developed with Rust 1.94). The initial
-build needs CMake, Ninja or Make, and a C++ compiler to build shaderc from source.
-On Debian/Ubuntu, useful development packages are `build-essential cmake ninja-build
-pkg-config libxkbcommon-dev libxkbcommon-x11-0 libasound2-dev libwayland-dev
+build uses upstream wgpu and WGSL without Shaderc or a C++ shader build.
+On Debian/Ubuntu, useful development packages are `build-essential pkg-config libxkbcommon-dev libxkbcommon-x11-0 libasound2-dev libwayland-dev
 libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev`. A Vulkan loader/driver and a desktop session are
 needed to play; no standalone GLSL compiler is needed at runtime.
 
@@ -284,11 +260,11 @@ cargo run -p audio-example -- --play   # requires a working output device
 ```
 
 Imported OpenGL/GPU checks and the 2D renderer conformance tests are explicitly ignored in ordinary tests because
-they require a graphics environment. Run the full suite with driver access, and again on wgpu:
+they require a graphics environment. Run the full suite with driver access, with an explicitly selected upstream backend:
 
 ```sh
 cargo test --workspace --locked -- --include-ignored
-VULKANIC_BACKEND=wgpu cargo test --workspace --features vulkanic-gal/wgpu -- --include-ignored --test-threads=1
+WGPU_BACKEND=vulkan cargo test --workspace --all-features -- --include-ignored --test-threads=1
 cargo run -p pong -- --autoplay --no-save --smoke-frames 30 --exercise-window
 ```
 

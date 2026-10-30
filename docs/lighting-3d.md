@@ -7,11 +7,11 @@ alongside `quasar-render-2d`, from any ordinary Cargo application.
 
 ## Ownership and composition
 
-`LitRenderState3D` owns shader/pipeline/descriptor caches and three bounded
-upload slots on the GAL supplied by its caller. It does not create a device,
+`LitRenderState3D` owns native shader/pipeline/binding caches and growable
+instance/light buffers on the device supplied by its caller. It does not create a device,
 window, surface, frame coordinator, scene graph or ECS, and preparation does not
-submit rendering. `Mesh::upload` retains its existing explicit upload submission
-on that same GAL queue.
+submit rendering. `Mesh::upload` creates initialized native vertex/index buffers
+on that same device.
 
 Inputs are `LitCamera3D`, a slice of `LitDraw3D`, and `Lighting` with a borrowed
 light slice. Games own transforms, material parameters, light selection, draw
@@ -22,7 +22,7 @@ actors and draw calls acquire no implicit engine identity.
 `prepare` returns ordinary `Prepared3D` GAL commands and statistics. Applications
 order those commands with 2D/HUD/UI and custom GAL passes, then submit/present
 through either their own orchestration or optional `quasar-frame`. All resources
-must belong to the construction GAL. Existing legacy `RenderState3D` consumers
+must belong to the same native device. Existing legacy `RenderState3D` consumers
 retain their shader behavior, 160-byte draw payload and no light-buffer cost.
 
 ## Implemented capabilities
@@ -39,8 +39,8 @@ retain their shader behavior, 160-byte draw payload and no light-buffer cost.
 | Normals | Inverse-transpose model transform, normalized after interpolation; non-uniform/mirrored scales supported |
 | Shader extension | Caller-supplied fragment shader with the documented lit ABI; default source exported as `DEFAULT_LIT_FRAGMENT_SHADER` |
 | Mixed passes | Lit/legacy 3D, direct GAL and 2D on shared targets/device/frame |
-| Resource lifetimes | Existing submission receipts and explicit release, including light upload slots |
-| Backends | Backend-neutral GAL API and GLSL; verification notes below distinguish actual runs from compile checks |
+| Resource lifetimes | Native resource retention and Drop |
+| Backends | Native wgpu API and WGSL; verification notes below distinguish actual runs from compile checks |
 
 Normal maps and directional/spotlight shadow maps are available through the
 additive [surface/shadow path](shadows-3d.md), leaving this lit ABI unchanged.
@@ -86,69 +86,38 @@ would blend lighting in nonlinear space. Clear colors are already in the target'
 chosen encoding. The sample uses opaque encoded world/weapon passes followed by
 a display-space 2D HUD. No HDR tone mapping is implied by that sample.
 
-## Depth and resource transitions
+## Native ordering, ownership and custom shaders
 
-`PassOptions` converts to `LitPassOptions`: a first clear assumes undefined depth,
-while loading assumes `DepthStencilAttachment`. For a later pass that clears
-previously written depth, pass an explicit policy:
+PassOptions selects color/depth load or clear behavior. The weapon pass clears
+existing depth with `clear_color: None, clear_depth: true`; wgpu derives the
+required dependencies without a `depth_before` field or explicit barrier.
+Order world, weapon and HUD native command buffers on the same queue.
 
-```rust
-LitPassOptions {
-    pass: PassOptions { clear_color: None, clear_depth: true },
-    depth_before: TextureUsageState::DepthStencilAttachment,
-}
-```
+Native buffers hold per-preparation draw and light data. Reordered or abandoned
+command buffers cannot overwrite another preparation. Native command buffers
+retain their resources; there is no fixed-slot exhaustion or custom submission
+receipt. Caches can be cleared during asset replacement and owner Drop releases
+references. Temporary CPU vectors and native buffers allocate during preparation.
 
-This is the world-to-first-person-weapon case: clear the depth values while
-preserving the dependency on earlier writes. Other prior depth uses require an
-explicit GAL transition into an accepted state before this pass. Color-target
-transitions and ordering between custom passes remain the application's
-responsibility, as with the legacy renderer. Nightwatch inserts direct GAL
-attachment barriers between offscreen passes; native frame-target attachment
-transitions remain GAL-managed.
+`with_fragment_shader` accepts WGSL with entry point `main`. Start from
+`DEFAULT_LIT_FRAGMENT_SHADER`; native pipeline validation checks stage interfaces.
+Lit and surface shading share the same WGSL binding layout:
 
-Each slot holds draw uniforms and one light storage buffer. Light storage is
-allocated once at `48 + max(1, budget) * 64` bytes per slot. Each prepare uploads
-only the 48-byte header and 64 bytes per actual light, plus the existing aligned
-per-draw payloads (192 bytes of data per lit draw). No light data is duplicated
-per mesh. CPU preparation creates temporary encoded input/command vectors; this
-is not an allocation-free API.
-
-The three-slot policy follows legacy rendering: pending commands reserve their
-slots; all-pending pressure returns `InFlight`. Submitted pressure may wait for
-the oldest eligible submission. Completed slots can be reused without resource
-creation. Cloned commands retain reservations. Release and cache invalidation
-reject outstanding unsubmitted uses. Submitted resources retire through GAL;
-no unconditional device-idle wait is added.
-
-`Prepared3D.stats.uniform_upload_bytes` describes aligned draw-uniform uploads.
-Light-storage writes are additionally visible in GAL's host-write counters and
-`quasar-profile` frame samples.
-
-## Fragment shader extension ABI
-
-`LitRenderState3D::with_fragment_shader` uses the normal lit vertex stage and a
-caller-provided GLSL fragment stage. Pipeline creation reports shader/interface
-errors through GAL. Start from `DEFAULT_LIT_FRAGMENT_SHADER` when retaining the
-built-in lighting and replacing a shading/style term.
-
-| Binding/location | Layout |
+| Group 0 binding | Native resource |
 |---|---|
-| Set 0, binding 0 | Combined 2D texture/sampler |
-| Set 0, binding 1 | Read-only storage geometry; three vec4s per vertex: position, normal, UV |
-| Set 0, binding 2 | Dynamic std140 draw uniform: mat4 viewProjection, mat4 model, vec4 tint, vec4 specularShininess, vec4 emissiveCutoff, vec4 options |
-| Set 0, binding 3 | Read-only std430 light storage: vec4 ambient, vec4 eye, vec4 info, followed by four-vec4 light records |
-| Fragment input 0 | vec2 UV |
-| Fragment input 1 | vec3 world position |
-| Fragment input 2 | vec3 world normal |
-| Fragment output 0 | vec4 target color |
+| 0 / 16 | Albedo texture / sampler |
+| 1 | Read-only vertex storage, three vec4s per vertex |
+| 2 | Base-instance uniform (zero; first_instance selects records) |
+| 3 | Ambient/eye/info header plus four-vec4 light records |
+| 4 / 20 | Normal texture / sampler |
+| 5 / 21 | Shadow depth array / comparison sampler |
+| 6 | Shadow header and six-vec4 records |
+| 7 | Draw storage, 208 bytes per lit/surface instance |
 
-Draw `options.x` is unlit/diffuse/Blinn–Phong (0/1/2); `options.y` is sRGB texture
-decode (0/1). The light header's `info.x` is the light count and `info.y` is the
-output sRGB flag, both stored as floats. Light records contain position/type
-(0 directional, 1 point, 2 spot), normalized direction/range, color/intensity,
-and inner cosine/outer cosine/attenuation (0 smooth, 1 inverse-square)/reserved.
-Reserved fields are zero. The shader sources are the authoritative ABI example.
+Vertex outputs are UV (location 0), world position (1), normal (2), and flat
+instance index (7). Fragment output is location 0. The checked-in WGSL is the
+authoritative resource/record interface. There is no runtime GLSL rewriting or
+Shaderc compilation. [Migration](native-wgpu-migration.md) describes native APIs.
 
 ## Validation
 
@@ -156,9 +125,9 @@ Reserved fields are zero. The shader sources are the authoritative ABI example.
 - GPU pixel tests cover colored/mixed lights, point falloff, spotlight rejection,
   specular response, unlit/emissive/cutout behavior, explicit color encoding,
   non-uniform-scale normals and custom fragment shaders.
-- Composition tests mix legacy/lit 3D, direct GAL barriers and 2D; lifetime tests
-  cover pending receipts, three-slot pressure, reversed submission order, reuse
-  without resource churn and balanced teardown.
+- Composition tests mix legacy/lit 3D, native application passes and 2D; lifetime tests
+  cover native resource retention, reversed submission order, reuse
+  cache reuse and native ownership teardown.
 - Nightwatch tests cover game rules, headless repeatability, collision/navigation,
   weapons/reloads, enemy damage, waves/restart, visual changes and resize/teardown.
 

@@ -18,24 +18,12 @@ impl Default for SubmissionConfig {
     }
 }
 impl SubmissionConfig {
-    pub(crate) fn validate(self, gal: &VulkanicGal) -> GalResult<()> {
+    pub(crate) fn validate(self, _gpu: &Gpu) -> GraphicsResult<()> {
         if !(1..=4096).contains(&self.max_instances) {
-            return Err(GalError::invalid_argument(
-                "instance budget must be 1..=4096",
-            ));
-        }
-        if self.instancing
-            && (!gal.capabilities().features.storage_buffers
-                || gal.capabilities().limits.max_resource_layout_bindings < 8)
-        {
-            return Err(GalError::unsupported_feature(
-                "instancing requires storage buffers and eight resource bindings",
-            ));
+            return Err(error("instance budget must be 1..=4096"));
         }
         if self.frustum_culling && !cfg!(feature = "visibility") {
-            return Err(GalError::unsupported_feature(
-                "enable render3d's visibility feature for frustum culling",
-            ));
+            return Err(error("enable render3d visibility for frustum culling"));
         }
         Ok(())
     }
@@ -106,40 +94,6 @@ impl std::ops::AddAssign for RenderWork {
         self.draws += rhs.draws;
         self.instance_upload_bytes += rhs.instance_upload_bytes;
     }
-}
-
-/// Reuse built-in shading with indexed per-instance payloads. Uniforms keep only
-/// a base record index; the fragment's flat index addresses the same record.
-pub(crate) fn instanced_shader(source: &str, vertex: bool) -> String {
-    let Some(start) = source.find("layout(set=0,binding=2,std140) uniform Draw") else {
-        return source.to_owned();
-    };
-    let end = start
-        + source[start..]
-            .find("} drawData;")
-            .expect("built-in draw block")
-        + "} drawData;".len();
-    let fields = &source[start..end];
-    let fields = &fields[fields.find('{').unwrap() + 1..fields.rfind('}').unwrap()];
-    let interface = if vertex {
-        "layout(location=7) flat out uint instanceIndex;"
-    } else {
-        "layout(location=7) flat in uint instanceIndex;"
-    };
-    let replacement = format!(
-        "struct InstanceData {{{fields}}};\nlayout(set=0,binding=7,std430) readonly buffer Instances {{InstanceData items[];}} instanceData;\nlayout(set=0,binding=2,std140) uniform Batch {{uvec4 first;}} batchData;\n{interface}\n#define drawData instanceData.items[instanceIndex]\n"
-    );
-    let mut result = source.to_owned();
-    result.replace_range(start..end, &replacement);
-    if vertex {
-        let main = result.find("void main()").unwrap();
-        let body = main + result[main..].find('{').unwrap() + 1;
-        result.insert_str(
-            body,
-            "instanceIndex=batchData.first.x+uint(gl_InstanceIndex);",
-        );
-    }
-    result
 }
 
 pub(crate) struct Visibility {

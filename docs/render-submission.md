@@ -1,5 +1,10 @@
 # Instancing, visibility and reusable benchmarks
 
+Native graphics APIs now use unmodified wgpu through VulkanicGAL. See
+[native migration](native-wgpu-migration.md) for native views/command buffers, WGSL, Drop ownership,
+backend selection and replacement of old slot/receipt APIs. Historical benchmark
+figures describe their recorded release.
+
 Render submission remains an optional layer over a caller-owned GAL. Games
 supply borrowed mesh/material/model values; no object identity, scene, ECS,
 window, runner or frame owner is introduced. A future adapter can extract the
@@ -33,29 +38,28 @@ retains its own model, tint, shading, specular, emission, cutoff, normal-map
 parameters and shadow-reception flag. Both receiver and depth-only shadow passes
 use this path. Different materials/views, pipelines and meshes split batches.
 
-The built-in instanced shaders read packed draw records from an additional
-read-only std430 storage buffer at binding 7. The dynamic binding-2 uniform
-contains a base record index; a flat vertex output at location 7 selects that
-record in the fragment stage. Draw records retain the built-in field order and
-sizes (160 legacy, 192 lit, 208 surface, 144 shadow bytes). Existing non-instanced
-custom shaders keep their old interface. Applications needing a different
-instanced shader/layout can compose their own GAL passes on the same device.
+Built-in WGSL shaders use read-only draw storage at binding 7. Native
+`first_instance` selects records and a flat vertex output at location 7 selects
+per-instance fragment data. Records are 160 legacy, 208 lit/surface and 144 shadow
+bytes. Scalar and instanced modes share this native shader layout for pixel parity.
+Custom shaders use the WGSL interface documented in [lighting](lighting-3d.md).
 
-Each renderer has at most three completion-tracked upload generations. Instance
-storage shares its uniform slot's submission receipt and follows the same
-pending-command, cloning, backpressure, cache invalidation and explicit release
-contract. Buffers grow geometrically within the configured input ceiling of
-1..=4096 instances; shadow inputs also respect the total caster budget across
-maps. Only visible instance records and actual batch uniforms are uploaded.
-Worst-case retained storage rounds buffer capacities up to powers of two;
-this policy does not guarantee allocation-free CPU preparation.
+Native destination buffers and bindings are cached and grow as needed. Each
+preparation owns immutable staging data and encodes its copies before its draws;
+its native command buffer retains all resources.
+Arbitrary pending/reordered preparations stay isolated; there is no custom
+three-slot receipt registry. The configured per-preparation ceiling remains
+1..=4096 instances; shadow inputs also respect total caster budgets. Only visible
+records are uploaded. Native allocation and temporary CPU vectors mean this API
+is not allocation-free. Applications bound outstanding frames to control aggregate
+memory, and native wgpu manages completion and lifetime.
 
 `work_stats()` returns the most recent preparation's candidates, visible and
 culled instances, physical draw count and instance storage upload bytes.
 `Prepared3D.stats.draws` and `ShadowStats.draws` count physical draws; existing
 uniform upload counters describe uniforms, with instance storage separate in
-work stats and GAL host-write counters. Capture work stats after each successful
-prepare when accumulating a frame. Counts refer to pass instances, so a caster
+work stats. Upstream does not expose equivalent private host-write counters.
+Capture work stats after each successful prepare when accumulating a frame. Counts refer to pass instances, so a caster
 rendered into two lights is counted twice.
 
 ## Conservative visibility
@@ -151,11 +155,10 @@ corresponding `NIGHTWATCH_*` names. `--log-level` accepts trace/debug/info/warn/
 error or off. Nightwatch sets span level to debug, so normal info-level logs
 contain setup/final benchmark reports rather than per-frame spans.
 
-GAL frontend validation is distinct from Vulkan validation layers and command
-labels. For matched comparisons, hold `VULKANIC_VULKAN_VALIDATE` and
-`VULKANIC_GAL_VALIDATION` fixed across cases; the latter also affects Vulkan
-command-label setup. Compare CPU preparation/submission and GPU work separately
-from presentation-bound CPU frame time. No cross-device thresholds are implied.
+Native validation and driver debug behavior are upstream InstanceDescriptor
+options. Hold `WGPU_VALIDATION`/`WGPU_DEBUG` and adapter selection fixed across
+matched runs. Compare CPU preparation/submission and GPU work separately from
+presentation. No cross-device thresholds are implied.
 
 ## Repeated command runner
 
@@ -168,7 +171,7 @@ or wrap it in the environment used for native tests.
 ```json
 {"cases":[{"name":"optimized","command":["target/release/nightwatch",
 "--autoplay","--no-audio","--frames","180","--benchmark-file","{output}"],
-"env":{"VULKANIC_GAL_VALIDATION":"1"}}]}
+"env":{"WGPU_VALIDATION":"1"}}]}
 ```
 
 ```sh
@@ -187,4 +190,4 @@ rebind live model samplers after cache invalidation. Surface draw `options.z`
 is now a small flag mask: bit 0 receives shadows, bit 1 flips backface normals
 for double-sided materials, and bit 2 forces opaque alpha. The new flags are
 selected only by explicit mesh face/alpha policy; legacy meshes retain prior
-behavior. Scalar and instanced payload sizes and binding locations are unchanged.
+behavior. Scalar and instanced modes share the native WGSL layout.

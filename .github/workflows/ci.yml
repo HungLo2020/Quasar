@@ -22,7 +22,7 @@ jobs:
         with:
           components: rustfmt
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libxkbcommon-dev libasound2-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libxkbcommon-dev libasound2-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libvulkan-dev libudev-dev
       - run: cargo fmt --all -- --check
       # GPU tests report an environment gap and skip on the runner.
       - run: cargo test --workspace --locked
@@ -37,3 +37,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo check --locked -p quasar-window -p quasar-app -p quasar-input --all-targets
       - run: cargo check --locked -p quasar-audio --all-features
+
+      - run: cargo check --locked -p vulkanic-gal -p quasar-frame -p quasar-render-2d -p quasar-render-3d --all-targets --all-features
+      - run: cargo check --locked -p nightwatch -p starfall -p falling-sand -p physics-playground -p pong -p tilequest -p quasar-composition -p framebuffer -p app-stress --all-targets

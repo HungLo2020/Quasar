@@ -1,30 +1,26 @@
 //! Shared-GAL 3D scene plus optional 2D HUD.
 use crate::world::{Playground, PropKind, StaticBox};
+use quasar_frame::{Gpu, GraphicsResult, RenderTarget};
 use quasar_profile::RendererStats;
 use quasar_render_2d::{Canvas, Color, DisplayOptions, LoadOp, Rect, RenderState2D, Textures};
 use quasar_render_3d::{
     Camera3D, Draw3D, Mat4, Material, Mesh, PassOptions, RenderState3D, Vertex,
 };
 use quasar_spatial::{Aabb, Frustum, Plane};
-use vulkanic_gal::{
-    CommandList, CommandListDesc, CommandOp, GalError, GalResult, Handle, HandleKind,
-    ResourceBarrier, SubmissionBatch, TextureFormat, TextureOrigin3d, TextureUsage,
-    TextureUsageState, TextureViewDesc, VulkanicGal, commands::BufferImageCopyRegion, resources::*,
-};
+use vulkanic_gal::{CommandBuffer, Texture, TextureView};
 
 pub struct Graphics {
     state_3d: RenderState3D,
     state_2d: RenderState2D,
     cube: Mesh,
     sphere: Mesh,
-    texture: Handle,
-    texture_view: Handle,
+    texture_view: TextureView,
     textures: Textures,
     stats: RendererStats,
 }
 
 impl Graphics {
-    pub fn new(gal: &mut VulkanicGal) -> GalResult<Self> {
+    pub fn new(gal: &Gpu) -> GraphicsResult<Self> {
         let state_3d = RenderState3D::new(gal)?;
         let state_2d = RenderState2D::new(gal)?;
         let (cube_vertices, cube_indices) = cube();
@@ -42,7 +38,7 @@ impl Graphics {
                 return Err(error);
             }
         };
-        let (texture, texture_view) = match upload_white(gal) {
+        let (_texture, texture_view) = match upload_white(gal) {
             Ok(value) => value,
             Err(error) => {
                 let mut cube = cube;
@@ -61,7 +57,6 @@ impl Graphics {
             state_2d,
             cube,
             sphere,
-            texture,
             texture_view,
             textures: Textures::default(),
             stats: RendererStats::default(),
@@ -74,11 +69,11 @@ impl Graphics {
 
     pub fn commands(
         &mut self,
-        gal: &mut VulkanicGal,
-        target: Handle,
+        gal: &Gpu,
+        target: &RenderTarget,
         world: &Playground,
-    ) -> GalResult<Vec<CommandList>> {
-        let size = gal.pass_target_extent(target)?;
+    ) -> GraphicsResult<Vec<CommandBuffer>> {
+        let size = target;
         let aspect = size.width as f32 / size.height.max(1) as f32;
         let eye = world.camera_eye();
         let forward = world.forward();
@@ -91,13 +86,13 @@ impl Graphics {
             ],
             [0.0, 1.0, 0.0],
         )
-        .ok_or_else(|| GalError::invalid_argument("invalid playground camera"))?;
+        .ok_or_else(|| quasar_frame::error("invalid playground camera"))?;
         let projection = Mat4::perspective(90.0_f32.to_radians(), aspect, 0.05, 90.0)
-            .ok_or_else(|| GalError::invalid_argument("invalid playground projection"))?;
+            .ok_or_else(|| quasar_frame::error("invalid playground projection"))?;
         let view_projection = projection * view;
         let frustum = frustum(view_projection);
         let region = Aabb::new([-20.0, -2.0, -20.0], [20.0, 7.0, 20.0])
-            .map_err(|error| GalError::invalid_argument(error.to_string()))?;
+            .map_err(|error| quasar_frame::error(error.to_string()))?;
         let visible = world.props_in_frustum(&frustum, region);
         let mut draws = Vec::with_capacity(24 + visible.len());
         for StaticBox { bounds, tint } in world.static_boxes() {
@@ -112,7 +107,7 @@ impl Graphics {
                         extents[2] as f32 * 0.5,
                     ),
                 material: Material {
-                    texture_view: self.texture_view,
+                    texture_view: self.texture_view.clone(),
                     tint: *tint,
                     transparent: false,
                     depth_write: true,
@@ -123,7 +118,7 @@ impl Graphics {
             let prop = &world.props()[index];
             let (position, rotation) = world
                 .prop_transform(index)
-                .ok_or_else(|| GalError::invalid_argument("missing prop transform"))?;
+                .ok_or_else(|| quasar_frame::error("missing prop transform"))?;
             let scale = prop.kind.half_extents();
             draws.push(Draw3D {
                 mesh: if matches!(prop.kind, PropKind::Ball { .. }) {
@@ -135,7 +130,7 @@ impl Graphics {
                     * quaternion(rotation[0], rotation[1], rotation[2], rotation[3])
                     * Mat4::scale(scale[0], scale[1], scale[2]),
                 material: Material {
-                    texture_view: self.texture_view,
+                    texture_view: self.texture_view.clone(),
                     tint: prop.kind.tint(),
                     transparent: false,
                     depth_write: true,
@@ -160,7 +155,7 @@ impl Graphics {
                     agent.position[1],
                 ) * Mat4::scale(scale, scale, scale),
                 material: Material {
-                    texture_view: self.texture_view,
+                    texture_view: self.texture_view.clone(),
                     tint,
                     transparent: false,
                     depth_write: true,
@@ -180,7 +175,7 @@ impl Graphics {
                             model: Mat4::translation(center[0], 0.05, center[1])
                                 * Mat4::scale(0.18, 0.04, 0.18),
                             material: Material {
-                                texture_view: self.texture_view,
+                                texture_view: self.texture_view.clone(),
                                 tint: [1.0, 0.9, 0.25, 1.0],
                                 transparent: false,
                                 depth_write: true,
@@ -202,7 +197,7 @@ impl Graphics {
                     sensor_extents[2] as f32 * 0.5,
                 ),
             material: Material {
-                texture_view: self.texture_view,
+                texture_view: self.texture_view.clone(),
                 tint: if world.zone_active() {
                     [1.0, 0.82, 0.2, 0.35]
                 } else {
@@ -228,7 +223,7 @@ impl Graphics {
         let stats_3d = prepared_3d.stats;
 
         let mut canvas = Canvas::new(size.width, size.height)
-            .map_err(|error| GalError::invalid_argument(error.to_string()))?;
+            .map_err(|error| quasar_frame::error(error.to_string()))?;
         hud(&mut canvas, world);
         let prepared_2d = self.state_2d.prepare(
             gal,
@@ -246,37 +241,20 @@ impl Graphics {
             uniform_upload_bytes: stats_3d.uniform_upload_bytes as u64,
         };
         let mut commands = vec![prepared_3d.commands];
-        if target.kind() != Some(HandleKind::FrameTarget) {
-            let attachment = gal.pass_target_color_attachment(target)?;
-            commands.push(CommandList::from(CommandListDesc {
-                label: "playground-to-hud".into(),
-                operations: vec![CommandOp::Barrier(ResourceBarrier {
-                    resource: attachment,
-                    subresources: None,
-                    before: TextureUsageState::ColorAttachment,
-                    after: TextureUsageState::ColorAttachment,
-                    src_queue: QueueClass::Graphics,
-                    dst_queue: QueueClass::Graphics,
-                })],
-            }));
-        }
         commands.push(prepared_2d.commands);
         Ok(commands)
     }
 
-    pub fn release_targets(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
+    pub fn release_targets(&mut self, gal: &Gpu) -> GraphicsResult<()> {
         self.state_2d.release_targets(gal)?;
         self.state_3d.release_targets(gal)
     }
 
-    pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
+    pub fn release(&mut self, gal: &Gpu) -> GraphicsResult<()> {
         self.state_2d.release(gal)?;
         self.state_3d.release(gal)?;
         self.cube.release(gal)?;
         self.sphere.release(gal)?;
-        gal.retire(self.texture_view)?;
-        gal.retire(self.texture)?;
-        self.texture = Handle::NULL;
         Ok(())
     }
 }
@@ -428,103 +406,26 @@ fn quaternion(x: f32, y: f32, z: f32, w: f32) -> Mat4 {
     ])
 }
 
-fn upload_white(gal: &mut VulkanicGal) -> GalResult<(Handle, Handle)> {
-    let size = Extent3d {
-        width: 1,
-        height: 1,
-        depth: 1,
-    };
-    let texture = gal.create_texture(TextureDesc {
-        label: "playground-white".into(),
-        dimension: TextureDimension::D2,
-        format: TextureFormat::Rgba8Unorm,
-        extent: size,
-        mip_levels: 1,
-        array_layers: 1,
-        usages: vec![TextureUsage::Sampled, TextureUsage::TransferDst],
-    })?;
-    let view = match gal.create_texture_view(TextureViewDesc {
-        label: "playground-white-view".into(),
-        texture,
-        format: TextureFormat::Rgba8Unorm,
-        base_mip: 0,
-        mip_count: 1,
-        base_layer: 0,
-        layer_count: 1,
-    }) {
-        Ok(view) => view,
-        Err(error) => {
-            let _ = gal.retire(texture);
-            return Err(error);
-        }
-    };
-    let upload = match gal.create_buffer(BufferDesc {
-        label: "playground-white-upload".into(),
-        size: 4,
-        memory: MemoryDomain::Upload,
-        usages: vec![BufferUsage::TransferSrc, BufferUsage::HostWrite],
-    }) {
-        Ok(upload) => upload,
-        Err(error) => {
-            let _ = gal.retire(view);
-            let _ = gal.retire(texture);
-            return Err(error);
-        }
-    };
-    let result = gal.submit(SubmissionBatch {
-        label: "playground-white-upload".into(),
-        command_lists: vec![CommandList::from(CommandListDesc {
-            label: "playground-white-upload".into(),
-            operations: vec![
-                CommandOp::HostWriteBuffer {
-                    buffer: upload,
-                    offset: 0,
-                    data: vec![255; 4],
-                },
-                CommandOp::Barrier(ResourceBarrier {
-                    resource: upload,
-                    subresources: None,
-                    before: TextureUsageState::TransferDst,
-                    after: TextureUsageState::TransferSrc,
-                    src_queue: QueueClass::Graphics,
-                    dst_queue: QueueClass::Graphics,
-                }),
-                CommandOp::Barrier(ResourceBarrier {
-                    resource: texture,
-                    subresources: None,
-                    before: TextureUsageState::Undefined,
-                    after: TextureUsageState::TransferDst,
-                    src_queue: QueueClass::Graphics,
-                    dst_queue: QueueClass::Graphics,
-                }),
-                CommandOp::CopyBufferToTexture(BufferImageCopyRegion {
-                    buffer: upload,
-                    buffer_offset: 0,
-                    bytes_per_row: 4,
-                    rows_per_image: 1,
-                    texture,
-                    texture_mip: 0,
-                    texture_layer: 0,
-                    texture_origin: TextureOrigin3d { x: 0, y: 0, z: 0 },
-                    extent: size,
-                }),
-                CommandOp::Barrier(ResourceBarrier {
-                    resource: texture,
-                    subresources: None,
-                    before: TextureUsageState::TransferDst,
-                    after: TextureUsageState::ShaderRead,
-                    src_queue: QueueClass::Graphics,
-                    dst_queue: QueueClass::Graphics,
-                }),
-            ],
-        })],
-    });
-    let _ = gal.retire(upload);
-    if let Err(error) = result {
-        let _ = gal.retire(view);
-        let _ = gal.retire(texture);
-        return Err(error);
-    }
+fn upload_white(gal: &Gpu) -> GraphicsResult<(Texture, TextureView)> {
+    let texture = quasar_frame::texture_2d(
+        &gal.device,
+        "Playground white",
+        1,
+        1,
+        vulkanic_gal::TextureFormat::Rgba8Unorm,
+        vulkanic_gal::TextureUsages::TEXTURE_BINDING | vulkanic_gal::TextureUsages::COPY_DST,
+    )?;
+    gal.queue.write_texture(
+        texture.as_image_copy(),
+        &[255; 4],
+        vulkanic_gal::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        texture.size(),
+    );
+    let view = texture.create_view(&Default::default());
     Ok((texture, view))
 }
 

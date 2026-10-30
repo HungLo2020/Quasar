@@ -1,0 +1,245 @@
+{
+  "baseline_commit": "7a82ff3f23f0c6720dd1bcd0864be18ae8608b41",
+  "baseline_version": "0.2.19",
+  "native_version": "0.2.19 working tree",
+  "host": "Linux 7.0.0-38-generic x86_64 GNU/Linux",
+  "rust": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+  "display": "X11 Xvfb 1600x1000; no compositor",
+  "driver_validation": false,
+  "legacy_frontend_validation": false,
+  "native_core_validation": "unmodified upstream defaults",
+  "profiling": "GPU timestamps enabled; native command interval excludes implicit queue upload copies",
+  "repetitions": 3,
+  "results": {
+    "nightwatch-poll": {
+      "baseline": {
+        "cpu_frame_ms": {
+          "mean": 0.8835610583333333,
+          "p50": 0.809952,
+          "p95": 1.437732,
+          "p99": 2.238694
+        },
+        "cpu_submit_ms": {
+          "mean": 0.16214442499999998,
+          "p50": 0.146541,
+          "p95": 0.241059,
+          "p99": 0.296905
+        },
+        "gpu_commands_ms": {
+          "mean": 0.84232416,
+          "p50": 0.844704,
+          "p95": 0.920864,
+          "p99": 0.952192
+        },
+        "cpu_prepare_ms": {
+          "mean": 0.27968240333333333,
+          "p50": 0.249495,
+          "p95": 0.486124,
+          "p99": 0.536267
+        },
+        "cpu_prepare_plus_submit_mean_ms": 0.4418268283333333,
+        "draws_mean": 59.086666666666666,
+        "measured_frames": 600,
+        "warmup_frames": 64
+      },
+      "native": {
+        "cpu_frame_ms": {
+          "mean": 0.7980401916666666,
+          "p50": 0.71307,
+          "p95": 1.293247,
+          "p99": 2.196696
+        },
+        "cpu_submit_ms": {
+          "mean": 0.11716278999999999,
+          "p50": 0.112143,
+          "p95": 0.176214,
+          "p99": 0.227268
+        },
+        "gpu_commands_ms": {
+          "mean": 0.7212469333333333,
+          "p50": 0.72704,
+          "p95": 0.794464,
+          "p99": 0.82
+        },
+        "cpu_prepare_ms": {
+          "mean": 0.4684472766666667,
+          "p50": 0.443655,
+          "p95": 0.656871,
+          "p99": 0.739812
+        },
+        "cpu_prepare_plus_submit_mean_ms": 0.583026635,
+        "draws_mean": 59.086666666666666,
+        "measured_frames": 600,
+        "warmup_frames": 64
+      }
+    },
+    "quasar-composition-sync": {
+      "baseline": {
+        "cpu_frame_ms": {
+          "mean": 16.239426856666668,
+          "p50": 14.71487,
+          "p95": 28.832268,
+          "p99": 35.545436
+        },
+        "gpu_commands_ms": {
+          "mean": 0.07831466666666667,
+          "p50": 0.096768,
+          "p95": 0.119552,
+          "p99": 0.207008
+        },
+        "rust_allocations_per_frame": 77.23333333333333,
+        "rust_allocated_bytes_per_frame": 22443.946666666667,
+        "measured_frames": 300,
+        "warmup_frames": 64
+      },
+      "native": {
+        "cpu_frame_ms": {
+          "mean": 9.547516003333334,
+          "p50": 9.434372,
+          "p95": 10.519595,
+          "p99": 11.100663
+        },
+        "gpu_commands_ms": {
+          "mean": 0.042665386666666666,
+          "p50": 0.037632,
+          "p95": 0.095264,
+          "p99": 0.096672
+        },
+        "rust_allocations_per_frame": 270.5733333333333,
+        "rust_allocated_bytes_per_frame": 49741.456666666665,
+        "measured_frames": 300,
+        "warmup_frames": 64
+      }
+    },
+    "quasar-composition-poll": {
+      "baseline": {
+        "cpu_frame_ms": {
+          "mean": 9.082627743333335,
+          "p50": 8.856428,
+          "p95": 10.711201,
+          "p99": 12.117507
+        },
+        "gpu_commands_ms": {
+          "mean": 0.03813664,
+          "p50": 0.032768,
+          "p95": 0.081792,
+          "p99": 0.083104
+        },
+        "rust_allocations_per_frame": 77.23333333333333,
+        "rust_allocated_bytes_per_frame": 22443.946666666667,
+        "measured_frames": 300,
+        "warmup_frames": 64
+      },
+      "native": {
+        "cpu_frame_ms": {
+          "mean": 9.294486886666666,
+          "p50": 9.116904,
+          "p95": 10.538592,
+          "p99": 11.736316
+        },
+        "gpu_commands_ms": {
+          "mean": 0.04313877333333333,
+          "p50": 0.037504,
+          "p95": 0.096032,
+          "p99": 0.098272
+        },
+        "rust_allocations_per_frame": 270.5733333333333,
+        "rust_allocated_bytes_per_frame": 49741.47,
+        "measured_frames": 300,
+        "warmup_frames": 64
+      }
+    },
+    "framebuffer-sync": {
+      "baseline": {
+        "cpu_frame_ms": {
+          "mean": 12.326635,
+          "p50": 12.09638,
+          "p95": 14.288326,
+          "p99": 15.512137
+        },
+        "gpu_commands_ms": {
+          "mean": 0.439692,
+          "p50": 0.3152,
+          "p95": 0.972768,
+          "p99": 0.995008
+        },
+        "rust_allocations_per_frame": 55.306666666666665,
+        "rust_allocated_bytes_per_frame": 1034814.3666666667,
+        "measured_frames": 300,
+        "warmup_frames": 65
+      },
+      "native": {
+        "cpu_frame_ms": {
+          "mean": 12.826128,
+          "p50": 12.330828,
+          "p95": 15.488334,
+          "p99": 20.048829
+        },
+        "gpu_commands_ms": {
+          "mean": 0.093435,
+          "p50": 0.067584,
+          "p95": 0.18592,
+          "p99": 0.253824
+        },
+        "rust_allocations_per_frame": 227.75333333333333,
+        "rust_allocated_bytes_per_frame": 31770.316666666666,
+        "measured_frames": 300,
+        "warmup_frames": 65
+      }
+    },
+    "framebuffer-poll": {
+      "baseline": {
+        "cpu_frame_ms": {
+          "mean": 10.059255,
+          "p50": 9.852793,
+          "p95": 11.532626,
+          "p99": 12.08523
+        },
+        "gpu_commands_ms": {
+          "mean": 0.342084,
+          "p50": 0.270432,
+          "p95": 0.559072,
+          "p99": 0.571104
+        },
+        "rust_allocations_per_frame": 55.306666666666665,
+        "rust_allocated_bytes_per_frame": 1034814.38,
+        "measured_frames": 300,
+        "warmup_frames": 65
+      },
+      "native": {
+        "cpu_frame_ms": {
+          "mean": 10.435365,
+          "p50": 10.251157,
+          "p95": 12.369963,
+          "p99": 13.328326
+        },
+        "gpu_commands_ms": {
+          "mean": 0.089663,
+          "p50": 0.06736,
+          "p95": 0.155616,
+          "p99": 0.170112
+        },
+        "rust_allocations_per_frame": 227.75333333333333,
+        "rust_allocated_bytes_per_frame": 31770.33,
+        "measured_frames": 300,
+        "warmup_frames": 65
+      }
+    }
+  },
+  "versions": {
+    "baseline": "nightwatch 0.2.19",
+    "native": "nightwatch 0.2.19"
+  },
+  "nightwatch_hashes": {
+    "baseline": [
+      "0b4f2a0cb5a69ca3",
+      "0b4f2a0cb5a69ca3",
+      "0b4f2a0cb5a69ca3"
+    ],
+    "native": [
+      "0b4f2a0cb5a69ca3",
+      "0b4f2a0cb5a69ca3",
+      "0b4f2a0cb5a69ca3"
+    ]
+  }
+}

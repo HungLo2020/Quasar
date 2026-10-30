@@ -190,8 +190,8 @@ mod gpu {
     use crate::render2d::format_slider_value;
     use crate::{Color, LayoutEntry, Rect, TextStyle, Theme, Ui, UiNode, Widget};
     use quasar_render_2d::{
-        Canvas, Color as RenderColor, Filter, GalResult, GpuTextAtlas, Rect as RenderRect,
-        RenderState2D, Sprite, Textures, VulkanicGal,
+        Canvas, Color as RenderColor, Filter, Gpu, GpuTextAtlas, GraphicsResult,
+        Rect as RenderRect, RenderState2D, Sprite, Textures,
     };
     use quasar_text::{AtlasConfig, GlyphCache, SharedLayout, TextLayout, TextResult};
     use std::cell::RefCell;
@@ -246,10 +246,10 @@ mod gpu {
         pub fn prepare(
             &mut self,
             state: &mut RenderState2D,
-            gal: &mut VulkanicGal,
+            gal: &Gpu,
             textures: &mut Textures,
             ui: &Ui,
-        ) -> GalResult<()> {
+        ) -> GraphicsResult<()> {
             let theme = ui.theme();
             let scale = ui.scale();
             for entry in ui.layout_entries() {

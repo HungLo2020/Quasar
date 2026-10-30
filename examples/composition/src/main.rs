@@ -1,5 +1,5 @@
-use quasar_composition::{Demo, Offscreen, extent, submit_explicit};
-use quasar_frame::{CompletionPolicy, FrameReport, FrameSurface};
+use quasar_composition::{Demo, Offscreen};
+use quasar_frame::{CompletionPolicy, FrameReport, FrameSurface, Gpu};
 use quasar_window::{
     GameWindow, WindowConfig,
     winit::{
@@ -16,7 +16,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
-use vulkanic_gal::{resources::*, *};
+use vulkanic_gal::*;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
 static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -94,21 +94,20 @@ fn options() -> Result<Options> {
 }
 fn main() -> Result {
     let o = options()?;
-    set_gpu_timestamps_requested(true);
     if o.headless {
-        let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "Quasar composition snapshot")?;
-        let mut demo = Demo::new(&mut gal)?;
-        let mut target = Offscreen::new(&mut gal, 800, 600)?;
-        let image = target.image(&mut gal, &mut demo, 0.7, true)?;
+        let gal = Gpu::headless()?;
+        let mut demo = Demo::new(&gal)?;
+        let mut target = Offscreen::new(&gal, 800, 600)?;
+        let image = target.image(&gal, &mut demo, 0.7, true)?;
         write_png(
             o.screenshot.unwrap_or_else(|| "composition.png".into()),
             800,
             600,
             &image,
         )?;
-        demo.release(&mut gal)?;
-        target.release(&mut gal)?;
-        gal.retire_through(gal.latest_submission_id())?;
+        demo.release(&gal)?;
+        target.release(&gal)?;
+        gal.wait()?;
         return Ok(());
     }
     let mut app = App {
@@ -116,7 +115,7 @@ fn main() -> Result {
         window: None,
         gal: None,
         demo: None,
-        surface: FrameSurface::new(800, 600),
+        surface: None,
         frames: 0,
         device_creations: 0,
         stage: 0,
@@ -141,9 +140,9 @@ fn write_png(path: PathBuf, w: u32, h: u32, rgba: &[u8]) -> Result {
 struct App {
     options: Options,
     window: Option<GameWindow>,
-    gal: Option<VulkanicGal>,
+    gal: Option<Gpu>,
     demo: Option<Demo>,
-    surface: FrameSurface,
+    surface: Option<FrameSurface>,
     frames: u64,
     device_creations: u64,
     stage: u8,
@@ -169,45 +168,18 @@ impl App {
             },
         )?;
         let size = window.native().inner_size();
-        let mut gal = VulkanicGal::create_windowed_vulkan(
-            "Quasar composition",
-            window.shared_native(),
-            FrameSurfaceDesc {
-                label: "composition-surface".into(),
-                extent: extent(size.width, size.height),
-                color_format: TextureFormat::Bgra8Unorm,
-                present_mode: if self.options.benchmark.is_some() {
-                    PresentMode::AutoNoVsync
-                } else {
-                    PresentMode::AutoVsync
-                },
-                max_frames_in_flight: 3,
-            },
-        )?;
+        let (gal, mut surface) =
+            FrameSurface::for_window(window.shared_native(), size.width, size.height)?;
+        if self.options.benchmark.is_some() {
+            surface.config.present_mode = PresentMode::AutoNoVsync;
+            surface.reconfigure(&gal)?;
+        }
         self.device_creations += 1;
-        gal.install_gpu_profile_classifier(GpuProfileClassifier {
-            classify: |kind, label| {
-                if matches!(kind, GpuProfiledObject::RenderPass) {
-                    GpuProfileTag {
-                        timing_scope: if label.starts_with("3d") {
-                            Some(0)
-                        } else if label.starts_with("2d") {
-                            Some(1)
-                        } else {
-                            None
-                        },
-                        ..Default::default()
-                    }
-                } else {
-                    GpuProfileTag::default()
-                }
-            },
-            statistics_scope_name: |i| if i == 0 { "3d" } else { "2d" },
-        });
-        let demo = Demo::new(&mut gal)?;
-        self.surface = FrameSurface::new(size.width, size.height);
+        let demo = Demo::new(&gal)?;
+        self.surface = Some(surface);
         self.window = Some(window);
         self.demo = Some(demo);
+        gal.set_gpu_timestamps(self.options.benchmark.is_some());
         self.gal = Some(gal);
         Ok(())
     }
@@ -221,38 +193,21 @@ impl App {
         } else {
             CompletionPolicy::Poll
         };
+        let surface = self.surface.as_mut().unwrap();
         let report = if self.options.explicit {
-            let start = Instant::now();
-            if let Some(frame) = self.surface.acquire(gal)? {
-                let acquire_nanos = start.elapsed().as_nanos() as u64;
-                let result = submit_explicit(gal, |gal| {
-                    demo.commands(gal, frame.target, self.angle, true)
-                });
-                match result {
-                    Ok((token, profile)) => {
-                        let p = Instant::now();
-                        if let Err(e) = self.surface.present(gal, &frame, token, policy) {
-                            let _ = self.surface.cancel(gal, &frame);
-                            return Err(e.into());
-                        }
-                        Some(FrameReport {
-                            submission: token.submission,
-                            profile,
-                            acquire_nanos,
-                            present_nanos: p.elapsed().as_nanos() as u64,
-                            cpu_frame_nanos: start.elapsed().as_nanos() as u64,
-                        })
-                    }
-                    Err(e) => {
-                        let _ = self.surface.cancel(gal, &frame);
-                        return Err(e.into());
-                    }
-                }
+            if let Some(frame) = surface.acquire(gal)? {
+                let started = Instant::now();
+                let commands = demo.commands(gal, &frame.target, self.angle, true)?;
+                let prepare_nanos = quasar_frame::nanos(started.elapsed());
+                // The application records native command buffers; presentation submits them unchanged.
+                let mut report = surface.present(gal, frame, commands, policy)?;
+                report.prepare_nanos = prepare_nanos;
+                Some(report)
             } else {
                 None
             }
         } else {
-            self.surface.render(gal, policy, |gal, target| {
+            surface.render(gal, policy, |gal, target| {
                 demo.commands(gal, target, self.angle, true)
             })?
         };
@@ -262,10 +217,8 @@ impl App {
             if self.options.benchmark.is_some() {
                 if self.frames == 64 {
                     self.bench.begin(gal);
-                    self.surface.take_completion_latencies();
-                    self.surface.take_frame_completion_latencies();
                 } else if self.frames > 64 {
-                    self.bench.sample(gal, &report, &mut self.surface);
+                    self.bench.sample(&report);
                 }
             }
             if self.options.exercise {
@@ -304,9 +257,11 @@ impl App {
                 self.stage = 3;
             }
             3 if self.frames >= 14 => {
-                self.surface.resize(0, 0);
+                self.surface.as_mut().unwrap().resize(0, 0);
                 if self
                     .surface
+                    .as_mut()
+                    .unwrap()
                     .render(gal, CompletionPolicy::Poll, |gal, target| {
                         demo.commands(gal, target, self.angle, true)
                     })?
@@ -315,25 +270,19 @@ impl App {
                     return Err("zero size must defer".into());
                 }
                 let s = window.native().inner_size();
-                self.surface.resize(s.width, s.height);
+                self.surface.as_mut().unwrap().resize(s.width, s.height);
                 self.stage = 4;
             }
             4 if self.frames >= 18 => {
-                let failure = self
-                    .surface
-                    .render(gal, CompletionPolicy::Poll, |gal, target| {
-                        let mut commands = demo.commands(gal, target, self.angle, true)?;
-                        commands.push(quasar_composition::list(
-                            "intentional failure",
-                            vec![CommandOp::Draw {
-                                vertices: 3,
-                                instances: 1,
-                            }],
-                        ));
-                        Ok(commands)
-                    });
+                let failure =
+                    self.surface
+                        .as_mut()
+                        .unwrap()
+                        .render(gal, CompletionPolicy::Poll, |_, _| {
+                            Err(quasar_frame::error("intentional preparation failure"))
+                        });
                 if failure.is_ok() {
-                    return Err("invalid submission was accepted".into());
+                    return Err("preparation failure was ignored".into());
                 }
                 self.stage = 5;
             }
@@ -345,24 +294,9 @@ impl App {
         Ok(())
     }
     fn cleanup(&mut self) -> Result {
-        if let Some(mut gal) = self.gal.take() {
-            self.surface.finish(&mut gal)?;
+        if let Some(gal) = self.gal.take() {
+            self.surface.as_mut().unwrap().finish(&gal)?;
             if let Some(path) = &self.options.benchmark {
-                self.bench.sample_gpu(&gal);
-                self.bench.latencies.extend(
-                    self.surface
-                        .take_completion_latencies()
-                        .into_iter()
-                        .filter(|(id, _)| id.0 >= self.bench.first_submission)
-                        .map(|(_, n)| n),
-                );
-                self.bench.frame_latencies.extend(
-                    self.surface
-                        .take_frame_completion_latencies()
-                        .into_iter()
-                        .filter(|(id, _)| id.0 >= self.bench.first_submission)
-                        .map(|(_, n)| n),
-                );
                 self.bench.write(
                     path,
                     &gal,
@@ -373,23 +307,30 @@ impl App {
             }
             if let Some(mut demo) = self.demo.take() {
                 if let Some(path) = self.options.screenshot.clone() {
-                    let mut target = Offscreen::new(&mut gal, 800, 600)?;
-                    let image = target.image(&mut gal, &mut demo, self.angle, true)?;
+                    let mut target = Offscreen::new(&gal, 800, 600)?;
+                    let image = target.image(&gal, &mut demo, self.angle, true)?;
                     write_png(path, 800, 600, &image)?;
-                    target.release(&mut gal)?;
+                    target.release(&gal)?;
                 }
-                demo.release(&mut gal)?;
+                demo.release(&gal)?;
             }
-            self.surface.release_targets(&mut gal)?;
-            gal.retire_through(gal.latest_submission_id())?;
-            gal.shutdown_frame_surface()?;
-            println!(
-                "resources_created={} resources_destroyed={}",
-                gal.metrics().resource_creates,
-                gal.metrics().resource_destroys
-            );
-            if gal.metrics().resource_creates != gal.metrics().resource_destroys {
-                return Err("resource imbalance after teardown".into());
+            self.surface.take();
+            gal.wait()?;
+            if let Some(report) = gal.instance.generate_report() {
+                let h = &report.hub;
+                println!(
+                    "live_buffers={} live_textures={} live_views={}",
+                    h.buffers.num_kept_from_user,
+                    h.textures.num_kept_from_user,
+                    h.texture_views.num_kept_from_user
+                );
+                if h.buffers.num_kept_from_user
+                    + h.textures.num_kept_from_user
+                    + h.texture_views.num_kept_from_user
+                    != 0
+                {
+                    return Err("resource ownership leaked after teardown".into());
+                }
             }
         }
         self.window.take();
@@ -428,7 +369,7 @@ impl ApplicationHandler for App {
                 self.fail(e, events);
                 return;
             }
-            self.surface.resize(s.width, s.height);
+            self.surface.as_mut().unwrap().resize(s.width, s.height);
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && event.state == ElementState::Pressed
@@ -471,66 +412,34 @@ struct Bench {
     present: Vec<u64>,
     submit: Vec<u64>,
     gpu: Vec<u64>,
-    latencies: Vec<u64>,
-    frame_latencies: Vec<u64>,
-    last_gpu: u64,
-    first_submission: u64,
+    gpu_pending: Vec<quasar_frame::GpuTiming>,
     waits: u64,
-    idles: u64,
-    creates: u64,
-    destroys: u64,
     allocs: u64,
     bytes: u64,
-    uploads: u64,
     start: Option<Instant>,
 }
 impl Bench {
-    fn begin(&mut self, gal: &VulkanicGal) {
-        let m = gal.backend_runtime_metrics();
-        self.waits = m.native_wait_count;
-        self.idles = m.native_device_wait_idle_count;
-        self.creates = gal.metrics().resource_creates;
-        self.destroys = gal.metrics().resource_destroys;
+    fn begin(&mut self, _gpu: &Gpu) {
         self.allocs = ALLOCS.load(Ordering::Relaxed);
         self.bytes = ALLOC_BYTES.load(Ordering::Relaxed);
-        self.last_gpu = m.gpu_timestamp_status;
-        self.first_submission = gal.latest_submission_id().0 + 1;
         self.start = Some(Instant::now());
     }
-    fn sample(&mut self, gal: &VulkanicGal, r: &FrameReport, surface: &mut FrameSurface) {
+    fn sample(&mut self, r: &FrameReport) {
         self.cpu.push(r.cpu_frame_nanos);
         self.acquire.push(r.acquire_nanos);
         self.present.push(r.present_nanos);
-        self.submit.push(r.profile.gal_submit_total_nanos);
-        self.uploads += r.profile.host_write_bytes;
-        self.sample_gpu(gal);
-        self.frame_latencies.extend(
-            surface
-                .take_frame_completion_latencies()
-                .into_iter()
-                .filter(|(id, _)| id.0 >= self.first_submission)
-                .map(|(_, n)| n),
-        );
-        self.latencies.extend(
-            surface
-                .take_completion_latencies()
-                .into_iter()
-                .filter(|(id, _)| id.0 >= self.first_submission)
-                .map(|(_, n)| n),
-        );
-    }
-    fn sample_gpu(&mut self, gal: &VulkanicGal) {
-        let m = gal.backend_runtime_metrics();
-        if m.gpu_timestamp_status > self.last_gpu && m.gpu_timestamp_status >= self.first_submission
-        {
-            self.gpu.push(m.gpu_frame_total_nanos);
-            self.last_gpu = m.gpu_timestamp_status;
+        self.submit.push(r.submit_nanos);
+        self.waits += r.blocking_waits;
+        if let Some(t) = &r.gpu_timing {
+            self.gpu_pending.push(t.clone());
+        } else if let Some(n) = r.gpu_frame_nanos {
+            self.gpu.push(n);
         }
     }
     fn write(
         &self,
         path: &PathBuf,
-        gal: &VulkanicGal,
+        gpu: &Gpu,
         sync: bool,
         explicit: bool,
         device_creations: u64,
@@ -538,36 +447,18 @@ impl Bench {
         if self.cpu.is_empty() {
             return Err("benchmark needs more than 64 frames".into());
         }
-        let m = gal.backend_runtime_metrics();
-        let rust_allocations = ALLOCS.load(Ordering::Relaxed) - self.allocs;
-        let rust_allocated_bytes = ALLOC_BYTES.load(Ordering::Relaxed) - self.bytes;
-        let elapsed_ms = self.start.unwrap().elapsed().as_secs_f64() * 1000.;
-        let report = serde_json::json!({
-            "policy":if sync{"synchronous"}else{"completion-poll"},
-            "explicit_submission":explicit,
-            "build":if cfg!(debug_assertions){"debug"}else{"release"},
-            "device":gal.capabilities().name,
-            "device_creations":device_creations,
-            "frames":self.cpu.len(),
-            "elapsed_ms":elapsed_ms,
-            "cpu_frame_ms":distribution(&self.cpu),
-            "acquire_ms":distribution(&self.acquire),
-            "present_and_retire_ms":distribution(&self.present),
-            "cpu_submit_ms":distribution(&self.submit),
-            "gpu_frame_ms":distribution(&self.gpu),
-            "submission_to_observed_completion_ms":distribution(&self.latencies),
-            "engine_frame_to_observed_completion_ms":distribution(&self.frame_latencies),
-            "latency_note":"CPU observation of GPU completion; excludes display/compositor/input-to-photon latency; poll cadence affects observations",
-            "blocking_timeline_waits":m.native_wait_count-self.waits,
-            "device_idle_waits":m.native_device_wait_idle_count-self.idles,
-            "resource_creates":gal.metrics().resource_creates-self.creates,
-            "resource_destroys":gal.metrics().resource_destroys-self.destroys,
-            "rust_allocations":rust_allocations,
-            "rust_allocated_bytes":rust_allocated_bytes,
-            "host_upload_bytes":self.uploads,
-            "swapchain_images":m.native_swapchain_image_count,
-            "configured_frames":m.native_configured_frames_in_flight
-        });
+        let gpu_samples: Vec<_> = self
+            .gpu
+            .iter()
+            .copied()
+            .chain(
+                self.gpu_pending
+                    .iter()
+                    .filter_map(quasar_frame::GpuTiming::nanos),
+            )
+            .collect();
+        let memory=gpu.device.generate_allocator_report().map(|r|serde_json::json!({"allocated_bytes":r.total_allocated_bytes,"reserved_bytes":r.total_reserved_bytes}));
+        let report = serde_json::json!({"policy":if sync{"synchronous"}else{"completion-poll"},"explicit_submission":explicit,"build":if cfg!(debug_assertions){"debug"}else{"release"},"device":gpu.adapter.get_info().name,"device_creations":device_creations,"frames":self.cpu.len(),"elapsed_ms":self.start.unwrap().elapsed().as_secs_f64()*1000.,"cpu_frame_ms":distribution(&self.cpu),"acquire_ms":distribution(&self.acquire),"present_ms":distribution(&self.present),"cpu_submit_ms":distribution(&self.submit),"gpu_frame_ms":distribution(&gpu_samples),"blocking_waits":self.waits,"rust_allocations":ALLOCS.load(Ordering::Relaxed)-self.allocs,"rust_allocated_bytes":ALLOC_BYTES.load(Ordering::Relaxed)-self.bytes,"gpu_allocator":memory,"configured_frames":3,"timing_note":"Native timestamps when available; no synthetic resource or completion counters"});
         std::fs::write(path, serde_json::to_vec_pretty(&report)?)?;
         println!("benchmark={}", path.display());
         Ok(())

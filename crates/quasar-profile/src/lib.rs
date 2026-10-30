@@ -42,6 +42,10 @@ pub struct RendererStats {
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "json", derive(Serialize, Deserialize))]
 pub struct FrameSample {
+    /// Native frame reports cannot expose backend-private counters. Such fields
+    /// produce empty distributions rather than zero-valued measurements.
+    #[cfg_attr(feature = "json", serde(default))]
+    pub backend_details_unavailable: bool,
     pub frame: u64,
     pub cpu_frame_nanos: u64,
     pub acquire_nanos: u64,
@@ -64,6 +68,9 @@ pub struct FrameSample {
     #[cfg_attr(feature = "json", serde(default))]
     pub renderer_prepare_nanos: u64,
     pub gpu_frame_nanos: Option<u64>,
+    #[cfg(feature = "frame")]
+    #[cfg_attr(feature = "json", serde(skip))]
+    pub gpu_timing: Option<quasar_frame::GpuTiming>,
     pub gpu_scope_nanos: Vec<u64>,
     pub draws: u64,
     pub geometry_upload_bytes: u64,
@@ -86,30 +93,17 @@ impl FrameSample {
     }
     #[cfg(feature = "frame")]
     pub fn from_frame_report(frame: u64, report: &FrameReport) -> Self {
-        let profile = &report.profile;
         Self {
             frame,
+            backend_details_unavailable: true,
             cpu_frame_nanos: report.cpu_frame_nanos,
             acquire_nanos: report.acquire_nanos,
             present_nanos: report.present_nanos,
-            submit_nanos: profile.gal_submit_total_nanos,
-            renderer_prepare_nanos: profile.gal_command_generation_nanos,
-            validation_nanos: profile
-                .gal_validate_ops_nanos
-                .saturating_add(profile.gal_validate_handles_nanos),
-            hazard_analysis_nanos: profile.gal_hazard_analysis_nanos,
-            backend_encode_nanos: profile.backend_encode_nanos,
-            backend_submit_nanos: profile.backend_submit_nanos,
-            gpu_frame_nanos: (profile.gpu_timestamp_status > 0)
-                .then_some(profile.gpu_frame_total_nanos),
-            gpu_scope_nanos: profile.gpu_scope_nanos.to_vec(),
-            draws: profile.draw_ops.saturating_add(profile.draw_indexed_ops),
-            host_write_bytes: profile.host_write_bytes,
-            host_write_ops: profile.host_write_ops,
-            resource_creates: profile.resource_creates_delta,
-            resource_destroys: profile.resource_destroys_delta,
-            blocking_waits: profile.native_wait_count,
-            device_idle_waits: profile.native_device_wait_idle_count,
+            submit_nanos: report.submit_nanos,
+            renderer_prepare_nanos: report.prepare_nanos,
+            gpu_frame_nanos: report.gpu_frame_nanos,
+            gpu_timing: report.gpu_timing.clone(),
+            blocking_waits: report.blocking_waits,
             ..Self::default()
         }
     }
@@ -255,12 +249,34 @@ impl FrameProfiler {
             instance_upload_bytes: values(&self.samples, |sample| sample.instance_upload_bytes),
             culled_instances: values(&self.samples, |sample| sample.culled_instances),
             visible_instances: values(&self.samples, |sample| sample.visible_instances),
-            backend_submit: values(&self.samples, |sample| sample.backend_submit_nanos),
-            backend_encode: values(&self.samples, |sample| sample.backend_encode_nanos),
-            hazard_analysis: values(&self.samples, |sample| sample.hazard_analysis_nanos),
-            validation: values(&self.samples, |sample| sample.validation_nanos),
+            backend_submit: values_optional(&self.samples, |sample| {
+                (!sample.backend_details_unavailable).then_some(sample.backend_submit_nanos)
+            }),
+            backend_encode: values_optional(&self.samples, |sample| {
+                (!sample.backend_details_unavailable).then_some(sample.backend_encode_nanos)
+            }),
+            hazard_analysis: values_optional(&self.samples, |sample| {
+                (!sample.backend_details_unavailable).then_some(sample.hazard_analysis_nanos)
+            }),
+            validation: values_optional(&self.samples, |sample| {
+                (!sample.backend_details_unavailable).then_some(sample.validation_nanos)
+            }),
             renderer_prepare: values(&self.samples, |sample| sample.renderer_prepare_nanos),
-            gpu_frame: values_optional(&self.samples, |sample| sample.gpu_frame_nanos),
+            gpu_frame: values_optional(&self.samples, |sample| {
+                #[cfg(feature = "frame")]
+                {
+                    sample.gpu_frame_nanos.or_else(|| {
+                        sample
+                            .gpu_timing
+                            .as_ref()
+                            .and_then(quasar_frame::GpuTiming::nanos)
+                    })
+                }
+                #[cfg(not(feature = "frame"))]
+                {
+                    sample.gpu_frame_nanos
+                }
+            }),
             gpu_scopes: (0..gpu_scope_count)
                 .map(|index| {
                     Distribution::from_values(
@@ -274,12 +290,22 @@ impl FrameProfiler {
             geometry_upload_bytes: values(&self.samples, |sample| sample.geometry_upload_bytes),
             texture_upload_bytes: values(&self.samples, |sample| sample.texture_upload_bytes),
             uniform_upload_bytes: values(&self.samples, |sample| sample.uniform_upload_bytes),
-            host_write_bytes: values(&self.samples, |sample| sample.host_write_bytes),
-            host_write_ops: values(&self.samples, |sample| sample.host_write_ops),
-            resource_creates: values(&self.samples, |sample| sample.resource_creates),
-            resource_destroys: values(&self.samples, |sample| sample.resource_destroys),
+            host_write_bytes: values_optional(&self.samples, |sample| {
+                (!sample.backend_details_unavailable).then_some(sample.host_write_bytes)
+            }),
+            host_write_ops: values_optional(&self.samples, |sample| {
+                (!sample.backend_details_unavailable).then_some(sample.host_write_ops)
+            }),
+            resource_creates: values_optional(&self.samples, |sample| {
+                (!sample.backend_details_unavailable).then_some(sample.resource_creates)
+            }),
+            resource_destroys: values_optional(&self.samples, |sample| {
+                (!sample.backend_details_unavailable).then_some(sample.resource_destroys)
+            }),
             blocking_waits: values(&self.samples, |sample| sample.blocking_waits),
-            device_idle_waits: values(&self.samples, |sample| sample.device_idle_waits),
+            device_idle_waits: values_optional(&self.samples, |sample| {
+                (!sample.backend_details_unavailable).then_some(sample.device_idle_waits)
+            }),
         }
     }
     #[cfg(feature = "json")]

@@ -1,0 +1,26 @@
+{
+  "blocking_waits": 300,
+  "build": "release",
+  "cpu_present_ms": {
+    "mean": 28.475895,
+    "p50": 24.528356,
+    "p95": 45.939226,
+    "p99": 57.93403,
+    "samples": 300
+  },
+  "device": "NVIDIA GeForce RTX 2070",
+  "elapsed_ms": 9036.217835000001,
+  "frames": 300,
+  "gpu_frame_ms": {
+    "mean": 0.201352,
+    "p50": 0.202656,
+    "p95": 0.327168,
+    "p99": 0.421888,
+    "samples": 300
+  },
+  "policy": "synchronous",
+  "rust_allocated_bytes": 9531095,
+  "rust_allocations": 68326,
+  "texture_upload_bytes": 307200000,
+  "warmup_frames": 64
+}

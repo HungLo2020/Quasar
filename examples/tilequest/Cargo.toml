@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = ["desktop"]
-desktop = ["dep:quasar-app", "quasar-app/desktop", "dep:quasar-window", "quasar-render-2d/gpu", "quasar-render-2d/vulkan", "dep:vulkanic-gal", "vulkanic-gal/vulkan", "dep:quasar-frame"]
+desktop = ["dep:quasar-app", "quasar-app/desktop", "dep:quasar-window", "quasar-render-2d/gpu", "quasar-render-2d/native", "dep:vulkanic-gal", "vulkanic-gal/vulkan", "vulkanic-gal/metal", "vulkanic-gal/dx12", "vulkanic-gal/gles", "dep:quasar-frame"]
 
 [dependencies]
 quasar-tilemap.workspace = true

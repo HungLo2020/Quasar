@@ -76,17 +76,16 @@ pub fn render_screenshot(
     content: &Content,
     world: &GameWorld,
 ) -> Result<(), GameError> {
+    use quasar_frame::Gpu;
     use quasar_frame::OffscreenTarget;
     use quasar_profile::RendererStats;
-    use vulkanic_gal::{BackendChoice, VulkanicGal};
-    let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "Starfall offscreen")
+    let gal = Gpu::headless().map_err(|error| GameError::invalid(error.to_string()))?;
+    let mut graphics = render::Graphics::new(&gal, &content.texture)
         .map_err(|error| GameError::invalid(error.to_string()))?;
-    let mut graphics = render::Graphics::new(&mut gal, &content.texture)
-        .map_err(|error| GameError::invalid(error.to_string()))?;
-    let mut target = OffscreenTarget::new(&mut gal, settings.window_width, settings.window_height)
+    let target = OffscreenTarget::new(&gal, settings.window_width, settings.window_height)
         .map_err(|error| GameError::invalid(error.to_string()))?;
     let report = target
-        .render(&mut gal, |gal, target| {
+        .render(&gal, |gal, target| {
             graphics.commands(gal, target, world, None)
         })
         .map_err(|error| GameError::invalid(error.to_string()))?;
@@ -109,12 +108,12 @@ pub fn render_screenshot(
         .and_then(|mut header| header.write_image_data(&report.rgba))
         .map_err(|error| GameError::invalid(format!("write screenshot: {error}")))?;
     target
-        .release(&mut gal)
+        .release(&gal)
         .map_err(|error| GameError::invalid(error.to_string()))?;
     graphics
-        .release(&mut gal)
+        .release(&gal)
         .map_err(|error| GameError::invalid(error.to_string()))?;
-    gal.retire_through(gal.latest_submission_id())
+    gal.wait()
         .map_err(|error| GameError::invalid(error.to_string()))?;
     Ok(())
 }

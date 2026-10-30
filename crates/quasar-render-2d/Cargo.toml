@@ -7,11 +7,13 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = ["gpu", "vulkan"]
+default = ["gpu", "native"]
 gpu = ["dep:vulkanic-gal", "dep:quasar-frame"]
 vulkan = ["dep:raw-window-handle", "vulkanic-gal/vulkan"]
-opengl = ["vulkanic-gal/opengl"]
-wgpu = ["dep:raw-window-handle", "vulkanic-gal/wgpu"]
+gles = ["vulkanic-gal/gles"]
+metal = ["vulkanic-gal/metal"]
+dx12 = ["vulkanic-gal/dx12"]
+native = ["dep:raw-window-handle", "vulkanic-gal/vulkan", "vulkanic-gal/metal", "vulkanic-gal/dx12", "vulkanic-gal/gles"]
 png = ["dep:png"]
 assets = ["dep:quasar-assets", "png"]
 text = ["dep:quasar-text", "gpu"]

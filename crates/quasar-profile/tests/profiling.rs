@@ -125,49 +125,61 @@ fn json_summary_is_machine_readable() {
 #[test]
 fn frame_reports_map_into_samples() {
     use quasar_frame::FrameReport;
-    use vulkanic_gal::SubmissionId;
-    use vulkanic_gal::metrics::SubmitProfile;
-    let profile = SubmitProfile {
-        gal_submit_total_nanos: 500,
-        gal_command_generation_nanos: 29,
-        gal_validate_ops_nanos: 11,
-        gal_validate_handles_nanos: 13,
-        gal_hazard_analysis_nanos: 17,
-        backend_encode_nanos: 19,
-        backend_submit_nanos: 23,
-        draw_ops: 2,
-        draw_indexed_ops: 3,
-        host_write_bytes: 4_000,
-        host_write_ops: 2,
-        resource_creates_delta: 1,
-        resource_destroys_delta: 2,
-        native_wait_count: 3,
-        native_device_wait_idle_count: 4,
-        gpu_timestamp_status: 9,
-        gpu_frame_total_nanos: 6_000,
-        ..SubmitProfile::default()
-    };
     let report = FrameReport {
-        submission: SubmissionId(1),
-        profile,
+        prepare_nanos: 29,
+        submit_nanos: 500,
         acquire_nanos: 10,
         present_nanos: 20,
         cpu_frame_nanos: 30,
+        blocking_waits: 3,
+        gpu_frame_nanos: Some(6000),
+        ..Default::default()
     };
     let sample = FrameSample::from_frame_report(7, &report);
     assert_eq!(sample.frame, 7);
     assert_eq!(sample.cpu_frame_nanos, 30);
     assert_eq!(sample.submit_nanos, 500);
     assert_eq!(sample.renderer_prepare_nanos, 29);
-    assert_eq!(sample.validation_nanos, 24);
-    assert_eq!(sample.hazard_analysis_nanos, 17);
-    assert_eq!(sample.backend_encode_nanos, 19);
-    assert_eq!(sample.backend_submit_nanos, 23);
-    assert_eq!(sample.gpu_frame_nanos, Some(6_000));
-    assert_eq!(sample.draws, 5);
-    assert_eq!(sample.host_write_bytes, 4_000);
-    assert_eq!(sample.resource_creates, 1);
-    assert_eq!(sample.resource_destroys, 2);
+    assert_eq!(sample.gpu_frame_nanos, Some(6000));
     assert_eq!(sample.blocking_waits, 3);
-    assert_eq!(sample.device_idle_waits, 4);
+    // Backend internals are unavailable through the public upstream API.
+    assert_eq!(sample.validation_nanos, 0);
+    assert_eq!(sample.hazard_analysis_nanos, 0);
+}
+
+#[cfg(feature = "frame")]
+#[test]
+fn unavailable_native_backend_counters_are_not_zero_measurements() {
+    use quasar_profile::{BenchmarkConfig, BenchmarkError, BenchmarkSession};
+    let report = quasar_frame::FrameReport::default();
+    let sample = FrameSample::from_frame_report(1, &report);
+    let mut profiler = FrameProfiler::new(1);
+    profiler.record(sample.clone());
+    let s = profiler.summary();
+    assert_eq!(s.resource_creates.samples, 0);
+    assert_eq!(s.host_write_bytes.samples, 0);
+    assert_eq!(s.validation.samples, 0);
+    assert_eq!(s.cpu_frame.samples, 1);
+    for thresholds in [
+        ProfileThresholds {
+            max_resource_creates_p99: Some(1),
+            ..Default::default()
+        },
+        ProfileThresholds {
+            max_host_write_bytes_p99: Some(1),
+            ..Default::default()
+        },
+    ] {
+        let mut session = BenchmarkSession::new(BenchmarkConfig {
+            warmup_frames: 0,
+            thresholds,
+            ..Default::default()
+        })
+        .unwrap();
+        session.record(sample.clone());
+        assert!(matches!(
+            session.check(),
+            Err(BenchmarkError::MissingMetric(_))
+        ));
+    }
 }

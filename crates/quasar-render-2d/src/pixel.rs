@@ -1,7 +1,7 @@
-//! Eight reusable per-pixel mask bits. GPU realization uses GAL stencil state;
+//! Eight reusable per-pixel mask bits. GPU realization uses native stencil state;
 //! the reference renderer implements the same compare/replace rules in a byte plane.
 use crate::{Canvas, Result, Sprite, SpriteTransform, invalid};
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PixelState {
     /// Pass when (stored & read_mask) == (reference & read_mask).
     pub read_mask: u8,

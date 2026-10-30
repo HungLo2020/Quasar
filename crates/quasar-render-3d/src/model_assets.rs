@@ -1,172 +1,104 @@
-//! Optional GPU adapter for renderer-neutral quasar-assets model data.
+//! Native GPU generations for renderer-neutral asset data.
 use super::*;
 use quasar_assets::model::*;
-use vulkanic_gal::commands::BufferImageCopyRegion;
-
 pub struct UploadedTexture {
-    texture: Handle,
-    view: Handle,
-    sampler: Handle,
-    usage: SubmissionUsage,
+    texture: Texture,
+    view: TextureView,
+    sampler: Sampler,
     pub upload_bytes: usize,
     pub mip_levels: u32,
 }
 impl UploadedTexture {
     pub fn upload(
-        gal: &mut VulkanicGal,
+        gpu: &Gpu,
         image: &ModelImage,
         sampler: ModelSampler,
         color: MipColor,
         max_bytes: usize,
-    ) -> GalResult<Self> {
+    ) -> GraphicsResult<Self> {
         let levels = image
             .mip_chain(color, sampler.mip.is_some(), max_bytes)
-            .map_err(|e| GalError::invalid_argument(e.to_string()))?;
-        let bytes = levels.iter().map(|l| l.rgba.len()).sum::<usize>();
-        let mut owned = Vec::new();
-        let result = (|| {
-            let texture = gal.create_texture(TextureDesc {
-                label: "model-texture".into(),
-                dimension: TextureDimension::D2,
-                format: TextureFormat::Rgba8Unorm,
-                extent: Extent3d {
-                    width: image.width,
-                    height: image.height,
-                    depth: 1,
+            .map_err(error)?;
+        if image.width > gpu.device.limits().max_texture_dimension_2d
+            || image.height > gpu.device.limits().max_texture_dimension_2d
+        {
+            return Err(error("image exceeds device dimension limit"));
+        }
+        let texture = gpu.device.create_texture(&TextureDescriptor {
+            label: Some("model texture"),
+            size: Extent3d {
+                width: image.width,
+                height: image.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: levels.len() as u32,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (mip, level) in levels.iter().enumerate() {
+            gpu.queue.write_texture(
+                TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: mip as u32,
+                    origin: Origin3d::ZERO,
+                    aspect: TextureAspect::All,
                 },
-                mip_levels: levels.len() as u32,
-                array_layers: 1,
-                usages: vec![TextureUsage::Sampled, TextureUsage::TransferDst],
-            })?;
-            owned.push(texture);
-            let view = gal.create_texture_view(TextureViewDesc {
-                label: "model-texture-view".into(),
-                texture,
-                format: TextureFormat::Rgba8Unorm,
-                base_mip: 0,
-                mip_count: levels.len() as u32,
-                base_layer: 0,
-                layer_count: 1,
-            })?;
-            owned.push(view);
-            let filter = |v| match v {
-                TextureFilter::Nearest => SamplerFilter::Nearest,
-                TextureFilter::Linear => SamplerFilter::Linear,
-            };
-            let wrap = |v| match v {
-                TextureWrap::Clamp => SamplerAddressMode::ClampToEdge,
-                TextureWrap::Repeat => SamplerAddressMode::Repeat,
-                TextureWrap::Mirror => SamplerAddressMode::MirroredRepeat,
-            };
-            let sampler = gal.create_sampler(SamplerDesc {
-                label: "model-texture-sampler".into(),
-                min_filter: filter(sampler.min),
-                mag_filter: filter(sampler.mag),
-                mip_filter: filter(sampler.mip.unwrap_or(TextureFilter::Nearest)),
-                address_u: wrap(sampler.wrap_u),
-                address_v: wrap(sampler.wrap_v),
-                address_w: SamplerAddressMode::ClampToEdge,
-                comparison: None,
-            })?;
-            owned.push(sampler);
-            let upload = buffer(gal, "model-texture-upload", bytes, BufferUsage::TransferSrc)?;
-            owned.push(upload);
-            let mut data = Vec::with_capacity(bytes);
-            let mut operations = vec![barrier(
-                texture,
-                TextureUsageState::Undefined,
-                TextureUsageState::TransferDst,
-            )];
-            let mut offset = 0;
-            for (mip, level) in levels.iter().enumerate() {
-                data.extend_from_slice(&level.rgba);
-                operations.push(CommandOp::CopyBufferToTexture(BufferImageCopyRegion {
-                    buffer: upload,
-                    buffer_offset: offset,
-                    bytes_per_row: level.width * 4,
-                    rows_per_image: level.height,
-                    texture,
-                    texture_mip: mip as u32,
-                    texture_layer: 0,
-                    texture_origin: TextureOrigin3d { x: 0, y: 0, z: 0 },
-                    extent: Extent3d {
-                        width: level.width,
-                        height: level.height,
-                        depth: 1,
-                    },
-                }));
-                offset += level.rgba.len() as u64;
-            }
-            operations.splice(
-                0..0,
-                [
-                    CommandOp::HostWriteBuffer {
-                        buffer: upload,
-                        offset: 0,
-                        data,
-                    },
-                    barrier(
-                        upload,
-                        TextureUsageState::TransferDst,
-                        TextureUsageState::TransferSrc,
-                    ),
-                ],
+                &level.rgba,
+                TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(level.width * 4),
+                    rows_per_image: Some(level.height),
+                },
+                Extent3d {
+                    width: level.width,
+                    height: level.height,
+                    depth_or_array_layers: 1,
+                },
             );
-            operations.push(barrier(
-                texture,
-                TextureUsageState::TransferDst,
-                TextureUsageState::ShaderRead,
-            ));
-            gal.submit(SubmissionBatch {
-                label: "model-texture-upload".into(),
-                command_lists: vec![CommandList::from(CommandListDesc {
-                    label: "model-texture-upload".into(),
-                    operations,
-                })],
-            })?;
-            gal.retire(upload)?;
-            owned.pop();
-            Ok(Self {
-                texture,
-                view,
-                sampler,
-                usage: SubmissionUsage::default(),
-                upload_bytes: bytes,
-                mip_levels: levels.len() as u32,
-            })
-        })();
-        if result.is_err() {
-            for h in owned.into_iter().rev() {
-                let _ = gal.retire(h);
-            }
         }
-        result
+        let filter = |f| match f {
+            TextureFilter::Nearest => FilterMode::Nearest,
+            TextureFilter::Linear => FilterMode::Linear,
+        };
+        let wrap = |w| match w {
+            TextureWrap::Clamp => AddressMode::ClampToEdge,
+            TextureWrap::Repeat => AddressMode::Repeat,
+            TextureWrap::Mirror => AddressMode::MirrorRepeat,
+        };
+        let native_sampler = gpu.device.create_sampler(&SamplerDescriptor {
+            label: Some("model sampler"),
+            min_filter: filter(sampler.min),
+            mag_filter: filter(sampler.mag),
+            mipmap_filter: match sampler.mip {
+                Some(TextureFilter::Linear) => MipmapFilterMode::Linear,
+                _ => MipmapFilterMode::Nearest,
+            },
+            lod_max_clamp: if sampler.mip.is_some() { 32. } else { 0. },
+            address_mode_u: wrap(sampler.wrap_u),
+            address_mode_v: wrap(sampler.wrap_v),
+            ..Default::default()
+        });
+        Ok(Self {
+            view: texture.create_view(&Default::default()),
+            texture,
+            sampler: native_sampler,
+            upload_bytes: levels.iter().map(|l| l.rgba.len()).sum(),
+            mip_levels: levels.len() as u32,
+        })
     }
-    pub fn view(&self) -> Handle {
-        self.view
+    pub fn view(&self) -> &TextureView {
+        &self.view
     }
-    pub fn sampler(&self) -> Handle {
-        self.sampler
+    pub fn sampler(&self) -> &Sampler {
+        &self.sampler
     }
-    /// Carry this receipt in direct GAL consumers that may outlive the texture owner.
-    pub fn submission_usage(&self) -> SubmissionUsage {
-        self.usage.clone()
+    pub fn texture(&self) -> &Texture {
+        &self.texture
     }
-    pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
-        if self.usage.has_pending_commands() {
-            return Err(GalError::submission(
-                StatusCode::InFlight,
-                "texture consumers still retained",
-            ));
-        }
-        if !self.view.is_null() {
-            for h in [self.view, self.sampler, self.texture] {
-                gal.retire(h)?;
-            }
-            self.view = Handle::NULL;
-            self.texture = Handle::NULL;
-            self.sampler = Handle::NULL;
-        }
+    pub fn release(self, _gpu: &Gpu) -> GraphicsResult<()> {
         Ok(())
     }
 }
@@ -206,15 +138,9 @@ pub struct UploadedModel {
     pub mesh_upload_bytes: usize,
 }
 impl UploadedModel {
-    pub fn upload(
-        gal: &mut VulkanicGal,
-        model: &Model3D,
-        options: ModelUploadOptions,
-    ) -> GalResult<Self> {
+    pub fn upload(gal: &Gpu, model: &Model3D, options: ModelUploadOptions) -> GraphicsResult<Self> {
         if model.primitives.is_empty() || model.materials.is_empty() {
-            return Err(GalError::invalid_argument(
-                "model has no geometry/materials",
-            ));
+            return Err(error("model has no geometry/materials"));
         }
         let mut mesh_bytes = 0usize;
         for p in &model.primitives {
@@ -224,15 +150,15 @@ impl UploadedModel {
                         .len()
                         .checked_mul(48)
                         .and_then(|n| n.checked_add(p.indices.len().checked_mul(4)?))
-                        .ok_or_else(|| GalError::invalid_argument("mesh byte overflow"))?,
+                        .ok_or_else(|| error("mesh byte overflow"))?,
                 )
-                .ok_or_else(|| GalError::invalid_argument("mesh byte overflow"))?;
+                .ok_or_else(|| error("mesh byte overflow"))?;
             if p.material >= model.materials.len() {
-                return Err(GalError::invalid_argument("invalid material index"));
+                return Err(error("invalid material index"));
             }
         }
         if mesh_bytes > options.max_mesh_bytes {
-            return Err(GalError::invalid_argument("model GPU mesh budget exceeded"));
+            return Err(error("model GPU mesh budget exceeded"));
         }
         let used: std::collections::BTreeSet<_> =
             model.primitives.iter().map(|p| p.material).collect();
@@ -240,15 +166,14 @@ impl UploadedModel {
             if !used.contains(&index) {
                 continue;
             }
-            m.validate()
-                .map_err(|e| GalError::invalid_argument(e.to_string()))?;
+            m.validate().map_err(|e| error(e.to_string()))?;
             if m.normal_texture.is_some() && m.normal_scale > 8. {
-                return Err(GalError::unsupported_feature(
+                return Err(error(
                     "normal-map strength exceeds the surface shader's limit",
                 ));
             }
             if options.material_conversion == MaterialConversion::RejectPbr && !m.unlit {
-                return Err(GalError::unsupported_feature(
+                return Err(error(
                     "choose ClassicApproximation explicitly to render PBR model materials",
                 ));
             }
@@ -256,20 +181,16 @@ impl UploadedModel {
                 || m.emissive_texture.is_some()
                 || m.occlusion_texture.is_some()
             {
-                return Err(GalError::unsupported_feature(
+                return Err(error(
                     "classic materials do not support PBR/emissive/occlusion texture maps",
                 ));
             }
             if m.normal_texture.is_some() && m.normal_uv != m.base_uv {
-                return Err(GalError::unsupported_feature(
-                    "base and normal texture UV transforms must agree",
-                ));
+                return Err(error("base and normal texture UV transforms must agree"));
             }
             for t in [m.base_texture, m.normal_texture].into_iter().flatten() {
                 if t >= model.textures.len() || model.textures[t].image >= model.images.len() {
-                    return Err(GalError::invalid_argument(
-                        "invalid model texture/image index",
-                    ));
+                    return Err(error("invalid model texture/image index"));
                 }
             }
         }
@@ -278,7 +199,7 @@ impl UploadedModel {
             .iter()
             .any(|i| i.primitive >= model.primitives.len() || !Mat4(i.transform).finite())
         {
-            return Err(GalError::invalid_argument("invalid model instance"));
+            return Err(error("invalid model instance"));
         }
         let mut result = Self {
             primitives: Vec::new(),
@@ -413,7 +334,7 @@ impl UploadedModel {
         Some(SurfaceDraw3D {
             mesh: &p.mesh,
             model,
-            material: p.material,
+            material: p.material.clone(),
         })
     }
     pub fn draw(&self, index: usize, root: Mat4) -> Option<SurfaceDraw3D<'_>> {
@@ -428,9 +349,9 @@ impl UploadedModel {
     /// Install caller-owned samplers without giving the renderer ownership of this generation.
     pub fn bind_samplers(
         &self,
-        gal: &mut VulkanicGal,
+        gal: &Gpu,
         renderer: &mut SurfaceRenderState3D,
-    ) -> GalResult<()> {
+    ) -> GraphicsResult<()> {
         for (i, t) in self.textures.iter().enumerate() {
             renderer.set_texture_sampler(
                 gal,
@@ -441,17 +362,11 @@ impl UploadedModel {
         }
         Ok(())
     }
-    pub fn has_pending_commands(&self) -> bool {
-        self.primitives
-            .iter()
-            .any(|p| p.mesh.usage.has_pending_commands())
-            || self.textures.iter().any(|t| t.usage.has_pending_commands())
-    }
     pub fn bind_shadow_samplers(
         &self,
-        gal: &mut VulkanicGal,
+        gal: &Gpu,
         renderer: &mut ShadowRenderState3D,
-    ) -> GalResult<()> {
+    ) -> GraphicsResult<()> {
         for (i, t) in self.textures.iter().enumerate() {
             if !self.normal_textures.contains(&i) {
                 renderer.set_texture_sampler(gal, t.view(), t.sampler())?;
@@ -482,24 +397,7 @@ impl UploadedModel {
             .all(|v| v.is_finite())
             .then_some((min, max))
     }
-    pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
-        if self
-            .primitives
-            .iter()
-            .any(|p| p.mesh.usage.has_pending_commands())
-            || self.textures.iter().any(|t| t.usage.has_pending_commands())
-        {
-            return Err(GalError::submission(
-                StatusCode::InFlight,
-                "model commands still retain this generation",
-            ));
-        }
-        for p in &mut self.primitives {
-            p.mesh.release(gal)?;
-        }
-        for texture in &mut self.textures {
-            texture.release(gal)?;
-        }
+    pub fn release(&mut self, _gpu: &Gpu) -> GraphicsResult<()> {
         self.primitives.clear();
         self.instances.clear();
         self.normal_textures.clear();

@@ -133,15 +133,14 @@ fn render_screenshot(
     height: u32,
     path: &std::path::Path,
 ) -> Result<()> {
-    use vulkanic_gal::{BackendChoice, VulkanicGal};
-    let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "Falling Sand screenshot")
-        .map_err(|error| SandError::invalid(error.to_string()))?;
+    use quasar_frame::Gpu;
+    let gal = Gpu::headless().map_err(|error| SandError::invalid(error.to_string()))?;
     let mut graphics =
-        render::Graphics::new(&mut gal).map_err(|error| SandError::invalid(error.to_string()))?;
-    let mut target = OffscreenTarget::new(&mut gal, width, height)
+        render::Graphics::new(&gal).map_err(|error| SandError::invalid(error.to_string()))?;
+    let target = OffscreenTarget::new(&gal, width, height)
         .map_err(|error| SandError::invalid(error.to_string()))?;
     let report = target
-        .render(&mut gal, |gal, target| {
+        .render(&gal, |gal, target| {
             graphics.commands(gal, target, world, None, sand::Tool::Sand, None)
         })
         .map_err(|error| SandError::invalid(error.to_string()))?;
@@ -155,12 +154,12 @@ fn render_screenshot(
         .and_then(|mut header| header.write_image_data(&report.rgba))
         .map_err(|error| SandError::invalid(format!("write screenshot: {error}")))?;
     target
-        .release(&mut gal)
+        .release(&gal)
         .map_err(|error| SandError::invalid(error.to_string()))?;
     graphics
-        .release(&mut gal)
+        .release(&gal)
         .map_err(|error| SandError::invalid(error.to_string()))?;
-    gal.retire_through(gal.latest_submission_id())
+    gal.wait()
         .map_err(|error| SandError::invalid(error.to_string()))?;
     Ok(())
 }

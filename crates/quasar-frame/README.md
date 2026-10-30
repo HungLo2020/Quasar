@@ -1,56 +1,46 @@
 # quasar-frame
 
-Small optional frame helpers extracted after the explicit cube/HUD composition
-worked. This crate depends only on VulkanicGAL. Renderers remain usable without
-it. It owns no GAL, window, game loop, scene, renderer registry or render graph.
-These APIs were introduced in Git tag `2.1`. The current release is `v0.2.19`,
-with Cargo package versions set to `0.2.19`. This crate does not select a backend
-by default; enable its `vulkan` or `opengl` forwarding feature when the same
-dependency needs a backend, or select one through the renderer crate.
+Optional setup, presentation, frame timing and explicit GPU readback helpers
+using native wgpu types imported through VulkanicGAL. `Gpu` owns public native
+`instance`, `adapter`, `device` and `queue` fields. `Gpu::headless()` uses upstream
+adapter selection and `WGPU_BACKEND`/`WGPU_ADAPTER_NAME`; `Gpu::request` accepts a
+caller-created native instance and optional compatible surface. `Gpu::from_parts`
+adopts an existing native instance, adapter, device and queue, preserving any
+features requested by the application. Default setup requests only optional
+timestamp features beyond ordinary device functionality. No global device
+lock exists. Multiple devices/instances can coexist.
 
-`record_and_submit(&mut gal, closure)` opens GAL's existing nestable command
-recording scope. The closure prepares an ordered `Vec<CommandList>` on that GAL.
-The helper submits it, closes the scope on success/error (also on panic unwind),
-and returns the submission token plus CPU/GPU submission profiling fields.
-Creation/destruction deltas cover preparation through scope closure. It does
-not implement another resource lifetime system. Use renderer-provided lifetime
-receipts when retaining prepared commands. Explicitly destroyed custom resources
-must not escape the transaction through retained command copies.
+`RenderTarget` contains native color/depth views, format and dimensions. Both
+renderers accept the same target and device. Prepare native command buffers,
+order them with application-created buffers, and submit with `gpu.queue.submit`.
+`record_and_submit` is optional convenience; encoding can also be fully manual.
 
-The optional `diagnostics` feature lets an explicit `quasar_diagnostics` handle
-receive resize/presentation lifecycle records; it is absent from default builds.
+`FrameSurface::for_window(Arc<Window>, width, height)` returns `(Gpu, FrameSurface)`.
+`for_window_with_descriptor` additionally accepts native instance options.
+The owned window stays alive through surface recreation. `render` acquires,
+prepares and presents; `acquire`/`present` exposes each step. Drop an unpresented
+`SurfaceFrame` to abandon it. Resize/reconfiguration rejects a still-acquired
+frame. Zero size and timeout/occlusion defer presentation; outdated/lost surfaces
+recover on a later frame. Suboptimal images are presented before reconfiguration.
 
-`FrameSurface` tracks an already configured GAL presentation surface. It caches
-frame-target wrappers by acquired-image identity and retires them on resize or
-cancellation. Pass caches remain with the renderer that created them. Forward
-physical pixel sizes with `resize`; zero sizes defer until restoration.
+`CompletionPolicy::Poll` submits without waiting for GPU completion.
+`CompletionPolicy::Wait` waits for the specific submitted work, with a 30 second
+timeout. The native queue and reference-counted resources govern lifetime.
+`finish` waits for outstanding work; dropping owners releases their references.
+Native command buffers are single-use and are not cloned or reused.
 
-`render(&mut gal, policy, |gal, target| ...)` acquires once, records/submits ordered
-passes, presents once, then retires according to `CompletionPolicy::Wait` or
-`Poll`. Failed preparation/submission/presentation cancels the acquired frame.
-The individual `acquire`, `present` and `cancel` operations are also public for
-applications that need explicit orchestration.
+`OffscreenTarget::new` owns an RGBA8 color texture and a Depth32Float attachment.
+`render` invokes the same renderer APIs and returns real GPU pixels. `read_rgba`
+handles 256-byte copy-row alignment and BGRA conversion, bounds readback to
+256 MiB, and waits explicitly. Live presentation never reads pixels back.
 
-Poll mode reclaims already completed work. Backends can still block for image
-acquisition or bounded pressure; resize/cancel/shutdown may quiesce the device.
-Frontend allocators must protect their pending and submitted ranges. Polling
-alone cannot make arbitrary buffer reuse safe. Configuring frames in flight
-remains the caller's responsibility when constructing/configuring GAL.
-
-Call `finish` when draining a session, release renderer caches, then
-`release_targets`; shut down the surface through the owning GAL. Every operation
-must use the same GAL. Surface access is exclusive; this is not a multithreaded
-GAL-sharing wrapper.
-
-`take_completion_latencies` returns submission-to-host-observed-GPU-completion
-samples. `take_frame_completion_latencies` includes the engine path from
-acquire entry through observed GPU completion. Poll cadence influences both. They exclude input, compositor and display
-latency. Uncollected completed samples retain only the newest 256 entries.
-See [the example and measurements](../../examples/composition/README.md).
-
-## Headless targets
-
-`OffscreenTarget` owns a color+depth render target and RGBA readback buffer for
-windowless renderer tests and screenshots. It uses the same one-submission
-`record_and_submit` path as `FrameSurface`, so renderer command lists and
-profiles stay representative of native frames without creating a window.
+`FrameReport` separates CPU preparation, submit, acquire, present and poll/wait
+costs. `blocking_waits` counts actual requested waits, not poll calls. GPU queries
+are opt-in with `gpu.set_gpu_timestamps(true)` and require upstream timestamp
+features. The `gpu_timing` handle stays associated with its frame and resolves
+when the native device is polled; synchronous reports also expose
+`gpu_frame_nanos`. `quasar-profile` resolves asynchronous handles when computing
+summaries. The interval covers the submitted command buffers, including explicit
+staging copies; implicit `Queue::write_*` transfers precede it and are excluded.
+Unsupported timings remain absent. Backend-private validation and
+allocator counters are not invented; native allocator reports are optional.

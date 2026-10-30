@@ -1,0 +1,69 @@
+[
+  {
+    "tick": 1,
+    "options": [],
+    "differing_channels": 0,
+    "max_channel_difference": 0,
+    "hashes": [
+      "00776ef9b80a8adb",
+      "00776ef9b80a8adb"
+    ]
+  },
+  {
+    "tick": 30,
+    "options": [],
+    "differing_channels": 0,
+    "max_channel_difference": 0,
+    "hashes": [
+      "b4cb0ba17dac7ec6",
+      "b4cb0ba17dac7ec6"
+    ]
+  },
+  {
+    "tick": 120,
+    "options": [],
+    "differing_channels": 0,
+    "max_channel_difference": 0,
+    "hashes": [
+      "66a93884f9c90d20",
+      "66a93884f9c90d20"
+    ]
+  },
+  {
+    "tick": 30,
+    "options": [
+      "--no-shadows"
+    ],
+    "differing_channels": 0,
+    "max_channel_difference": 0,
+    "hashes": [
+      "b4cb0ba17dac7ec6",
+      "b4cb0ba17dac7ec6"
+    ]
+  },
+  {
+    "tick": 30,
+    "options": [
+      "--no-normal-maps"
+    ],
+    "differing_channels": 0,
+    "max_channel_difference": 0,
+    "hashes": [
+      "b4cb0ba17dac7ec6",
+      "b4cb0ba17dac7ec6"
+    ]
+  },
+  {
+    "tick": 30,
+    "options": [
+      "--no-instancing",
+      "--no-culling"
+    ],
+    "differing_channels": 0,
+    "max_channel_difference": 0,
+    "hashes": [
+      "b4cb0ba17dac7ec6",
+      "b4cb0ba17dac7ec6"
+    ]
+  }
+]

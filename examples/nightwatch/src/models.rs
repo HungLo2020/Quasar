@@ -1,13 +1,13 @@
 //! Game-owned model selection and placements; decoding/upload are reusable library APIs.
 use crate::props::ModelId;
 use quasar_assets::{AssetServer, CacheBudget, GltfLoader, Handle as AssetHandle, model::Model3D};
+use quasar_frame::{Gpu, GraphicsError, GraphicsResult, error};
 use quasar_physics::dim3::{Bounds3, RigidPose3, model_bounds, model_bounds_selected};
 use quasar_render_3d::*;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
-use vulkanic_gal::*;
 pub(crate) struct Models {
     server: AssetServer,
     handles: BTreeMap<ModelId, AssetHandle<Model3D>>,
@@ -15,8 +15,8 @@ pub(crate) struct Models {
     bounds: BTreeMap<ModelId, Bounds3>,
     pub root: PathBuf,
 }
-fn failure(e: impl std::fmt::Display) -> GalError {
-    GalError::invalid_argument(format!("Nightwatch models: {e}"))
+fn failure(e: impl std::fmt::Display) -> GraphicsError {
+    error(format!("Nightwatch models: {e}"))
 }
 impl Models {
     pub fn default_root() -> PathBuf {
@@ -28,7 +28,7 @@ impl Models {
         }
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets")
     }
-    pub fn load(gal: &mut VulkanicGal, root: &Path) -> GalResult<Self> {
+    pub fn load(gal: &Gpu, root: &Path) -> GraphicsResult<Self> {
         let mut server = AssetServer::with_budget(CacheBudget::new(64 * 1024 * 1024, 32));
         server.mount_file("", root).map_err(failure)?;
         server.register(GltfLoader {
@@ -73,13 +73,7 @@ impl Models {
         );
         self.server.set_diagnostics(Some(diagnostics));
     }
-    pub fn reload(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
-        if self.gpu.values().any(UploadedModel::has_pending_commands) {
-            return Err(GalError::submission(
-                StatusCode::InFlight,
-                "Nightwatch model commands are retained",
-            ));
-        }
+    pub fn reload(&mut self, gal: &Gpu) -> GraphicsResult<()> {
         for id in ModelId::ALL {
             self.server.invalidate(id.file(), true).map_err(failure)?;
         }
@@ -125,11 +119,11 @@ impl Models {
     }
     pub fn bind(
         &self,
-        gal: &mut VulkanicGal,
+        gal: &Gpu,
         world: &mut SurfaceRenderState3D,
         weapon: &mut SurfaceRenderState3D,
         shadows: &mut ShadowRenderState3D,
-    ) -> GalResult<()> {
+    ) -> GraphicsResult<()> {
         for (&id, m) in &self.gpu {
             m.bind_samplers(gal, world)?;
             if id.is_weapon() {
@@ -146,7 +140,7 @@ impl Models {
                 .expect("validated prop/model fit"),
         )
     }
-    pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
+    pub fn release(&mut self, gal: &Gpu) -> GraphicsResult<()> {
         for m in self.gpu.values_mut() {
             m.release(gal)?;
         }

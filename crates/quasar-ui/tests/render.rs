@@ -1,4 +1,5 @@
 #![cfg(feature = "render2d")]
+use quasar_frame::Gpu;
 
 use quasar_frame::OffscreenTarget;
 use quasar_render_2d::{DisplayOptions, LoadOp, RenderState2D, Textures};
@@ -6,7 +7,6 @@ use quasar_ui::{
     ActionId, BitmapTextMeasure, Edges, Layer, LayoutItem, Length, PanelLayout, Rect, Theme, Ui,
     UiRenderer, UiText, Widget,
 };
-use vulkanic_gal::BackendChoice;
 
 #[test]
 #[ignore = "requires a Vulkan-capable graphics device"]
@@ -53,12 +53,11 @@ fn ui_renders_into_a_shared_offscreen_frame_and_resources_balance() {
     let mut canvas = quasar_render_2d::Canvas::new(480, 270).unwrap();
     canvas.clear = quasar_render_2d::Color([8, 10, 16, 255]);
     UiRenderer::new().draw(&mut canvas, &ui);
-    let mut gal =
-        vulkanic_gal::VulkanicGal::create(BackendChoice::Vulkan, "quasar ui test").unwrap();
-    let mut state_2d = RenderState2D::new(&mut gal).unwrap();
-    let mut target = OffscreenTarget::new(&mut gal, 480, 270).unwrap();
+    let gal = Gpu::headless().unwrap();
+    let mut state_2d = RenderState2D::new(&gal).unwrap();
+    let target = OffscreenTarget::new(&gal, 480, 270).unwrap();
     let report = target
-        .render(&mut gal, |gal, target| {
+        .render(&gal, |gal, target| {
             let prepared = state_2d.prepare(
                 gal,
                 &canvas,
@@ -74,11 +73,20 @@ fn ui_renders_into_a_shared_offscreen_frame_and_resources_balance() {
     let colors: std::collections::BTreeSet<_> =
         report.rgba.as_chunks::<4>().0.iter().copied().collect();
     assert!(colors.len() >= 3);
-    target.release(&mut gal).unwrap();
-    state_2d.release(&mut gal).unwrap();
-    gal.retire_through(gal.latest_submission_id()).unwrap();
-    let metrics = gal.metrics();
-    assert_eq!(metrics.resource_creates, metrics.resource_destroys);
+    target.release(&gal).unwrap();
+    state_2d.release(&gal).unwrap();
+
+    drop(state_2d);
+    gal.wait().unwrap();
+    assert_eq!(
+        gal.instance
+            .generate_report()
+            .unwrap()
+            .hub
+            .buffers
+            .num_kept_from_user,
+        0
+    );
 }
 
 #[cfg(feature = "text-render2d")]
@@ -164,16 +172,15 @@ fn shaped_text_renders_through_shared_gal_and_reuses_atlas_pages() {
     );
     let mut ui_renderer = UiRenderer::new();
     ui_renderer.enable_text(renderer);
-    let mut gal =
-        vulkanic_gal::VulkanicGal::create(BackendChoice::Vulkan, "quasar shaped ui test").unwrap();
-    let mut state_2d = RenderState2D::new(&mut gal).unwrap();
-    let mut target = OffscreenTarget::new(&mut gal, 480, 200).unwrap();
+    let gal = Gpu::headless().unwrap();
+    let mut state_2d = RenderState2D::new(&gal).unwrap();
+    let target = OffscreenTarget::new(&gal, 480, 200).unwrap();
     let mut textures = Textures::default();
     let mut last_uploads = 0;
     let mut last_upload_bytes = 0;
     for frame in 0..2 {
         let report = target
-            .render(&mut gal, |gal, target| {
+            .render(&gal, |gal, target| {
                 ui_renderer.prepare_text(&mut state_2d, gal, &mut textures, &ui)?;
                 let mut canvas = quasar_render_2d::Canvas::new(480, 200).unwrap();
                 canvas.clear = quasar_render_2d::Color([8, 10, 16, 255]);
@@ -207,11 +214,20 @@ fn shaped_text_renders_through_shared_gal_and_reuses_atlas_pages() {
         last_uploads = stats.uploads;
         last_upload_bytes = stats.upload_bytes;
     }
-    target.release(&mut gal).unwrap();
-    state_2d.release(&mut gal).unwrap();
-    gal.retire_through(gal.latest_submission_id()).unwrap();
-    let metrics = gal.metrics();
-    assert_eq!(metrics.resource_creates, metrics.resource_destroys);
+    target.release(&gal).unwrap();
+    state_2d.release(&gal).unwrap();
+
+    drop(state_2d);
+    gal.wait().unwrap();
+    assert_eq!(
+        gal.instance
+            .generate_report()
+            .unwrap()
+            .hub
+            .buffers
+            .num_kept_from_user,
+        0
+    );
 }
 
 #[cfg(feature = "text-render2d")]
@@ -291,13 +307,12 @@ fn shaped_text_clipping_and_resize_stay_inside_logical_bounds() {
     );
     let mut ui_renderer = UiRenderer::new();
     ui_renderer.enable_text(renderer);
-    let mut gal =
-        vulkanic_gal::VulkanicGal::create(BackendChoice::Vulkan, "quasar text clip test").unwrap();
-    let mut state_2d = RenderState2D::new(&mut gal).unwrap();
-    let mut target = OffscreenTarget::new(&mut gal, 480, 200).unwrap();
+    let gal = Gpu::headless().unwrap();
+    let mut state_2d = RenderState2D::new(&gal).unwrap();
+    let target = OffscreenTarget::new(&gal, 480, 200).unwrap();
     let mut textures = Textures::default();
     let report = target
-        .render(&mut gal, |gal, target| {
+        .render(&gal, |gal, target| {
             ui_renderer.prepare_text(&mut state_2d, gal, &mut textures, &ui)?;
             let mut canvas = quasar_render_2d::Canvas::new(480, 200).unwrap();
             canvas.clear = quasar_render_2d::Color([8, 10, 16, 255]);
@@ -337,7 +352,7 @@ fn shaped_text_clipping_and_resize_stay_inside_logical_bounds() {
     );
     let uploads = ui_renderer.text().unwrap().gpu().stats().uploads;
     let second = target
-        .render(&mut gal, |gal, target| {
+        .render(&gal, |gal, target| {
             ui_renderer.prepare_text(&mut state_2d, gal, &mut textures, &ui)?;
             let mut canvas = quasar_render_2d::Canvas::new(480, 200).unwrap();
             ui_renderer.draw(&mut canvas, &ui);
@@ -358,9 +373,18 @@ fn shaped_text_clipping_and_resize_stay_inside_logical_bounds() {
         uploads,
         "resizing should not re-upload unchanged glyph pages"
     );
-    target.release(&mut gal).unwrap();
-    state_2d.release(&mut gal).unwrap();
-    gal.retire_through(gal.latest_submission_id()).unwrap();
-    let metrics = gal.metrics();
-    assert_eq!(metrics.resource_creates, metrics.resource_destroys);
+    target.release(&gal).unwrap();
+    state_2d.release(&gal).unwrap();
+
+    drop(state_2d);
+    gal.wait().unwrap();
+    assert_eq!(
+        gal.instance
+            .generate_report()
+            .unwrap()
+            .hub
+            .buffers
+            .num_kept_from_user,
+        0
+    );
 }

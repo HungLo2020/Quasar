@@ -1,5 +1,10 @@
 # Model loading and GPU assets
 
+Native graphics APIs now use unmodified wgpu through VulkanicGAL. See
+[native migration](native-wgpu-migration.md) for native views/command buffers, WGSL, Drop ownership,
+backend selection and replacement of old slot/receipt APIs. Historical benchmark
+figures describe their recorded release.
+
 The CPU model layer extends `quasar-assets`; the optional GPU adapter lives in
 `quasar-render-3d`. Model decoding does not depend on GAL, an editor, an ECS,
 scene storage or a window. Renderer consumers can still upload raw meshes and
@@ -131,20 +136,18 @@ live asset generations after invalidation or shadow resizing.
 
 ## Replacement, lifetimes and failure
 
-Upload a complete candidate before swapping application-owned generations. An
-upload failure releases partial GPU allocations and leaves the current generation
-untouched. Both generations can coexist while their prepared commands remain
-queued. Uploaded models reject release while mesh commands retain them; accepted
-GPU work retires through GAL, including resources retained by descriptor caches.
+Upload a complete candidate before swapping application-owned generations. Failed
+uploads drop partial native owners and leave the current generation unchanged.
+Native commands retain old mesh buffers, textures and samplers, so releasing an
+old UploadedModel no longer fails while a command buffer remains prepared.
+Dropping encoded work abandons it; queue submission consumes it exactly once.
 
-Submit or abandon retained commands before clearing receiver/shadow binding
-caches, swap generations at the application's chosen boundary, and explicitly
-release the old owner. Clearing caches removes old view/mesh references and sampler
-associations. Rebind the new owner before subsequent preparation. No stale async
-result is applied automatically; callers can compare existing asset revisions.
-For direct GAL consumers of an `UploadedTexture`, include its
-`submission_usage()` in `CommandOp::TrackSubmission` or retain the owner until
-all uses finish. Plain raw handles do not transfer ownership.
+Clear obsolete sampler registrations and bind the new generation at the chosen
+application boundary. Existing encoded commands keep their own native bind groups.
+For direct consumers of UploadedTexture, use its native texture/view/sampler and
+normal native command encoding. No receipt or custom retirement command is needed.
+Do not explicitly destroy resources referenced by pending work. Async asset
+revision comparison remains application-owned.
 
 Nightwatch stages all seven selected models before replacing any active model.
 F5 stages decoding/uploads synchronously as a development reload path. Games
@@ -172,8 +175,8 @@ textures, successful/failed F5-equivalent reloads, resize and gameplay state.
 cargo test --locked -p quasar-assets --features gltf,async
 cargo test --locked -p quasar-render-3d --features model-assets \
   --test model_assets -- --ignored --test-threads=1
-VULKANIC_BACKEND=wgpu cargo test --locked -p quasar-render-3d \
-  --features model-assets,wgpu --test model_assets -- --ignored --test-threads=1
+WGPU_BACKEND=vulkan cargo test --locked -p quasar-render-3d \
+  --features model-assets,vulkan --test model_assets -- --ignored --test-threads=1
 cargo test --locked -p nightwatch --test render -- --ignored --test-threads=1
 ```
 

@@ -4,12 +4,12 @@ use quasar_app::{
     run as run_app,
 };
 use quasar_core::{DisplayOptions, Filter, FixedStepConfig, Scaling};
-use quasar_frame::{CompletionPolicy, FrameSurface};
+use quasar_frame::{CompletionPolicy, FrameSurface, Gpu, GraphicsError, OffscreenTarget};
 use quasar_input::BindingError;
 use quasar_render_2d::{Canvas, LoadOp, RenderState2D, Textures};
 use quasar_window::{DesktopConfig, WindowConfig};
 use std::time::{Duration, Instant};
-use vulkanic_gal::{resources::*, *};
+use vulkanic_gal::*;
 
 #[derive(Debug)]
 struct AppError(Box<dyn std::error::Error>);
@@ -48,15 +48,14 @@ impl From<quasar_render_2d::Error> for AppError {
         Self(Box::new(error))
     }
 }
-impl From<GalError> for AppError {
-    fn from(error: GalError) -> Self {
+impl From<GraphicsError> for AppError {
+    fn from(error: GraphicsError) -> Self {
         Self(Box::new(error))
     }
 }
 type AppResult<T> = std::result::Result<T, AppError>;
 
 pub fn run(options: Options, session: Session, controls: tilequest::controls::Controls) -> Result {
-    set_gpu_timestamps_requested(options.benchmark.is_some());
     let config = AppConfig {
         window: WindowConfig {
             title: "Tilequest / Quasar".into(),
@@ -77,7 +76,7 @@ pub fn run(options: Options, session: Session, controls: tilequest::controls::Co
         controls,
         gal: None,
         renderer: None,
-        surface: FrameSurface::new(960, 640),
+        surface: None,
         display: DisplayOptions {
             scaling: Scaling::Integer,
             ..Default::default()
@@ -90,6 +89,7 @@ pub fn run(options: Options, session: Session, controls: tilequest::controls::Co
         draw_stats: quasar_tilemap::render::DrawStats::default(),
         baseline: None,
         gpu: Vec::new(),
+        gpu_pending: Vec::new(),
         last_gpu: 0,
         pause_pending: false,
     };
@@ -101,9 +101,9 @@ struct App {
     options: Options,
     session: Session,
     controls: tilequest::controls::Controls,
-    gal: Option<VulkanicGal>,
+    gal: Option<Gpu>,
     renderer: Option<RenderState2D>,
-    surface: FrameSurface,
+    surface: Option<FrameSurface>,
     display: DisplayOptions,
     size: (u32, u32),
     frames: u64,
@@ -113,6 +113,7 @@ struct App {
     draw_stats: quasar_tilemap::render::DrawStats,
     baseline: Option<(u64, u64, u64, u64)>,
     gpu: Vec<u64>,
+    gpu_pending: Vec<quasar_frame::GpuTiming>,
     last_gpu: u64,
     pause_pending: bool,
 }
@@ -123,34 +124,15 @@ impl App {
             .window
             .ok_or("desktop runner did not provide a window")?;
         let size = window.native().inner_size();
-        let mut gal = VulkanicGal::create_windowed_vulkan(
-            "Tilequest",
-            window.shared_native(),
-            FrameSurfaceDesc {
-                label: "tilequest-surface".into(),
-                extent: extent(size.width, size.height),
-                color_format: TextureFormat::Bgra8Unorm,
-                present_mode: if self.options.benchmark.is_some() {
-                    PresentMode::AutoNoVsync
-                } else {
-                    PresentMode::AutoVsync
-                },
-                max_frames_in_flight: 3,
-            },
-        )?;
-        gal.install_gpu_profile_classifier(GpuProfileClassifier {
-            classify: |kind, _| GpuProfileTag {
-                timing_scope: if matches!(kind, GpuProfiledObject::RenderPass) {
-                    Some(0)
-                } else {
-                    None
-                },
-                ..Default::default()
-            },
-            statistics_scope_name: |_| "tilequest",
-        });
-        self.renderer = Some(RenderState2D::new(&mut gal)?);
-        self.surface = FrameSurface::new(size.width, size.height);
+        let (gal, mut surface) =
+            FrameSurface::for_window(window.shared_native(), size.width, size.height)?;
+        if self.options.benchmark.is_some() {
+            surface.config.present_mode = PresentMode::AutoNoVsync;
+            surface.reconfigure(&gal)?;
+        }
+        self.renderer = Some(RenderState2D::new(&gal)?);
+        self.surface = Some(surface);
+        gal.set_gpu_timestamps(self.options.benchmark.is_some());
         self.gal = Some(gal);
         self.size = (size.width, size.height);
         self.started = Instant::now();
@@ -162,47 +144,44 @@ impl App {
         let renderer = self.renderer.as_mut().ok_or("missing renderer")?;
         let session = &self.session;
         let mut draw_stats = quasar_tilemap::render::DrawStats::default();
-        let report = self
-            .surface
-            .render(gal, CompletionPolicy::Poll, |gal, target| {
-                let (canvas, stats) = tilequest::scene(
-                    &session.world,
-                    &session.state,
-                    &session.art,
-                    self.display.filter,
-                )
-                .map_err(|e| GalError::invalid_argument(e.to_string()))?;
-                draw_stats = stats;
-                let prepared = renderer.prepare(
-                    gal,
-                    &canvas,
-                    &session.art.textures,
-                    target,
-                    self.display,
-                    LoadOp::Clear,
-                )?;
-                Ok(vec![prepared.commands])
-            })?;
+        let report =
+            self.surface
+                .as_mut()
+                .unwrap()
+                .render(gal, CompletionPolicy::Poll, |gal, target| {
+                    let (canvas, stats) = tilequest::scene(
+                        &session.world,
+                        &session.state,
+                        &session.art,
+                        self.display.filter,
+                    )
+                    .map_err(|e| GraphicsError::new(e.to_string()))?;
+                    draw_stats = stats;
+                    let prepared = renderer.prepare(
+                        gal,
+                        &canvas,
+                        &session.art.textures,
+                        target,
+                        self.display,
+                        LoadOp::Clear,
+                    )?;
+                    Ok(vec![prepared.commands])
+                })?;
         let Some(report) = report else {
             return Ok(Flow::Continue);
         };
         self.frames += 1;
         self.draw_stats = draw_stats;
         if self.frames == 64 {
-            let m = gal.backend_runtime_metrics();
-            self.baseline = Some((
-                gal.metrics().resource_creates,
-                gal.metrics().resource_destroys,
-                m.native_wait_count,
-                m.native_device_wait_idle_count,
-            ));
+            self.baseline = Some((0, 0, 0, 0));
         }
         if self.options.benchmark.is_some() && self.frames > 64 {
             self.samples.push(report.cpu_frame_nanos);
-            let metrics = gal.backend_runtime_metrics();
-            if metrics.gpu_timestamp_status > self.last_gpu {
-                self.gpu.push(metrics.gpu_frame_total_nanos);
-                self.last_gpu = metrics.gpu_timestamp_status;
+            self.last_gpu += report.blocking_waits;
+            if let Some(t) = &report.gpu_timing {
+                self.gpu_pending.push(t.clone());
+            } else if let Some(n) = report.gpu_frame_nanos {
+                self.gpu.push(n);
             }
         }
         if self.options.exercise {
@@ -246,13 +225,16 @@ impl App {
                 self.stage = 3;
             }
             3 if self.frames >= 18 => {
-                self.surface.resize(0, 0);
+                self.surface.as_mut().unwrap().resize(0, 0);
                 let gal = self.gal.as_mut().unwrap();
-                if self.surface.acquire(gal)?.is_some() {
+                if self.surface.as_mut().unwrap().acquire(gal)?.is_some() {
                     return Err("zero-sized surface must defer".into());
                 }
                 let size = window.native().inner_size();
-                self.surface.resize(size.width, size.height);
+                self.surface
+                    .as_mut()
+                    .unwrap()
+                    .resize(size.width, size.height);
                 self.display.filter = Filter::Linear;
                 self.display.scaling = Scaling::Fit;
                 self.stage = 4;
@@ -263,8 +245,8 @@ impl App {
     }
 
     fn teardown(&mut self, outputs: bool) -> Result {
-        if let Some(mut gal) = self.gal.take() {
-            self.surface.finish(&mut gal)?;
+        if let Some(gal) = self.gal.take() {
+            self.surface.as_mut().unwrap().finish(&gal)?;
             if let Some(mut renderer) = self.renderer.take() {
                 if outputs {
                     let pixels = if self.options.screenshot.is_some() {
@@ -275,7 +257,7 @@ impl App {
                             Filter::Nearest,
                         )?;
                         Some(capture(
-                            &mut gal,
+                            &gal,
                             &mut renderer,
                             &canvas,
                             &self.session.art.textures,
@@ -285,30 +267,45 @@ impl App {
                     };
                     self.session.outputs(&self.options, pixels.as_deref())?;
                     if let Some(path) = &self.options.benchmark {
-                        let base = self.baseline.ok_or("benchmark needs more than 64 frames")?;
-                        let metrics = gal.backend_runtime_metrics();
+                        self.baseline.ok_or("benchmark needs more than 64 frames")?;
                         let mut cpu = self.samples.clone();
                         cpu.sort_unstable();
-                        let mut gpu = self.gpu.clone();
+                        let mut gpu: Vec<_> = self
+                            .gpu
+                            .iter()
+                            .copied()
+                            .chain(
+                                self.gpu_pending
+                                    .iter()
+                                    .filter_map(quasar_frame::GpuTiming::nanos),
+                            )
+                            .collect();
                         gpu.sort_unstable();
                         quasar_storage::write_json(
                             path,
-                            &serde_json::json!({"frames":self.frames,"measured_frames":cpu.len(),"cpu_frame_p50_ms":cpu.get(cpu.len()/2).map(|v|*v as f64/1e6),"gpu_frame_p50_ms":gpu.get(gpu.len()/2).map(|v|*v as f64/1e6),"visited_cells":self.draw_stats.visited_cells,"emitted_tiles":self.draw_stats.emitted_tiles,"stored_cells":self.session.world.runtime.stored_cells(),"resource_creates":gal.metrics().resource_creates-base.0,"resource_destroys":gal.metrics().resource_destroys-base.1,"timeline_waits":metrics.native_wait_count-base.2,"device_idle_waits":metrics.native_device_wait_idle_count-base.3,"render_stats":{"quads":renderer.stats().quads,"batches":renderer.stats().batches,"geometry_bytes":renderer.stats().geometry_upload_bytes,"texture_bytes":renderer.stats().texture_upload_bytes},"scope":"native map traversal, draw-list construction, GPU rendering and presentation; first 64 frames excluded; one simulation tick per attempted frame"}),
+                            &serde_json::json!({"frames":self.frames,"measured_frames":cpu.len(),"cpu_frame_p50_ms":cpu.get(cpu.len()/2).map(|v|*v as f64/1e6),"gpu_frame_p50_ms":gpu.get(gpu.len()/2).map(|v|*v as f64/1e6),"visited_cells":self.draw_stats.visited_cells,"emitted_tiles":self.draw_stats.emitted_tiles,"stored_cells":self.session.world.runtime.stored_cells(),"blocking_waits":self.last_gpu,"render_stats":{"quads":renderer.stats().quads,"batches":renderer.stats().batches,"geometry_bytes":renderer.stats().geometry_upload_bytes,"texture_bytes":renderer.stats().texture_upload_bytes},"scope":"native map traversal, draw-list construction, GPU rendering and presentation; first 64 frames excluded; one simulation tick per attempted frame"}),
                         )?;
                     }
                 }
-                renderer.release(&mut gal)?;
+                renderer.release(&gal)?;
             }
-            self.surface.release_targets(&mut gal)?;
-            gal.retire_through(gal.latest_submission_id())?;
-            gal.shutdown_frame_surface()?;
-            println!(
-                "resources_created={} resources_destroyed={}",
-                gal.metrics().resource_creates,
-                gal.metrics().resource_destroys
-            );
-            if gal.metrics().resource_creates != gal.metrics().resource_destroys {
-                return Err("resource imbalance after native teardown".into());
+            self.surface.take();
+            gal.wait()?;
+            if let Some(report) = gal.instance.generate_report() {
+                let h = report.hub;
+                println!(
+                    "live_buffers={} live_textures={} live_views={}",
+                    h.buffers.num_kept_from_user,
+                    h.textures.num_kept_from_user,
+                    h.texture_views.num_kept_from_user
+                );
+                if h.buffers.num_kept_from_user
+                    + h.textures.num_kept_from_user
+                    + h.texture_views.num_kept_from_user
+                    != 0
+                {
+                    return Err("resource ownership leaked".into());
+                }
             }
         }
         Ok(())
@@ -330,7 +327,10 @@ impl Application for App {
             if let (Some(renderer), Some(gal)) = (&mut self.renderer, &mut self.gal) {
                 let _ = renderer.release_targets(gal);
             }
-            self.surface.resize(context.size.0, context.size.1);
+            self.surface
+                .as_mut()
+                .unwrap()
+                .resize(context.size.0, context.size.1);
             self.size = context.size;
         }
         if context.focus_changed == Some(false) {
@@ -411,119 +411,27 @@ impl DesktopApplication for App {
     }
 }
 
-fn extent(w: u32, h: u32) -> Extent3d {
-    Extent3d {
-        width: w,
-        height: h,
-        depth: 1,
-    }
-}
-fn barrier(resource: Handle, before: TextureUsageState, after: TextureUsageState) -> CommandOp {
-    CommandOp::Barrier(ResourceBarrier {
-        resource,
-        subresources: None,
-        before,
-        after,
-        src_queue: QueueClass::Graphics,
-        dst_queue: QueueClass::Graphics,
-    })
-}
 fn capture(
-    gal: &mut VulkanicGal,
+    gpu: &Gpu,
     state: &mut RenderState2D,
     canvas: &Canvas,
     textures: &Textures,
 ) -> Result<Vec<u8>> {
-    let size = extent(canvas.width(), canvas.height());
-    let image = gal.create_texture(TextureDesc {
-        label: "quest-snapshot".into(),
-        dimension: TextureDimension::D2,
-        format: TextureFormat::Rgba8Unorm,
-        extent: size,
-        mip_levels: 1,
-        array_layers: 1,
-        usages: vec![TextureUsage::ColorAttachment, TextureUsage::TransferSrc],
-    })?;
-    let view = gal.create_texture_view(TextureViewDesc {
-        label: "quest-snapshot-view".into(),
-        texture: image,
-        format: TextureFormat::Rgba8Unorm,
-        base_mip: 0,
-        mip_count: 1,
-        base_layer: 0,
-        layer_count: 1,
-    })?;
-    let target = gal.create_render_target(RenderTargetDesc {
-        label: "quest-snapshot-target".into(),
-        color_views: vec![view],
-        depth_stencil_view: None,
-        extent: size,
-    })?;
-    let readback = gal.create_buffer(BufferDesc {
-        label: "quest-snapshot-read".into(),
-        size: u64::from(size.width) * u64::from(size.height) * 4,
-        memory: MemoryDomain::Readback,
-        usages: vec![BufferUsage::TransferDst, BufferUsage::HostRead],
-    })?;
-    let result = (|| {
-        let (token, _) = quasar_frame::record_and_submit(gal, |gal| {
-            let prepared = state.prepare(
-                gal,
-                canvas,
-                textures,
-                target,
-                DisplayOptions::default(),
-                LoadOp::Clear,
-            )?;
-            let mut operations = vec![barrier(
-                image,
-                TextureUsageState::Undefined,
-                TextureUsageState::ColorAttachment,
-            )];
-            operations.extend(prepared.commands.operations);
-            operations.extend([
-                barrier(
-                    image,
-                    TextureUsageState::ColorAttachment,
-                    TextureUsageState::TransferSrc,
-                ),
-                CommandOp::CopyTextureToBuffer(BufferImageCopyRegion {
-                    buffer: readback,
-                    buffer_offset: 0,
-                    bytes_per_row: size.width * 4,
-                    rows_per_image: size.height,
-                    texture: image,
-                    texture_mip: 0,
-                    texture_layer: 0,
-                    texture_origin: TextureOrigin3d { x: 0, y: 0, z: 0 },
-                    extent: size,
-                }),
-                barrier(
-                    readback,
-                    TextureUsageState::TransferDst,
-                    TextureUsageState::TransferSrc,
-                ),
-                CommandOp::HostReadBuffer {
-                    buffer: readback,
-                    offset: 0,
-                    size: u64::from(size.width) * u64::from(size.height) * 4,
-                },
-            ]);
-            Ok(vec![CommandList::from(CommandListDesc {
-                label: "quest-snapshot".into(),
-                operations,
-            })])
-        })?;
-        gal.retire_through(token.submission)?;
-        gal.completed_host_reads()
-            .into_iter()
-            .find(|r| r.buffer == readback && r.submission == token.submission)
-            .map(|r| r.bytes)
-            .ok_or_else(|| GalError::backend("missing quest snapshot"))
-    })();
-    state.release_targets(gal)?;
-    for h in [target, view, image, readback] {
-        gal.retire(h)?;
-    }
-    Ok(result?)
+    let target = OffscreenTarget::new(gpu, canvas.width(), canvas.height())?;
+    Ok(target
+        .render(gpu, |gpu, target| {
+            Ok(vec![
+                state
+                    .prepare(
+                        gpu,
+                        canvas,
+                        textures,
+                        target,
+                        DisplayOptions::default(),
+                        LoadOp::Clear,
+                    )?
+                    .commands,
+            ])
+        })?
+        .rgba)
 }

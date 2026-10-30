@@ -18,7 +18,9 @@ assert_eq!(summary.cpu_frame.p99, 2_000_000);
 ```
 
 With the default `frame` feature, `FrameSample::from_frame_report` maps
-`quasar_frame::FrameReport`/VulkanicGAL `SubmitProfile` fields. Add renderer
+`quasar_frame::FrameReport` CPU measurements and optional frame-correlated native
+GPU timing handles. Poll/wait before final summaries to resolve asynchronous GPU
+queries. Backend-private validation and resource counters are not fabricated. Add renderer
 draw/upload counters with `with_renderer_stats`.
 
 - `FrameProfiler`: bounded ring, total frame count, min/mean/p50/p95/p99/max.
@@ -55,3 +57,9 @@ New fields have deserialization defaults for old artifacts.
 
 See [submission benchmarks](../../docs/render-submission.md) for configuration,
 Nightwatch integration and the generic repeated-command benchmark runner.
+
+Native frame samples mark backend-private counters unavailable. Their summary
+distributions contain zero samples, rather than fake zero-cost measurements.
+Configured resource-create/host-write thresholds fail explicitly when those
+measurements are unavailable; draw/upload and CPU/GPU frame thresholds remain
+available through renderer statistics and native timing.

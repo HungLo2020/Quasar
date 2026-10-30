@@ -1,5 +1,10 @@
 # Indexed 2D rendering, pixel priority and live tilemaps
 
+Native graphics APIs now use unmodified wgpu through VulkanicGAL. See
+[native migration](native-wgpu-migration.md) for native views/command buffers, WGSL, Drop ownership,
+backend selection and replacement of old slot/receipt APIs. Historical benchmark
+figures describe their recorded release.
+
 These APIs use the existing `Canvas`, immutable `Textures`, GAL resource
 registration, `DynamicTexture`, `AnimationClip`, asset server and tilemap runtime.
 They require no ECS, window, editor, application runner or game-specific asset
@@ -71,8 +76,8 @@ For timed sequences, reuse `AnimationClip::frame_at(elapsed_ms)` as an index int
 that bank list; the animation clip does not own textures or a clock.
 For continuously changing colors, create a 256x1 `DynamicTexture` and stage
 `palette.image().rgba()` through the existing update API. Both index and palette
-resources participate in normal dynamic upload, pending-command tracking and
-retirement. Updating a palette uploads 1,024 bytes; it never reuploads the index
+resources use normal immutable dynamic upload generations retained by native
+command buffers. Updating a palette uploads 1,024 bytes; it never reuploads the index
 image. CPU snapshots use corresponding immutable palette images.
 
 ## Per-pixel masks and priority
@@ -118,21 +123,21 @@ existing transforms.
 
 The CPU implementation uses a private byte plane allocated only for masked
 canvases. GPU execution uses existing GAL stencil pipelines and a private
-Depth24Stencil8 attachment per active transient slot/target. The original color
+Depth24PlusStencil8 attachment per cached target size. The original color
 attachment is reused; caller depth/stencil is untouched. Ordinary canvases need
 no mask target. Mask state starts at zero for *each prepare/rasterize*, including
 `LoadOp::Load`; color-load semantics are independent. To share masks, place the
 operations in one canvas. This is not persistent cross-pass stencil state.
 
-Three existing submission-tracked slots bound prepared-frame resources. Private
-mask targets are cached (up to eight per slot), released by `release_targets`
-and `release`, and protected against pending commands. The quad storage remains
-80 bytes: the existing unused axis padding now stores two integer effect words.
-Bindings are keyed by source and palette identities. Ordinary draws bind their
-source as the unused palette input, requiring no fallback image allocation or
-upload. Vulkan and wgpu use the same GAL shaders/stencil commands. The existing
-OpenGL path still rejects the renderer's explicit-binding shader convention;
-its Cargo configuration compiles, but runtime drawing is not supported here.
+Private stencil targets are cached (up to eight sizes) and cleared each prepared
+pass, then released by `release_targets`/`release` or owner Drop. Native command
+buffers retain needed resources after cache invalidation. Quad storage remains
+80 bytes with two integer effect words in axis padding. Source/palette native view
+identities key bindings. Ordinary draws bind their source as the unused palette
+input and need no fallback allocation/upload. All enabled backends use the same
+WGSL/stencil declarations. Backend availability and native validation still depend
+on driver features; GLES currently cannot compile these storage buffers on this
+host's upstream-selected GLSL 3.3 target.
 
 ## Transactional live edits
 
@@ -191,7 +196,7 @@ cargo test --locked --workspace
 cargo check --locked --workspace --all-targets --all-features
 cargo clippy --locked -p quasar-render-2d -p quasar-tilemap -p tilequest -p quasar-composition --all-targets --all-features -- -D warnings
 cargo test --locked -p quasar-render-2d --all-features -p quasar-composition -p tilequest --lib -- --include-ignored --test-threads=1
-VULKANIC_BACKEND=wgpu cargo test --locked -p quasar-render-2d --all-features --lib -- --include-ignored --test-threads=1
+WGPU_BACKEND=vulkan cargo test --locked -p quasar-render-2d --all-features --lib -- --include-ignored --test-threads=1
 cargo test --locked -p quasar-tilemap --release benchmark_live_edits -- --ignored --nocapture
 python3 tools/verify_tilemap.py
 python3 tools/benchmark_tilemap.py --output /tmp/quasar-map-benchmark.json
@@ -203,7 +208,7 @@ Tests cover mounted asset-cache/Arc sharing, preloaded metadata errors, real GAL
 atlas reuse with no upload, palette validation/cycling/switching/animation,
 transparent indices, all eight tile orientations, pixel masks and clipping,
 MicroMages/Jackal priority cases, reverse prepared-frame submission and palette
-retirement, zero-GPU-allocation warm preparations, incremental-vs-rebuilt randomized
+native retention, zero-image-upload unchanged preparations, incremental-vs-rebuilt randomized
 queries, finite/negative coordinates, duplicate edits, pointer-stable existing
 cell buffers and all-or-nothing limits. GPU output is compared to independent CPU
 reference pixels (exact opaque colors; at most one byte for blended channels).

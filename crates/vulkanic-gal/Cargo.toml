@@ -1,48 +1,24 @@
 [package]
 name = "vulkanic-gal"
 version.workspace = true
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-ash = { version = "0.38", default-features = false, features = ["loaded", "std"], optional = true }
-ash-window = { version = "0.13", optional = true }
-raw-window-handle = { workspace = true, optional = true }
-glow = { version = "0.18", optional = true }
-libloading = { version = "0.8", optional = true }
-libc = { version = "0.2", optional = true }
-shaderc = { version = "0.10.1", features = ["build-from-source"], optional = true }
-wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "wgsl", "naga-ir"], optional = true }
-naga = { version = "30.0.1", features = ["spv-in"], optional = true }
-smallvec = "1.15.2"
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
-tracy-client = { version = "0.18.4", default-features = false, features = ["enable", "manual-lifetime", "only-localhost"], optional = true }
-winit = { workspace = true, optional = true }
-
-[dev-dependencies]
-winit.workspace = true
-xxhash-rust = { version = "0.8", features = ["xxh32"] }
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl"] }
 
 [features]
-default = ["vulkan"]
-vulkan = [
-    "dep:ash",
-    "dep:ash-window",
-    "dep:raw-window-handle",
-    "dep:libloading",
-    "dep:libc",
-    "dep:shaderc",
-]
-opengl = ["dep:glow", "dep:libloading", "dep:libc"]
-wgpu = [
-    "dep:wgpu",
-    "dep:naga",
-    "dep:raw-window-handle",
-    "dep:shaderc",
-]
-tracy = ["dep:tracy-client"]
-# Test GAL constructors and hooks for renderer tests in dependent crates;
-# enable from [dev-dependencies] only.
-test-support = ["dep:winit"]
+default = ["vulkan", "metal", "dx12", "gles"]
+vulkan = ["wgpu/vulkan"]
+metal = ["wgpu/metal"]
+dx12 = ["wgpu/dx12"]
+gles = ["wgpu/gles"]
+webgpu = ["wgpu/webgpu"]
+webgl = ["wgpu/webgl"]
+spirv = ["wgpu/spirv"]
+glsl = ["wgpu/glsl"]
+naga-ir = ["wgpu/naga-ir"]
+counters = ["wgpu/counters"]
+trace = ["wgpu/trace"]

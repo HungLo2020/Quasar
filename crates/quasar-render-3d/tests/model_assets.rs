@@ -1,8 +1,8 @@
-#![cfg(all(feature = "model-assets", any(feature = "vulkan", feature = "wgpu")))]
+#![cfg(feature = "model-assets")]
 use quasar_assets::model::*;
+use quasar_frame::Gpu;
 use quasar_frame::OffscreenTarget;
 use quasar_render_3d::*;
-use vulkanic_gal::*;
 fn model(color: [u8; 4], unlit: bool) -> Model3D {
     let vertices = [[-1., -1., 0.], [1., -1., 0.], [1., 1., 0.], [-1., 1., 0.]]
         .into_iter()
@@ -44,16 +44,8 @@ fn model(color: [u8; 4], unlit: bool) -> Model3D {
         ..Model3D::default()
     }
 }
-fn gal() -> VulkanicGal {
-    VulkanicGal::create(
-        if cfg!(feature = "vulkan") {
-            BackendChoice::Vulkan
-        } else {
-            BackendChoice::Wgpu
-        },
-        "GPU model assets",
-    )
-    .unwrap()
+fn gal() -> Gpu {
+    Gpu::headless().unwrap()
 }
 fn camera() -> LitCamera3D {
     LitCamera3D {
@@ -70,11 +62,11 @@ fn center(image: &[u8]) -> [u8; 4] {
 #[test]
 #[ignore = "requires GPU"]
 fn uploaded_generations_keep_pending_commands_alive_and_reject_invalid_replacements() {
-    let mut gal = gal();
+    let gal = gal();
     let data = model([255, 0, 0, 0], true);
-    let mut old = UploadedModel::upload(&mut gal, &data, ModelUploadOptions::default()).unwrap();
+    let mut old = UploadedModel::upload(&gal, &data, ModelUploadOptions::default()).unwrap();
     let mut renderer = SurfaceRenderState3D::with_submission(
-        &mut gal,
+        &gal,
         0,
         0,
         SubmissionConfig {
@@ -83,11 +75,11 @@ fn uploaded_generations_keep_pending_commands_alive_and_reject_invalid_replaceme
         },
     )
     .unwrap();
-    let mut target = OffscreenTarget::new(&mut gal, 64, 64).unwrap();
-    old.bind_samplers(&mut gal, &mut renderer).unwrap();
+    let target = OffscreenTarget::new(&gal, 64, 64).unwrap();
+    old.bind_samplers(&gal, &mut renderer).unwrap();
     let old_commands = renderer
         .prepare(
-            &mut gal,
+            &gal,
             target.target(),
             camera(),
             Lighting::default(),
@@ -97,20 +89,18 @@ fn uploaded_generations_keep_pending_commands_alive_and_reject_invalid_replaceme
         )
         .unwrap()
         .commands;
-    assert!(old.release(&mut gal).is_err());
-    assert!(renderer.clear_bindings(&mut gal).is_err());
+    old.release(&gal).unwrap();
+    renderer.clear_bindings(&gal).unwrap();
     let mut bad = data.clone();
     bad.primitives[0].material = 99;
-    let before = gal.metrics().resource_creates;
-    assert!(UploadedModel::upload(&mut gal, &bad, ModelUploadOptions::default()).is_err());
-    assert_eq!(before, gal.metrics().resource_creates);
+    assert!(UploadedModel::upload(&gal, &bad, ModelUploadOptions::default()).is_err());
     let mut data = data;
     data.images[0].rgba = vec![0, 255, 0, 255];
-    let mut new = UploadedModel::upload(&mut gal, &data, ModelUploadOptions::default()).unwrap();
-    new.bind_samplers(&mut gal, &mut renderer).unwrap();
+    let mut new = UploadedModel::upload(&gal, &data, ModelUploadOptions::default()).unwrap();
+    new.bind_samplers(&gal, &mut renderer).unwrap();
     let new_commands = renderer
         .prepare(
-            &mut gal,
+            &gal,
             target.target(),
             camera(),
             Lighting::default(),
@@ -120,36 +110,26 @@ fn uploaded_generations_keep_pending_commands_alive_and_reject_invalid_replaceme
         )
         .unwrap()
         .commands;
-    let green = target
-        .render(&mut gal, |_, _| Ok(vec![new_commands.clone()]))
-        .unwrap();
+    let green = target.render(&gal, |_, _| Ok(vec![new_commands])).unwrap();
     assert_eq!(center(&green.rgba), [0, 255, 0, 255]);
-    let red = target
-        .render(&mut gal, |_, _| Ok(vec![old_commands.clone()]))
-        .unwrap();
+    let red = target.render(&gal, |_, _| Ok(vec![old_commands])).unwrap();
     assert_eq!(center(&red.rgba), [255, 0, 0, 255]);
-    assert!(old.release(&mut gal).is_err());
-    drop(old_commands);
-    old.release(&mut gal).unwrap();
+    old.release(&gal).unwrap();
+    old.release(&gal).unwrap();
     assert!(old.bounds().is_none());
     assert!(old.draws(Mat4::IDENTITY).is_empty());
-    old.release(&mut gal).unwrap();
-    assert!(gal.retired_while_referenced() > 0);
-    drop(new_commands);
-    renderer.clear_bindings(&mut gal).unwrap();
-    new.release(&mut gal).unwrap();
-    renderer.release(&mut gal).unwrap();
-    target.release(&mut gal).unwrap();
-    gal.retire_through(gal.latest_submission_id()).unwrap();
-    assert_eq!(
-        gal.metrics().resource_creates,
-        gal.metrics().resource_destroys
-    );
+    old.release(&gal).unwrap();
+    renderer.clear_bindings(&gal).unwrap();
+    new.release(&gal).unwrap();
+    renderer.release(&gal).unwrap();
+    target.release(&gal).unwrap();
+
+    gal.wait().unwrap();
 }
 #[test]
 #[ignore = "requires GPU"]
 fn uploaded_mips_and_sampler_overrides_preserve_linear_color_energy() {
-    let mut gal = gal();
+    let gal = gal();
     let mut data = model([255; 4], true);
     data.images[0] = ModelImage {
         width: 8,
@@ -165,13 +145,12 @@ fn uploaded_mips_and_sampler_overrides_preserve_linear_color_energy() {
             .collect(),
     };
     data.textures[0].sampler.mip = Some(TextureFilter::Nearest);
-    let mut uploaded =
-        UploadedModel::upload(&mut gal, &data, ModelUploadOptions::default()).unwrap();
-    let mut renderer = SurfaceRenderState3D::new(&mut gal, 0, 0).unwrap();
-    let mut target = OffscreenTarget::new(&mut gal, 64, 64).unwrap();
-    uploaded.bind_samplers(&mut gal, &mut renderer).unwrap();
+    let mut uploaded = UploadedModel::upload(&gal, &data, ModelUploadOptions::default()).unwrap();
+    let mut renderer = SurfaceRenderState3D::new(&gal, 0, 0).unwrap();
+    let target = OffscreenTarget::new(&gal, 64, 64).unwrap();
+    uploaded.bind_samplers(&gal, &mut renderer).unwrap();
     let image = target
-        .render(&mut gal, |gal, t| {
+        .render(&gal, |gal, t| {
             Ok(vec![
                 renderer
                     .prepare(
@@ -196,16 +175,14 @@ fn uploaded_mips_and_sampler_overrides_preserve_linear_color_energy() {
         .material
         .lit
         .base
-        .texture_view;
-    assert_eq!(gal.texture_view_info(view).unwrap().range.mip_count, 4);
-    renderer.release(&mut gal).unwrap();
-    uploaded.release(&mut gal).unwrap();
-    target.release(&mut gal).unwrap();
-    gal.retire_through(gal.latest_submission_id()).unwrap();
-    assert_eq!(
-        gal.metrics().resource_creates,
-        gal.metrics().resource_destroys
-    );
+        .texture_view
+        .clone();
+    assert_eq!(view.texture().mip_level_count(), 4);
+    renderer.release(&gal).unwrap();
+    uploaded.release(&gal).unwrap();
+    target.release(&gal).unwrap();
+
+    gal.wait().unwrap();
 }
 #[test]
 #[ignore = "requires GPU"]
@@ -216,13 +193,13 @@ fn face_policies_and_mirrored_transforms_match_authored_materials() {
         material_conversion: MaterialConversion::ClassicApproximation,
         ..ModelUploadOptions::default()
     };
-    assert!(UploadedModel::upload(&mut gal, &data, ModelUploadOptions::default()).is_err());
-    let mut single = UploadedModel::upload(&mut gal, &data, options).unwrap();
+    assert!(UploadedModel::upload(&gal, &data, ModelUploadOptions::default()).is_err());
+    let mut single = UploadedModel::upload(&gal, &data, options).unwrap();
     let mut data = data;
     data.materials[0].double_sided = true;
-    let mut double = UploadedModel::upload(&mut gal, &data, options).unwrap();
+    let mut double = UploadedModel::upload(&gal, &data, options).unwrap();
     let mut renderer = SurfaceRenderState3D::with_submission(
-        &mut gal,
+        &gal,
         1,
         0,
         SubmissionConfig {
@@ -231,40 +208,38 @@ fn face_policies_and_mirrored_transforms_match_authored_materials() {
         },
     )
     .unwrap();
-    let mut target = OffscreenTarget::new(&mut gal, 64, 64).unwrap();
+    let target = OffscreenTarget::new(&gal, 64, 64).unwrap();
     let lights = [Light::Directional {
         direction: [0., 0., -1.],
         color: [1.; 3],
         intensity: 1.,
     }];
-    let mut render = |gal: &mut VulkanicGal,
-                      renderer: &mut SurfaceRenderState3D,
-                      asset: &UploadedModel,
-                      root: Mat4| {
-        asset.bind_samplers(gal, renderer).unwrap();
-        target
-            .render(gal, |gal, t| {
-                Ok(vec![
-                    renderer
-                        .prepare(
-                            gal,
-                            t,
-                            camera(),
-                            Lighting {
-                                ambient: [0.; 3],
-                                lights: &lights,
-                                ..Lighting::default()
-                            },
-                            &asset.draws(root),
-                            None,
-                            PassOptions::default(),
-                        )?
-                        .commands,
-                ])
-            })
-            .unwrap()
-            .rgba
-    };
+    let render =
+        |gal: &mut Gpu, renderer: &mut SurfaceRenderState3D, asset: &UploadedModel, root: Mat4| {
+            asset.bind_samplers(gal, renderer).unwrap();
+            target
+                .render(gal, |gal, t| {
+                    Ok(vec![
+                        renderer
+                            .prepare(
+                                gal,
+                                t,
+                                camera(),
+                                Lighting {
+                                    ambient: [0.; 3],
+                                    lights: &lights,
+                                    ..Lighting::default()
+                                },
+                                &asset.draws(root),
+                                None,
+                                PassOptions::default(),
+                            )?
+                            .commands,
+                    ])
+                })
+                .unwrap()
+                .rgba
+        };
     assert!(center(&render(&mut gal, &mut renderer, &single, Mat4::IDENTITY))[0] > 200);
     assert!(
         center(&render(
@@ -293,13 +268,10 @@ fn face_policies_and_mirrored_transforms_match_authored_materials() {
         ))[0]
             > 200
     );
-    renderer.release(&mut gal).unwrap();
-    single.release(&mut gal).unwrap();
-    double.release(&mut gal).unwrap();
-    target.release(&mut gal).unwrap();
-    gal.retire_through(gal.latest_submission_id()).unwrap();
-    assert_eq!(
-        gal.metrics().resource_creates,
-        gal.metrics().resource_destroys
-    );
+    renderer.release(&gal).unwrap();
+    single.release(&gal).unwrap();
+    double.release(&gal).unwrap();
+    target.release(&gal).unwrap();
+
+    gal.wait().unwrap();
 }

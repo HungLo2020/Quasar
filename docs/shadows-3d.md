@@ -26,8 +26,8 @@ plain values without changing the renderer.
 ```rust
 let mut surfaces = SurfaceRenderState3D::new(&mut gal, 16, 2)?;
 let mut shadows = ShadowRenderState3D::new(&mut gal, ShadowConfig::default())?;
-let mut material = SurfaceMaterial::from(LitMaterial::textured(albedo_view));
-material.normal_map = Some(NormalMap::new(normal_view));
+let mut material = SurfaceMaterial::from(LitMaterial::textured(&albedo_view));
+material.normal_map = Some(NormalMap::new(&normal_view));
 let draws = [SurfaceDraw3D { mesh: &mesh, model, material }];
 let casters: Vec<_> = draws.iter().map(SurfaceDraw3D::shadow_caster).collect();
 let maps = shadows.prepare(&mut gal, &[ShadowView {
@@ -107,51 +107,41 @@ draws across all maps to 1..=4096. Actual device capabilities can impose lower
 limits. Overflow, non-finite inputs, invalid texture types, duplicate shadow
 light indices and missing/point-light receiver references return errors.
 
-A shadow renderer has at most three completion-tracked atlas/upload slots.
-Depth allocation is bounded up front by `ShadowConfig::max_depth_bytes`:
-`3 * max(2, max_maps) * resolution² * 4` bytes. The minimum two layers preserve
-the array-view type even for a single-map renderer. The default two 1024² maps
-reserve a worst-case 24 MiB depth budget; slots allocate lazily. Per-caster
-144-byte uniforms use the device's aligned dynamic stride. Metadata storage costs a
-16-byte header plus 96 bytes per map per receiver slot, with at least one record
-allocated to satisfy backend runtime-array minimum binding sizes even at zero
-shadow capacity. Only the header and actual records are uploaded. Receiver draw payloads
-are 208 bytes before dynamic-offset padding. Statistics distinguish shadow
-caster work from receiver work; GAL counters also include metadata/light writes.
+A preparation creates an immutable native depth-array generation. The per-generation
+budget `max_depth_bytes` validates `max(2, max_maps) * resolution² * 4` bytes.
+The default two 1024² layers use 8 MiB per independent atlas. Applications must bound
+the number of outstanding frames/bindings to bound aggregate memory; wgpu owns
+completion and lifetime. There is no artificial three-frame registry.
+Per-caster storage uses 144 bytes and receiver records use 96 bytes plus a
+16-byte header; surface draw data uses 208 bytes per instance.
 
-Producer commands, bindings and receiver commands retain a shared
-`SubmissionUsage` reservation. Retaining a binding protects its atlas while
-preparing consumers even after the producer has been submitted. Multiple
-outstanding frames use separate arrays and may be submitted in a different
-order without overwriting each other's maps. All-pending pressure returns
-`InFlight`; submitted pressure may wait for the oldest eligible completion.
-No device-idle wait is introduced. Custom GAL consumers of
-`ShadowBinding::texture_view()` must carry its `submission_usage()` in
-`CommandOp::TrackSubmission` and follow producer-before-consumer ordering.
+Producer and consumer command buffers retain native resources. Order producers
+before receivers. A retained ShadowBinding keeps its view and metadata alive;
+custom native consumers bind `texture_view()` normally, with no receipt command.
+Reordered preparations use isolated arrays. Resizing or releasing caches cannot
+invalidate already encoded work. Drop old owners when replacing generations;
+native commands retain needed references. Total memory grows with caller-held
+outstanding generations, and preparing a new atlas incurs native allocation cost.
 
-Submit or abandon prepared commands and drop retained bindings before clearing
-or releasing their owners. Clear receiver descriptor caches with
-`SurfaceRenderState3D::clear_bindings` before resizing shadow maps. Clear shadow
-caster bindings before retiring their albedo/mesh generations. Release surface
-receivers before the shadow renderer, then meshes/textures. Submitted resources
-retire through GAL. Target resizing only invalidates receiver target caches;
-map resolution changes use the separate explicit `ShadowRenderState3D::resize`.
+Applications submitting whole frames in queue order can create a `ShadowTarget`
+with `create_target` and use `prepare_into(&gpu, views, &target)` to reuse the
+native depth array and layer views. Submit a producer and all its receivers before
+another frame writes this target. Reordering whole producer/receiver frame batches
+is supported; interleaving producers ahead of another frame's receivers is not.
+Use ordinary `prepare` for independent generation isolation. Nightwatch opts into
+this reusable target, recreating it transactionally when shadow resolution changes.
+
+Instance buffers and bindings are cached and grow as needed. Every preparation
+encodes its immutable staging copies before its shadow draws, so pending frames
+retain their own caster transforms even when a target/buffer is reused.
 
 ## Surface shader extension
 
-`with_fragment_shader` and `DEFAULT_SURFACE_FRAGMENT_SHADER` expose the advanced
-fragment path. Bindings 0–3 retain the lit interface. Binding 4 is a combined
-normal sampler; binding 5 is a comparison `sampler2DArrayShadow`; binding 6 is
-read-only std430 shadow metadata: vec4 info, then records containing mat4
-viewProjection, vec4 settings, vec4 sampling. Settings hold light index, layer,
-depth bias and normal bias; sampling holds inverse resolution, PCF radius,
-strength and reserved. `info.x` stores the map count as a float.
-
-The std140 draw uniform appends vec4 normalMap (UV scales, strength, Y sign).
-`options.z` uses bit 0 for shadow reception, bit 1 for two-sided normals and
-bit 2 for opaque alpha; `options.w` selects normal-map use. The existing lit ABI is
-unchanged; use the surface source for this extended interface. Different layouts
-or passes can still be built directly with GAL on the same device.
+Custom fragment stages use WGSL and entry point `main`, preserving the shared
+[lighting binding layout](lighting-3d.md#native-ordering-ownership-and-custom-shaders).
+Lit and surface paths share 208-byte instance records. Native pipeline validation
+reports incompatible stage/resource declarations; no GLSL or SPIR-V rewriting is
+performed. Normal/shadow behavior remains explicit in material flags and bindings.
 
 ## Validation
 
@@ -160,19 +150,19 @@ independent light/array layers, hard/PCF filtering, strength, moving casters,
 albedo/opacity cutouts, emission, receiver opt-out, normal-map-only operation,
 mirrored UVs, authored Y convention and non-uniform scale. Lifetime tests cover
 reversed frame order, retained producer/consumer/binding reservations, bounded
-slot pressure, resize, reuse without resource churn and balanced teardown.
+generation isolation, resize, cache reuse and native ownership teardown.
 Nightwatch pixel tests exercise runtime toggles, reduced map resolution,
 world/weapon/HUD composition, flashlight changes and target resizing.
 
 ```sh
 cargo test --locked -p quasar-render-3d -p nightwatch
 cargo test --locked -p quasar-render-3d --test surfaces -- --ignored --test-threads=1
-VULKANIC_BACKEND=wgpu cargo test --locked -p quasar-render-3d --features wgpu \
+WGPU_BACKEND=vulkan cargo test --locked -p quasar-render-3d --features vulkan \
   --test surfaces -- --ignored --test-threads=1
 cargo test --locked -p nightwatch --test render -- --ignored --test-threads=1
 ```
 
 GPU tests are ignored by default and require an available device. Vulkan and
 wgpu runs on Linux establish local behavior, not Windows/macOS hardware parity.
-OpenGL compilation is separate from runtime support: its current shader
-conventions are rejected explicitly by the 3D renderers.
+GLES compilation is separate from runtime support: the upstream-selected GLSL
+3.3 target on this host cannot compile the required storage buffers.

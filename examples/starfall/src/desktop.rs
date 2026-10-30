@@ -7,7 +7,7 @@ use quasar_app::{
 use quasar_audio::{AudioEngine, EngineConfig, PlaybackConfig};
 use quasar_core::FixedStepConfig;
 use quasar_diagnostics::{Diagnostics, Field, Level as LogLevel};
-use quasar_frame::{CompletionPolicy, FrameSurface};
+use quasar_frame::{CompletionPolicy, FrameSurface, Gpu};
 use quasar_input::{Binding, Bindings, GamepadButton, Key};
 use quasar_profile::{FrameProfiler, FrameSample};
 use quasar_text::{FontData, FontStack};
@@ -28,11 +28,7 @@ use starfall::{
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
-use vulkanic_gal::{
-    FrameSurfaceDesc, PresentMode, TextureFormat, VulkanicGal,
-    resources::{Extent3d, GpuProfileClassifier, GpuProfileTag, GpuProfiledObject},
-    set_gpu_timestamps_requested,
-};
+use vulkanic_gal::PresentMode;
 
 /// Game actions plus UI navigation actions installed on one input state.
 fn desktop_bindings(settings: &GameSettings) -> Result<Bindings, GameError> {
@@ -132,7 +128,7 @@ struct StarfallApp {
     session: Option<GameSession>,
     graphics: Option<Graphics>,
     surface: Option<FrameSurface>,
-    gal: Option<VulkanicGal>,
+    gal: Option<Gpu>,
     audio: Option<AudioEngine>,
     sounds: Option<SoundBank>,
     texture: Option<starfall::content::TextureData>,
@@ -219,57 +215,30 @@ impl StarfallApp {
             .window
             .ok_or_else(|| GameError::invalid("desktop runner did not provide a window"))?;
         let size = window.native().inner_size();
-        set_gpu_timestamps_requested(self.settings.benchmark);
-        let mut gal = VulkanicGal::create_windowed_vulkan(
-            "Starfall",
-            window.shared_native(),
-            FrameSurfaceDesc {
-                label: "starfall-surface".into(),
-                extent: Extent3d {
-                    width: size.width.max(1),
-                    height: size.height.max(1),
-                    depth: 1,
-                },
-                color_format: TextureFormat::Bgra8Unorm,
-                present_mode: if self.settings.benchmark {
-                    PresentMode::AutoNoVsync
-                } else {
-                    PresentMode::AutoVsync
-                },
-                max_frames_in_flight: 3,
-            },
-        )
-        .map_err(|error| GameError::invalid(format!("create GAL: {error}")))?;
-        gal.install_gpu_profile_classifier(GpuProfileClassifier {
-            classify: |kind, label| {
-                if matches!(kind, GpuProfiledObject::RenderPass) {
-                    GpuProfileTag {
-                        timing_scope: if label.starts_with("3d") {
-                            Some(0)
-                        } else if label.starts_with("2d") {
-                            Some(1)
-                        } else {
-                            None
-                        },
-                        ..GpuProfileTag::default()
-                    }
-                } else {
-                    GpuProfileTag::default()
-                }
-            },
-            statistics_scope_name: |index| if index == 0 { "world_3d" } else { "hud_2d" },
-        });
+        let (gal, mut surface) =
+            FrameSurface::for_window(window.shared_native(), size.width, size.height)
+                .map_err(|e| GameError::invalid(format!("create graphics: {e}")))?;
+        surface.config.present_mode = if self.settings.benchmark {
+            PresentMode::AutoNoVsync
+        } else {
+            PresentMode::AutoVsync
+        };
+        surface
+            .reconfigure(&gal)
+            .map_err(|e| GameError::invalid(e.to_string()))?;
+
         let texture = self
             .texture
             .as_ref()
             .ok_or_else(|| GameError::invalid("content texture missing"))?;
-        let mut graphics = Graphics::new(&mut gal, texture)
+        let mut graphics = Graphics::new(&gal, texture)
             .map_err(|error| GameError::invalid(format!("create renderers: {error}")))?;
         if let Some(text) = self.text_renderer.take() {
             graphics.enable_text(text);
         }
-        self.surface = Some(FrameSurface::new(size.width.max(1), size.height.max(1)));
+        self.surface = Some(surface);
         self.graphics = Some(graphics);
+        gal.set_gpu_timestamps(self.settings.benchmark);
         self.gal = Some(gal);
         if self.settings.audio_enabled && self.audio.is_none() {
             match AudioEngine::open(
@@ -529,33 +498,29 @@ impl StarfallApp {
         Ok(())
     }
     fn release_graphics(&mut self) -> Result<(), GameError> {
-        if let Some(mut gal) = self.gal.take() {
-            if let Some(mut surface) = self.surface.take() {
-                let _ = surface.finish(&mut gal);
-                let _ = surface.release_targets(&mut gal);
+        if let Some(gpu) = self.gal.take() {
+            gpu.wait().map_err(|e| GameError::invalid(e.to_string()))?;
+            drop(self.graphics.take());
+            drop(self.surface.take());
+            gpu.wait().map_err(|e| GameError::invalid(e.to_string()))?;
+            if let Some(report) = gpu.instance.generate_report() {
+                let buffers = report.hub.buffers.num_kept_from_user;
+                let textures = report.hub.textures.num_kept_from_user;
+                let views = report.hub.texture_views.num_kept_from_user;
+                self.diagnostics.event_with(
+                    LogLevel::Info,
+                    "starfall.resources",
+                    "teardown",
+                    [
+                        Field::new("live_buffers", buffers as u64),
+                        Field::new("live_textures", textures as u64),
+                        Field::new("live_views", views as u64),
+                    ],
+                );
+                if buffers + textures + views != 0 {
+                    return Err(GameError::invalid("GPU resources remain owned at teardown"));
+                }
             }
-            if let Some(mut graphics) = self.graphics.take() {
-                let _ = graphics.release_targets(&mut gal);
-                graphics
-                    .release(&mut gal)
-                    .map_err(|error| GameError::invalid(format!("release graphics: {error}")))?;
-            }
-            let _ = gal.shutdown_frame_surface();
-            let _ = gal.retire_through(gal.latest_submission_id());
-            let metrics = gal.metrics();
-            self.diagnostics.event_with(
-                if metrics.resource_creates == metrics.resource_destroys {
-                    LogLevel::Info
-                } else {
-                    LogLevel::Warn
-                },
-                "starfall.resources",
-                "teardown",
-                [
-                    Field::new("created", metrics.resource_creates),
-                    Field::new("destroyed", metrics.resource_destroys),
-                ],
-            );
         }
         self.audio.take();
         Ok(())
@@ -613,8 +578,9 @@ impl Application for StarfallApp {
         self.release_graphics()
     }
     fn shutdown(&mut self, _: &mut AppContext<'_>) -> Result<(), Self::Error> {
+        self.release_graphics()?;
         self.write_outputs();
-        self.release_graphics()
+        Ok(())
     }
 }
 impl DesktopApplication for StarfallApp {

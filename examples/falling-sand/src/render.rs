@@ -1,9 +1,10 @@
 //! 2D rendering for the sand demo through `quasar-render-2d`.
 use crate::sand::{BALL_RADIUS, Cell, GRID_HEIGHT, GRID_WIDTH, ObstacleKind, SandWorld, Tool};
+use quasar_frame::{Gpu, GraphicsResult, RenderTarget};
 use quasar_profile::RendererStats;
 use quasar_render_2d::{Canvas, Color, DisplayOptions, LoadOp, Rect, RenderState2D, Textures};
 use quasar_ui::{Ui, UiRenderer};
-use vulkanic_gal::{CommandList, GalError, GalResult, Handle, VulkanicGal};
+use vulkanic_gal::CommandBuffer;
 
 const BACKGROUND: Color = Color([10, 14, 24, 255]);
 const SAND: Color = Color([226, 176, 82, 255]);
@@ -22,7 +23,7 @@ pub struct Graphics {
 }
 
 impl Graphics {
-    pub fn new(gal: &mut VulkanicGal) -> GalResult<Self> {
+    pub fn new(gal: &Gpu) -> GraphicsResult<Self> {
         Ok(Self {
             state: RenderState2D::new(gal)?,
             textures: Textures::default(),
@@ -37,23 +38,23 @@ impl Graphics {
 
     pub fn commands(
         &mut self,
-        gal: &mut VulkanicGal,
-        target: Handle,
+        gal: &Gpu,
+        target: &RenderTarget,
         world: &SandWorld,
         cursor: Option<[f32; 2]>,
         tool: Tool,
         menu: Option<&Ui>,
-    ) -> GalResult<Vec<CommandList>> {
-        let size = gal.pass_target_extent(target)?;
+    ) -> GraphicsResult<Vec<CommandBuffer>> {
+        let size = target;
         let width = size.width as f32;
         let height = size.height as f32;
         let cell_width = width / GRID_WIDTH as f32;
         let cell_height = height / GRID_HEIGHT as f32;
         if !cell_width.is_finite() || !cell_height.is_finite() || cell_width <= 0.0 {
-            return Err(GalError::invalid_argument("invalid sand target extent"));
+            return Err(quasar_frame::error("invalid sand target extent"));
         }
         let mut canvas = Canvas::new(size.width, size.height)
-            .map_err(|error| GalError::invalid_argument(error.to_string()))?;
+            .map_err(|error| quasar_frame::error(error.to_string()))?;
         canvas.clear = BACKGROUND;
 
         for (_, obstacle) in world.obstacles() {
@@ -193,11 +194,11 @@ impl Graphics {
         Ok(vec![prepared.commands])
     }
 
-    pub fn release_targets(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
+    pub fn release_targets(&mut self, gal: &Gpu) -> GraphicsResult<()> {
         self.state.release_targets(gal)
     }
 
-    pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
+    pub fn release(&mut self, gal: &Gpu) -> GraphicsResult<()> {
         self.state.release(gal)
     }
 }

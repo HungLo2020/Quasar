@@ -1,0 +1,244 @@
+{
+  "acquire": {
+    "max": 1706332,
+    "mean": 110833.015,
+    "min": 18378,
+    "p50": 31385,
+    "p95": 506758,
+    "p99": 919590,
+    "samples": 600
+  },
+  "backend_encode": {
+    "max": 0,
+    "mean": 0.0,
+    "min": 0,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0,
+    "samples": 0
+  },
+  "backend_submit": {
+    "max": 0,
+    "mean": 0.0,
+    "min": 0,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0,
+    "samples": 0
+  },
+  "benchmark": {
+    "config": {
+      "sample_capacity": 600,
+      "thresholds": {
+        "max_acquire_p99_nanos": null,
+        "max_cpu_frame_p99_nanos": null,
+        "max_draws_p99": null,
+        "max_gpu_frame_p99_nanos": null,
+        "max_host_write_bytes_p99": null,
+        "max_present_p99_nanos": null,
+        "max_resource_creates_p99": null
+      },
+      "warmup_frames": 64
+    },
+    "metadata": {
+      "api": "Vulkan",
+      "backend": "Vulkan",
+      "build": "optimized",
+      "debug_assertions": "false",
+      "device": "NVIDIA GeForce RTX 2070",
+      "driver": "NVIDIA",
+      "frustum_culling": "true",
+      "instancing": "true",
+      "normal_maps": "true",
+      "resolution": "960x540",
+      "seed": "42",
+      "shadow_resolution": "1024",
+      "shadows": "true",
+      "validation": "false"
+    },
+    "seen_frames": 664
+  },
+  "blocking_waits": {
+    "max": 0,
+    "mean": 0.0,
+    "min": 0,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0,
+    "samples": 600
+  },
+  "cpu_frame": {
+    "max": 2656031,
+    "mean": 815040.475,
+    "min": 507974,
+    "p50": 730031,
+    "p95": 1293247,
+    "p99": 2196696,
+    "samples": 600
+  },
+  "culled_instances": {
+    "max": 483,
+    "mean": 193.91333333333333,
+    "min": 111,
+    "p50": 125,
+    "p95": 475,
+    "p99": 481,
+    "samples": 600
+  },
+  "device_idle_waits": {
+    "max": 0,
+    "mean": 0.0,
+    "min": 0,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0,
+    "samples": 0
+  },
+  "draws": {
+    "max": 76,
+    "mean": 59.086666666666666,
+    "min": 24,
+    "p50": 62,
+    "p95": 72,
+    "p99": 76,
+    "samples": 600
+  },
+  "frames": 600,
+  "geometry_upload_bytes": {
+    "max": 15760,
+    "mean": 15638.666666666666,
+    "min": 15360,
+    "p50": 15760,
+    "p95": 15760,
+    "p99": 15760,
+    "samples": 600
+  },
+  "gpu_frame": {
+    "max": 833792,
+    "mean": 721246.9333333333,
+    "min": 620576,
+    "p50": 725280,
+    "p95": 785920,
+    "p99": 796672,
+    "samples": 600
+  },
+  "gpu_scopes": [],
+  "hazard_analysis": {
+    "max": 0,
+    "mean": 0.0,
+    "min": 0,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0,
+    "samples": 0
+  },
+  "host_write_bytes": {
+    "max": 0,
+    "mean": 0.0,
+    "min": 0,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0,
+    "samples": 0
+  },
+  "host_write_ops": {
+    "max": 0,
+    "mean": 0.0,
+    "min": 0,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0,
+    "samples": 0
+  },
+  "instance_upload_bytes": {
+    "max": 100384,
+    "mean": 75494.13333333333,
+    "min": 44400,
+    "p50": 79008,
+    "p95": 90768,
+    "p99": 96800,
+    "samples": 600
+  },
+  "present": {
+    "max": 1640159,
+    "mean": 58514.41,
+    "min": 34487,
+    "p50": 43379,
+    "p95": 75469,
+    "p99": 93048,
+    "samples": 600
+  },
+  "renderer_prepare": {
+    "max": 1030353,
+    "mean": 493506.42,
+    "min": 361181,
+    "p50": 459010,
+    "p95": 708881,
+    "p99": 850631,
+    "samples": 600
+  },
+  "resource_creates": {
+    "max": 0,
+    "mean": 0.0,
+    "min": 0,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0,
+    "samples": 0
+  },
+  "resource_destroys": {
+    "max": 0,
+    "mean": 0.0,
+    "min": 0,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0,
+    "samples": 0
+  },
+  "submit": {
+    "max": 367875,
+    "mean": 123275.27333333333,
+    "min": 58564,
+    "p50": 113538,
+    "p95": 198595,
+    "p99": 281397,
+    "samples": 600
+  },
+  "texture_upload_bytes": {
+    "max": 0,
+    "mean": 0.0,
+    "min": 0,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0,
+    "samples": 600
+  },
+  "uniform_upload_bytes": {
+    "max": 100384,
+    "mean": 75494.13333333333,
+    "min": 44400,
+    "p50": 79008,
+    "p95": 90768,
+    "p99": 96800,
+    "samples": 600
+  },
+  "validation": {
+    "max": 0,
+    "mean": 0.0,
+    "min": 0,
+    "p50": 0,
+    "p95": 0,
+    "p99": 0,
+    "samples": 0
+  },
+  "visible_instances": {
+    "max": 602,
+    "mean": 454.07666666666665,
+    "min": 295,
+    "p50": 474,
+    "p95": 541,
+    "p99": 578,
+    "samples": 600
+  },
+  "window_samples": 600
+}

@@ -143,7 +143,7 @@ cargo clippy --locked -p quasar-physics -p quasar-nav -p nightwatch --all-target
 RUSTDOCFLAGS='-D warnings' cargo doc --locked -p quasar-physics -p quasar-nav -p nightwatch --all-features --no-deps
 cargo fmt --all -- --check
 xvfb-run -a cargo test --locked -p nightwatch --test render -- --ignored --test-threads=1
-xvfb-run -a env VULKANIC_BACKEND=wgpu cargo test --locked -p nightwatch --features vulkanic-gal/wgpu --test render -- --ignored --test-threads=1
+xvfb-run -a env WGPU_BACKEND=vulkan cargo test --locked -p nightwatch --features vulkanic-gal/vulkan --test render -- --ignored --test-threads=1
 cargo run --locked -p nightwatch --no-default-features -- --headless --ticks 600 --autoplay
 ```
 

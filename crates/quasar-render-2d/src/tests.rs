@@ -275,211 +275,53 @@ fn dynamic_and_static_textures_compose_in_one_draw_list() {
     );
 }
 
-#[cfg(all(feature = "gpu", feature = "vulkan"))]
+#[cfg(feature = "gpu")]
 #[test]
-#[ignore = "requires Vulkan; run cargo test -p quasar-render-2d -- --include-ignored"]
+#[ignore = "native GPU snapshot ownership"]
 fn out_of_order_prepared_dynamic_frames_keep_their_own_pixels() {
-    use vulkanic_gal::*;
-
-    let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "dynamic-order-test").unwrap();
-    let mut state = RenderState2D::new(&mut gal).unwrap();
+    use quasar_frame::{Gpu, OffscreenTarget, read_rgba};
+    let gpu = Gpu::headless().unwrap();
+    let mut state = RenderState2D::new(&gpu).unwrap();
     let mut textures = Textures::default();
     let dynamic = state
-        .create_dynamic_texture(&mut gal, &mut textures, 2, 2)
+        .create_dynamic_texture(&gpu, &mut textures, 2, 2)
         .unwrap();
     let mut canvas = Canvas::new(2, 2).unwrap();
-    canvas.sprite(Sprite::new(dynamic.id(), Rect::new(0.0, 0.0, 2.0, 2.0)));
-
-    let (texture_a, view_a, target_a, readback_a) = test_target(&mut gal, 2);
-    let (texture_b, view_b, target_b, readback_b) = test_target(&mut gal, 2);
-
-    let first = [
-        255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
-    ];
+    canvas.sprite(Sprite::new(dynamic.id(), Rect::new(0., 0., 2., 2.)));
+    let ta = OffscreenTarget::new(&gpu, 2, 2).unwrap();
+    let tb = OffscreenTarget::new(&gpu, 2, 2).unwrap();
+    let first = [255, 0, 0, 255].repeat(4);
+    let second = [0, 255, 0, 255].repeat(4);
     state.update_dynamic_texture(dynamic, &first).unwrap();
-    let mut prepared_a = state
+    let a = state
         .prepare(
-            &mut gal,
+            &gpu,
             &canvas,
             &textures,
-            target_a,
+            ta.target(),
             DisplayOptions::default(),
             LoadOp::Clear,
         )
         .unwrap();
-
-    let second = [
-        0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
-    ];
     state.update_dynamic_texture(dynamic, &second).unwrap();
-    let mut prepared_b = state
+    let b = state
         .prepare(
-            &mut gal,
+            &gpu,
             &canvas,
             &textures,
-            target_b,
+            tb.target(),
             DisplayOptions::default(),
             LoadOp::Clear,
         )
         .unwrap();
-
-    append_readback(&mut prepared_a.commands, texture_a, readback_a, 2);
-    append_readback(&mut prepared_b.commands, texture_b, readback_b, 2);
-
-    // B was prepared second but is submitted first; each list carries its own
-    // framebuffer snapshot, so A must still read the first pixels.
-    let token_b = gal
-        .submit(SubmissionBatch {
-            label: "dynamic-order-b".into(),
-            command_lists: vec![prepared_b.commands],
-        })
-        .unwrap();
-    let token_a = gal
-        .submit(SubmissionBatch {
-            label: "dynamic-order-a".into(),
-            command_lists: vec![prepared_a.commands],
-        })
-        .unwrap();
-    assert!(token_a.submission > token_b.submission);
-    gal.retire_through(token_a.submission).unwrap();
-
-    let reads = gal.completed_host_reads();
-    let read = |buffer| {
-        reads
-            .iter()
-            .find(|read| read.buffer == buffer)
-            .unwrap()
-            .bytes
-            .clone()
-    };
-    assert_eq!(read(readback_b), second);
-    assert_eq!(read(readback_a), first);
-
     state
-        .destroy_dynamic_texture(&mut gal, &mut textures, dynamic)
+        .destroy_dynamic_texture(&gpu, &mut textures, dynamic)
         .unwrap();
-    state.release(&mut gal).unwrap();
-    for (texture, view, target, readback) in [
-        (texture_a, view_a, target_a, readback_a),
-        (texture_b, view_b, target_b, readback_b),
-    ] {
-        gal.destroy(readback).unwrap();
-        gal.destroy(target).unwrap();
-        gal.destroy(view).unwrap();
-        gal.destroy(texture).unwrap();
-    }
-}
-
-#[cfg(feature = "gpu")]
-#[cfg(feature = "vulkan")]
-fn test_target(
-    gal: &mut vulkanic_gal::VulkanicGal,
-    size: u32,
-) -> (
-    vulkanic_gal::Handle,
-    vulkanic_gal::Handle,
-    vulkanic_gal::Handle,
-    vulkanic_gal::Handle,
-) {
-    use vulkanic_gal::*;
-    let extent = Extent3d {
-        width: size,
-        height: size,
-        depth: 1,
-    };
-    let texture = gal
-        .create_texture(TextureDesc {
-            label: "dynamic-test-target".into(),
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8Unorm,
-            extent,
-            mip_levels: 1,
-            array_layers: 1,
-            usages: vec![TextureUsage::ColorAttachment, TextureUsage::TransferSrc],
-        })
-        .unwrap();
-    let view = gal
-        .create_texture_view(TextureViewDesc {
-            label: "dynamic-test-view".into(),
-            texture,
-            format: TextureFormat::Rgba8Unorm,
-            base_mip: 0,
-            mip_count: 1,
-            base_layer: 0,
-            layer_count: 1,
-        })
-        .unwrap();
-    let target = gal
-        .create_render_target(RenderTargetDesc {
-            label: "dynamic-test-target".into(),
-            color_views: vec![view],
-            depth_stencil_view: None,
-            extent,
-        })
-        .unwrap();
-    let readback = gal
-        .create_buffer(BufferDesc {
-            label: "dynamic-test-readback".into(),
-            size: u64::from(size) * u64::from(size) * 4,
-            memory: MemoryDomain::Readback,
-            usages: vec![BufferUsage::TransferDst, BufferUsage::HostRead],
-        })
-        .unwrap();
-    (texture, view, target, readback)
-}
-
-#[cfg(feature = "gpu")]
-#[cfg(feature = "vulkan")]
-fn append_readback(
-    list: &mut vulkanic_gal::CommandList,
-    texture: vulkanic_gal::Handle,
-    readback: vulkanic_gal::Handle,
-    size: u32,
-) {
-    use vulkanic_gal::*;
-    let extent = Extent3d {
-        width: size,
-        height: size,
-        depth: 1,
-    };
-    let barrier = |resource, before, after| {
-        CommandOp::Barrier(ResourceBarrier {
-            resource,
-            subresources: None,
-            before,
-            after,
-            src_queue: QueueClass::Graphics,
-            dst_queue: QueueClass::Graphics,
-        })
-    };
-    list.operations.extend([
-        barrier(
-            texture,
-            TextureUsageState::ColorAttachment,
-            TextureUsageState::TransferSrc,
-        ),
-        CommandOp::CopyTextureToBuffer(BufferImageCopyRegion {
-            buffer: readback,
-            buffer_offset: 0,
-            bytes_per_row: size * 4,
-            rows_per_image: size,
-            texture,
-            texture_mip: 0,
-            texture_layer: 0,
-            texture_origin: TextureOrigin3d { x: 0, y: 0, z: 0 },
-            extent,
-        }),
-        barrier(
-            readback,
-            TextureUsageState::TransferDst,
-            TextureUsageState::TransferSrc,
-        ),
-        CommandOp::HostReadBuffer {
-            buffer: readback,
-            offset: 0,
-            size: u64::from(size) * u64::from(size) * 4,
-        },
-    ]);
+    state.release(&gpu).unwrap();
+    drop(state);
+    gpu.queue.submit([b.commands, a.commands]);
+    assert_eq!(read_rgba(&gpu, &ta.texture).unwrap(), first);
+    assert_eq!(read_rgba(&gpu, &tb.texture).unwrap(), second);
 }
 
 #[test]
@@ -679,13 +521,13 @@ fn png_decode_expands_color_types_and_rejects_corruption() {
     assert!(Image::decode_png(std::io::Cursor::new(b"invalid")).is_err());
 }
 
-#[cfg(all(feature = "gpu", feature = "vulkan"))]
+#[cfg(feature = "gpu")]
 #[test]
-#[ignore = "native GPU palette generations and stencil reservation"]
+#[ignore = "native GPU palette and stencil generations"]
 fn prepared_palette_generations_and_masks_survive_reverse_submission() {
-    use vulkanic_gal::*;
-    let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "palette generations").unwrap();
-    let mut state = RenderState2D::new(&mut gal).unwrap();
+    use quasar_frame::{Gpu, OffscreenTarget, read_rgba};
+    let gpu = Gpu::headless().unwrap();
+    let mut state = RenderState2D::new(&gpu).unwrap();
     let mut textures = Textures::default();
     let id = textures.insert(IndexedImage::new(2, 2, [1; 4]).unwrap().image().clone());
     let pa = textures.insert(
@@ -698,131 +540,78 @@ fn prepared_palette_generations_and_masks_survive_reverse_submission() {
             .unwrap()
             .image(),
     );
-    let mut canvas = Canvas::new(2, 2).unwrap();
-    canvas.set_pixel_state(PixelState {
-        reference: 4,
-        write_mask: 4,
-        ..Default::default()
-    });
-    canvas.set_palette(Some(PaletteBinding {
-        texture: pa,
-        transparent_index: Some(0),
-    }));
-    canvas.sprite(Sprite::new(id, Rect::new(0., 0., 2., 2.)));
-    let (ta, va, rta, ra) = test_target(&mut gal, 2);
-    let (tb, vb, rtb, rb) = test_target(&mut gal, 2);
-    let mut a = state
+    let ta = OffscreenTarget::new(&gpu, 2, 2).unwrap();
+    let tb = OffscreenTarget::new(&gpu, 2, 2).unwrap();
+    let make = |palette, write| {
+        let mut c = Canvas::new(2, 2).unwrap();
+        c.set_palette(Some(PaletteBinding {
+            texture: palette,
+            transparent_index: Some(0),
+        }));
+        c.set_pixel_state(PixelState {
+            reference: if write { 4 } else { 0 },
+            write_mask: if write { 4 } else { 0 },
+            read_mask: if write { 0 } else { 4 },
+            ..Default::default()
+        });
+        c.sprite(Sprite::new(id, Rect::new(0., 0., 2., 2.)));
+        c
+    };
+    let a = state
         .prepare(
-            &mut gal,
-            &canvas,
+            &gpu,
+            &make(pa, true),
             &textures,
-            rta,
+            ta.target(),
             DisplayOptions::default(),
             LoadOp::Clear,
         )
         .unwrap();
     assert_eq!(a.stats.texture_upload_bytes, 16 + 1024);
     textures.remove(pa);
-    let mut canvas_b = Canvas::new(2, 2).unwrap();
-    canvas_b.set_pixel_state(canvas.pixel_state());
-    canvas_b.set_palette(Some(PaletteBinding {
-        texture: pb,
-        transparent_index: Some(0),
-    }));
-    canvas_b.sprite(Sprite::new(id, Rect::new(0., 0., 2., 2.)));
-    let mut b = state
+    let b = state
         .prepare(
-            &mut gal,
-            &canvas_b,
+            &gpu,
+            &make(pb, true),
             &textures,
-            rtb,
+            tb.target(),
             DisplayOptions::default(),
             LoadOp::Clear,
         )
         .unwrap();
+    assert_eq!(b.stats.texture_upload_bytes, 1024);
+    // Releasing renderer caches cannot invalidate already encoded native buffers.
+    state.release_targets(&gpu).unwrap();
+    gpu.queue.submit([b.commands, a.commands]);
     assert_eq!(
-        b.stats.texture_upload_bytes, 1024,
-        "palette swap must not upload indices"
-    );
-    assert!(state.release(&mut gal).is_err());
-    assert!(state.release_targets(&mut gal).is_err());
-    append_readback(&mut a.commands, ta, ra, 2);
-    append_readback(&mut b.commands, tb, rb, 2);
-    for commands in [b.commands, a.commands] {
-        let token = gal
-            .submit(SubmissionBatch {
-                label: "palette reverse".into(),
-                command_lists: vec![commands],
-            })
-            .unwrap();
-        gal.retire_through(token.submission).unwrap();
-    }
-    let reads = gal.completed_host_reads();
-    assert_eq!(
-        reads.iter().find(|r| r.buffer == ra).unwrap().bytes,
+        read_rgba(&gpu, &ta.texture).unwrap(),
         [255, 0, 0, 255].repeat(4)
     );
     assert_eq!(
-        reads.iter().find(|r| r.buffer == rb).unwrap().bytes,
+        read_rgba(&gpu, &tb.texture).unwrap(),
         [0, 0, 255, 255].repeat(4)
     );
-    // Submitted generations are retired, mask state clears on the next prepare,
-    // and repeated preparation on the same target reuses all cached GPU resources.
-    let mut again = Canvas::new(2, 2).unwrap();
-    again.set_palette(Some(PaletteBinding {
-        texture: pb,
-        transparent_index: Some(0),
-    }));
-    again.set_pixel_state(PixelState {
-        read_mask: 4,
-        reference: 0,
-        ..Default::default()
-    });
-    again.sprite(Sprite::new(id, Rect::new(0., 0., 2., 2.)));
-    let first = state
-        .prepare(
-            &mut gal,
-            &again,
-            &textures,
-            rtb,
-            DisplayOptions::default(),
-            LoadOp::Clear,
-        )
-        .unwrap();
-    assert_eq!(first.stats.texture_upload_bytes, 0);
-    let token = gal
-        .submit(SubmissionBatch {
-            label: "mask cleared".into(),
-            command_lists: vec![first.commands],
-        })
-        .unwrap();
-    gal.retire_through(token.submission).unwrap();
-    let creates = gal.metrics().resource_creates;
-    let warm = state
-        .prepare(
-            &mut gal,
-            &again,
-            &textures,
-            rtb,
-            DisplayOptions::default(),
-            LoadOp::Clear,
-        )
-        .unwrap();
-    assert_eq!(
-        creates,
-        gal.metrics().resource_creates,
-        "warm preparation must reuse targets, bindings and buffers"
-    );
-    drop(warm);
-    state.release(&mut gal).unwrap();
-    for h in [ra, rb, rta, rtb, va, vb, ta, tb] {
-        gal.retire(h).unwrap();
+    for _ in 0..3 {
+        let c = make(pb, false);
+        let out = tb
+            .render(&gpu, |gpu, target| {
+                Ok(vec![
+                    state
+                        .prepare(
+                            gpu,
+                            &c,
+                            &textures,
+                            target,
+                            DisplayOptions::default(),
+                            LoadOp::Clear,
+                        )?
+                        .commands,
+                ])
+            })
+            .unwrap();
+        assert_eq!(out.rgba, [0, 0, 255, 255].repeat(4));
+        assert_eq!(state.stats().texture_upload_bytes, 0);
     }
-    gal.retire_through(gal.latest_submission_id()).unwrap();
-    assert_eq!(
-        gal.metrics().resource_creates,
-        gal.metrics().resource_destroys
-    );
 }
 
 #[cfg(feature = "gpu")]
@@ -862,4 +651,157 @@ fn dynamic_palette_updates_only_the_small_palette_texture() {
     assert_eq!(r.stats().texture_upload_bytes, 0);
     r.destroy_dynamic_texture(&mut t, dynamic).unwrap();
     assert!(r.render_to_image(&c, &t).is_err());
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "native GPU pipeline state and device ownership"]
+fn dynamic_effect_values_reuse_pipeline_and_foreign_device_views_return_errors() {
+    use quasar_frame::{Gpu, OffscreenTarget};
+    let gpu = Gpu::headless().unwrap();
+    // Both devices share the native instance; resources may only be bound on their owner.
+    let (device, queue) = quasar_frame::block_on(
+        gpu.adapter
+            .request_device(&vulkanic_gal::DeviceDescriptor::default()),
+    )
+    .unwrap();
+    let foreign = Gpu::from_parts(gpu.instance.clone(), gpu.adapter.clone(), device, queue);
+    let mut state = RenderState2D::new(&gpu).unwrap();
+    let mut textures = Textures::default();
+    let other = quasar_frame::texture_2d(
+        &foreign.device,
+        "foreign source",
+        1,
+        1,
+        vulkanic_gal::TextureFormat::Rgba8Unorm,
+        vulkanic_gal::TextureUsages::TEXTURE_BINDING,
+    )
+    .unwrap();
+    assert!(
+        state
+            .register_texture(&gpu, &mut textures, &other.create_view(&Default::default()))
+            .is_err()
+    );
+    let target = OffscreenTarget::new(&gpu, 400, 1).unwrap();
+    let mut canvas = Canvas::new(400, 1).unwrap();
+    for i in 0..400 {
+        canvas.set_pixel_state(PixelState {
+            reference: (i % 256) as u8,
+            alpha_min: (i % 256) as u8,
+            exclude_index: Some((i % 200) as u8),
+            ..Default::default()
+        });
+        canvas.rect(Rect::new(i as f32, 0., 1., 1.), [255, 0, 0, 255]);
+    }
+    let image = target
+        .render(&gpu, |gpu, target| {
+            Ok(vec![
+                state
+                    .prepare(
+                        gpu,
+                        &canvas,
+                        &textures,
+                        target,
+                        DisplayOptions::default(),
+                        LoadOp::Clear,
+                    )?
+                    .commands,
+            ])
+        })
+        .unwrap();
+    assert_eq!(image.rgba, [255, 0, 0, 255].repeat(400));
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "native caller-selected device limits"]
+fn caller_selected_device_limits_fail_cleanly_before_renderer_allocation() {
+    let gpu = Gpu::headless().unwrap();
+    let (device, queue) =
+        quasar_frame::block_on(gpu.adapter.request_device(&vulkanic_gal::DeviceDescriptor {
+            required_limits: vulkanic_gal::Limits::downlevel_webgl2_defaults(),
+            ..Default::default()
+        }))
+        .unwrap();
+    let gpu = Gpu::from_parts(gpu.instance, gpu.adapter, device, queue);
+    assert_eq!(gpu.device.limits().max_storage_buffers_per_shader_stage, 0);
+    assert!(RenderState2D::new(&gpu).is_err());
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "native backend capability and error reporting"]
+fn gpu_backend_capability_errors_are_explicit() {
+    let gpu = Gpu::headless().unwrap();
+    let backend = gpu.adapter.get_info().backend;
+    let result = (|| -> GraphicsResult<Vec<u8>> {
+        let mut state = RenderState2D::new(&gpu)?;
+        let textures = Textures::default();
+        let mut canvas = Canvas::new(4, 4).map_err(quasar_frame::error)?;
+        canvas.rect(Rect::new(0., 0., 4., 4.), [128, 64, 32, 255]);
+        let target = quasar_frame::OffscreenTarget::new(&gpu, 4, 4)?;
+        Ok(target
+            .render(&gpu, |gpu, target| {
+                Ok(vec![
+                    state
+                        .prepare(
+                            gpu,
+                            &canvas,
+                            &textures,
+                            target,
+                            DisplayOptions::default(),
+                            LoadOp::Clear,
+                        )?
+                        .commands,
+                ])
+            })?
+            .rgba)
+    })();
+    match result {
+        Ok(rgba) => assert_eq!(rgba, [128, 64, 32, 255].repeat(16)),
+        Err(error) => {
+            let message = error.to_string();
+            assert!(
+                backend == vulkanic_gal::Backend::Gl
+                    && (message.contains("BUFFER_STORAGE")
+                        || message.contains("requires vertex storage buffers")),
+                "unexpected native backend error: {message}"
+            );
+            println!(
+                "GLES rendering unavailable: upstream shader storage-buffer capability: {message}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "native reusable software framebuffer with padded rows"]
+fn framebuffer_presenter_reuses_a_private_image_and_preserves_rgba_updates() {
+    let mut presenter =
+        FramebufferPresenter::from_renderer(Renderer2D::headless().unwrap(), (3, 5)).unwrap();
+    let instance = presenter.renderer.gpu.instance.clone();
+    for frame in 0..4 {
+        let pixels: Vec<_> = (0..15)
+            .flat_map(|i| [(i * 13 + frame) as u8, (frame * 41) as u8, 255, 255])
+            .collect();
+        assert_eq!(presenter.render_to_image(&pixels).unwrap(), pixels);
+        assert_eq!(presenter.stats().texture_upload_bytes, pixels.len());
+    }
+    assert!(presenter.render_to_image(&[0; 4]).is_err());
+    assert_eq!(
+        presenter
+            .render_to_image(&[12, 34, 56, 255].repeat(15))
+            .unwrap(),
+        [12, 34, 56, 255].repeat(15)
+    );
+    presenter.renderer.gpu.wait().unwrap();
+    drop(presenter);
+    let h = instance.generate_report().unwrap().hub;
+    assert_eq!(
+        h.buffers.num_kept_from_user
+            + h.textures.num_kept_from_user
+            + h.texture_views.num_kept_from_user,
+        0
+    );
 }

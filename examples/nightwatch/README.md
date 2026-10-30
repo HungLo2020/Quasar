@@ -1,5 +1,10 @@
 # Nightwatch
 
+Native graphics APIs now use unmodified wgpu through VulkanicGAL. See
+[native migration](../../docs/native-wgpu-migration.md) for native views/command buffers, WGSL, Drop ownership,
+backend selection and replacement of old slot/receipt APIs. Historical benchmark
+figures describe their recorded release.
+
 A playable first-person zombie survival example for Quasar's opt-in
 3D lighting/material path. All gameplay is ordinary game-owned Rust data; there
 is no ECS, scene graph, object registry or required authored scene format.
@@ -86,9 +91,9 @@ cargo test -p nightwatch --test render -- --ignored --test-threads=1
 
 Additional options: `--fullscreen`, `--audio-device NAME`, `--no-shadows`,
 `--no-normal-maps`, `--shadow-resolution N`, `--help`, `--version`.
-Shadow resolution defaults to 1024 and accepts 32..=2048. Two maps across at most
-three in-flight slots use at most 24 MiB at 1024 or 96 MiB at 2048. Slots allocate
-lazily. Disabling shadows omits caster passes; normal maps remain independently
+Shadow resolution defaults to 1024 and accepts 32..=2048. Each immutable two-map preparation uses 8 MiB at 1024 or 32 MiB at 2048.
+The native queue retains outstanding generations; applications bound queued
+frames to control aggregate memory. Disabling shadows omits caster passes; normal maps remain independently
 usable. H/N toggle effects live without changing gameplay state.
 `--benchmark` disables requested vsync, enables GPU timestamps, and defaults to a
 240-frame run; `--benchmark-file` also enables it. `--frames` counts native
@@ -146,12 +151,11 @@ These are one-machine debug/validation observations, not optimized performance
 claims or cross-device thresholds. Late weapon/slot capacity growth can create
 bounded resources after warmup (maximum two creates in a sampled frame).
 
-The library's lighting pixel/composition/slot tests also pass through the
-wgpu-backed GAL on Linux. No Windows/macOS parity is claimed. OpenGL-only builds
-compile, but the current OpenGL shader conventions fail the renderer's explicit
-binding/[0,1] depth requirements; construction returns `UnsupportedFeature`.
-A separate capability-rejection test covers that boundary. No separate renderer
-or silent backend fallback is introduced to hide it.
+Current rendering uses native wgpu/WGSL through VulkanicGAL. Linux Vulkan GPU
+fixtures exercise lighting, surfaces, shadows, generation isolation and composition.
+No Windows/macOS native parity is claimed. GLES on this host is blocked by the
+upstream-selected GLSL 3.3 target's storage-buffer support. The validation report
+records [current runs](../../docs/native-wgpu-validation.md); tables here describe earlier releases.
 
 Before instancing/culling, with shadows and normal maps enabled, the same debug/validation/Xvfb setup
 produces the following 180-frame results (172 retained samples):
@@ -170,8 +174,8 @@ debug build was CPU-bound in submission; these numbers establish functionality a
 not a real-time performance target. The optional submission path described below addresses that CPU work. Maximum resource creation after
 warmup was three objects in a frame, with no leaks at teardown. Native tests also
 pause the game, toggle H/N, verify world pixels change, then verify restoring both
-effects restores the image exactly. The surface/shadow GPU tests pass through
-both Vulkan and wgpu on this machine.
+effects restores the image exactly. Current native surface/shadow GPU tests run
+through upstream wgpu Vulkan on this machine.
 
 ## Instanced submission and visibility
 
@@ -179,9 +183,10 @@ Nightwatch now enables instancing and independent camera/light-frustum culling.
 Use `--no-instancing`, `--no-culling`, `--validation` and `--no-validation` for
 controlled comparisons. `render.*` configuration controls the same policy.
 Material/model inputs stay ordinary game data. Static cover, animated enemies,
-weapon parts and both shadow passes share the library's bounded upload slots.
+weapon parts and both shadow passes use cached native buffers. A reusable native
+shadow atlas is written and consumed within each ordered whole-frame submission.
 
-Vulkan and wgpu tests compare scalar, instanced and culled images exactly over
+Native Vulkan tests compare scalar, instanced and culled images exactly over
 six animated gameplay frames, with balanced teardown. Additional GPU tests cover
 off-camera shadow casters, per-instance materials, buffer growth, retained
 commands and reversed submission order. Native tests exercise gameplay, H/N,

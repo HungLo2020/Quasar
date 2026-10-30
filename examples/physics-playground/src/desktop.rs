@@ -7,7 +7,7 @@ use quasar_app::{
 };
 use quasar_core::FixedStepConfig;
 use quasar_diagnostics::{Field, Level as LogLevel};
-use quasar_frame::{CompletionPolicy, FrameSurface};
+use quasar_frame::{CompletionPolicy, FrameSurface, Gpu};
 use quasar_input::{Key, MouseButton};
 use quasar_profile::{FrameProfiler, FrameSample};
 use quasar_window::{
@@ -18,11 +18,7 @@ use quasar_window::{
     },
 };
 use std::time::Duration;
-use vulkanic_gal::{
-    FrameSurfaceDesc, PresentMode, TextureFormat, VulkanicGal,
-    resources::{Extent3d, GpuProfileClassifier, GpuProfileTag, GpuProfiledObject},
-    set_gpu_timestamps_requested,
-};
+use vulkanic_gal::PresentMode;
 
 pub fn run(settings: Settings, diagnostics: quasar_diagnostics::Diagnostics) -> Result<()> {
     let config = AppConfig {
@@ -50,7 +46,7 @@ struct PlaygroundApp {
     world: Option<Playground>,
     graphics: Option<render::Graphics>,
     surface: Option<FrameSurface>,
-    gal: Option<VulkanicGal>,
+    gal: Option<Gpu>,
     profiler: FrameProfiler,
     frames: u64,
     samples: usize,
@@ -85,50 +81,23 @@ impl PlaygroundApp {
             .window
             .ok_or_else(|| PlaygroundError::invalid("desktop runner did not provide a window"))?;
         let size = window.native().inner_size();
-        set_gpu_timestamps_requested(self.settings.benchmark);
-        let mut gal = VulkanicGal::create_windowed_vulkan(
-            "Physics Playground",
-            window.shared_native(),
-            FrameSurfaceDesc {
-                label: "physics-playground-surface".into(),
-                extent: Extent3d {
-                    width: size.width.max(1),
-                    height: size.height.max(1),
-                    depth: 1,
-                },
-                color_format: TextureFormat::Bgra8Unorm,
-                present_mode: if self.settings.benchmark {
-                    PresentMode::AutoNoVsync
-                } else {
-                    PresentMode::AutoVsync
-                },
-                max_frames_in_flight: 3,
-            },
-        )
-        .map_err(|error| PlaygroundError::invalid(format!("create GAL: {error}")))?;
-        gal.install_gpu_profile_classifier(GpuProfileClassifier {
-            classify: |kind, label| {
-                if matches!(kind, GpuProfiledObject::RenderPass) {
-                    GpuProfileTag {
-                        timing_scope: if label.starts_with("3d") {
-                            Some(0)
-                        } else if label.starts_with("2d") {
-                            Some(1)
-                        } else {
-                            None
-                        },
-                        ..GpuProfileTag::default()
-                    }
-                } else {
-                    GpuProfileTag::default()
-                }
-            },
-            statistics_scope_name: |index| if index == 0 { "world_3d" } else { "hud_2d" },
-        });
-        let graphics = render::Graphics::new(&mut gal)
+        let (gal, mut surface) =
+            FrameSurface::for_window(window.shared_native(), size.width, size.height)
+                .map_err(|e| PlaygroundError::invalid(format!("create graphics: {e}")))?;
+        surface.config.present_mode = if self.settings.benchmark {
+            PresentMode::AutoNoVsync
+        } else {
+            PresentMode::AutoVsync
+        };
+        surface
+            .reconfigure(&gal)
+            .map_err(|e| PlaygroundError::invalid(e.to_string()))?;
+
+        let graphics = render::Graphics::new(&gal)
             .map_err(|error| PlaygroundError::invalid(format!("create renderers: {error}")))?;
-        self.surface = Some(FrameSurface::new(size.width.max(1), size.height.max(1)));
+        self.surface = Some(surface);
         self.graphics = Some(graphics);
+        gal.set_gpu_timestamps(self.settings.benchmark);
         self.gal = Some(gal);
         self.diagnostics.event_with(
             LogLevel::Info,
@@ -227,33 +196,33 @@ impl PlaygroundApp {
     }
 
     fn release_graphics(&mut self) -> Result<()> {
-        if let Some(mut gal) = self.gal.take() {
-            if let Some(mut surface) = self.surface.take() {
-                let _ = surface.finish(&mut gal);
-                let _ = surface.release_targets(&mut gal);
+        if let Some(gpu) = self.gal.take() {
+            gpu.wait()
+                .map_err(|e| PlaygroundError::invalid(e.to_string()))?;
+            drop(self.graphics.take());
+            drop(self.surface.take());
+            gpu.wait()
+                .map_err(|e| PlaygroundError::invalid(e.to_string()))?;
+            if let Some(report) = gpu.instance.generate_report() {
+                let buffers = report.hub.buffers.num_kept_from_user;
+                let textures = report.hub.textures.num_kept_from_user;
+                let views = report.hub.texture_views.num_kept_from_user;
+                self.diagnostics.event_with(
+                    LogLevel::Info,
+                    "physics-playground.resources",
+                    "teardown",
+                    [
+                        Field::new("live_buffers", buffers as u64),
+                        Field::new("live_textures", textures as u64),
+                        Field::new("live_views", views as u64),
+                    ],
+                );
+                if buffers + textures + views != 0 {
+                    return Err(PlaygroundError::invalid(
+                        "GPU resources remain owned at teardown",
+                    ));
+                }
             }
-            if let Some(mut graphics) = self.graphics.take() {
-                let _ = graphics.release_targets(&mut gal);
-                graphics.release(&mut gal).map_err(|error| {
-                    PlaygroundError::invalid(format!("release graphics: {error}"))
-                })?;
-            }
-            let _ = gal.shutdown_frame_surface();
-            let _ = gal.retire_through(gal.latest_submission_id());
-            let metrics = gal.metrics();
-            self.diagnostics.event_with(
-                if metrics.resource_creates == metrics.resource_destroys {
-                    LogLevel::Info
-                } else {
-                    LogLevel::Warn
-                },
-                "physics-playground.resources",
-                "teardown",
-                [
-                    Field::new("created", metrics.resource_creates),
-                    Field::new("destroyed", metrics.resource_destroys),
-                ],
-            );
         }
         Ok(())
     }
@@ -275,6 +244,7 @@ impl Application for PlaygroundApp {
         self.release_graphics()
     }
     fn shutdown(&mut self, _: &mut AppContext<'_>) -> Result<()> {
+        self.release_graphics()?;
         self.write_benchmark();
         if let Some(world) = &self.world {
             let stats = world.stats();
@@ -288,7 +258,7 @@ impl Application for PlaygroundApp {
                 ],
             );
         }
-        self.release_graphics()
+        Ok(())
     }
 }
 

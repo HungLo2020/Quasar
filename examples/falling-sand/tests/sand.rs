@@ -2,8 +2,8 @@ use falling_sand::render::Graphics;
 use falling_sand::sand::{
     Cell, GRID_HEIGHT, GRID_WIDTH, SandInput, SandWorld, Tool, autoplay_input,
 };
+use quasar_frame::Gpu;
 use quasar_frame::OffscreenTarget;
-use vulkanic_gal::BackendChoice;
 
 fn run_script(seed: u64, ticks: u64) -> SandWorld {
     let mut world = SandWorld::new(seed);
@@ -152,10 +152,9 @@ fn state_hash_reacts_to_input_and_reset_is_deterministic() {
 #[test]
 #[ignore = "requires a Vulkan-capable graphics device"]
 fn offscreen_frame_is_non_uniform_and_resources_balance() {
-    let mut gal =
-        vulkanic_gal::VulkanicGal::create(BackendChoice::Vulkan, "falling sand test").unwrap();
-    let mut graphics = Graphics::new(&mut gal).unwrap();
-    let mut target = OffscreenTarget::new(&mut gal, 480, 270).unwrap();
+    let gal = Gpu::headless().unwrap();
+    let mut graphics = Graphics::new(&gal).unwrap();
+    let target = OffscreenTarget::new(&gal, 480, 270).unwrap();
     let world = run_script(31, 40);
     let mut menu = falling_sand::menu::Menu::new(falling_sand::settings::UiOptions::default());
     menu.open_main();
@@ -167,7 +166,7 @@ fn offscreen_frame_is_non_uniform_and_resources_balance() {
     )
     .unwrap();
     let report = target
-        .render(&mut gal, |gal, target| {
+        .render(&gal, |gal, target| {
             graphics.commands(
                 gal,
                 target,
@@ -182,9 +181,16 @@ fn offscreen_frame_is_non_uniform_and_resources_balance() {
     let colors: std::collections::BTreeSet<_> =
         report.rgba.as_chunks::<4>().0.iter().copied().collect();
     assert!(colors.len() > 4);
-    target.release(&mut gal).unwrap();
-    graphics.release(&mut gal).unwrap();
-    gal.retire_through(gal.latest_submission_id()).unwrap();
-    let metrics = gal.metrics();
-    assert_eq!(metrics.resource_creates, metrics.resource_destroys);
+    target.release(&gal).unwrap();
+    graphics.release(&gal).unwrap();
+
+    drop(graphics);
+    gal.wait().unwrap();
+    let h = gal.instance.generate_report().unwrap().hub;
+    assert_eq!(
+        h.buffers.num_kept_from_user
+            + h.textures.num_kept_from_user
+            + h.texture_views.num_kept_from_user,
+        0
+    );
 }

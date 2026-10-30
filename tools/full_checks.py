@@ -199,12 +199,12 @@ SECTIONS: list[list] = [
                 "cargo test --locked -p quasar-workspace-checks"
             ],
             [
-                "python tools/verify_pong.py",
-                "python tools/verify_pong.py"
+                "python3 tools/verify_pong.py",
+                "python3 tools/verify_pong.py"
             ],
             [
-                "python tools/verify_tilemap.py",
-                "python tools/verify_tilemap.py"
+                "python3 tools/verify_tilemap.py",
+                "python3 tools/verify_tilemap.py"
             ]
         ]
     ],
@@ -258,7 +258,7 @@ SECTIONS: list[list] = [
             ],
             [
                 "Check backend feature separation",
-                "cargo check --locked -p vulkanic-gal --no-default-features\ncargo check --locked -p vulkanic-gal --no-default-features --features vulkan\ncargo check --locked -p vulkanic-gal --no-default-features --features opengl\ncargo check --locked -p vulkanic-gal --no-default-features --features wgpu\ncargo check --locked -p vulkanic-gal --no-default-features --features test-support\ncargo check --locked -p quasar-frame --no-default-features\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,vulkan\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,opengl\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,wgpu\ncargo check --locked -p quasar-render-3d --no-default-features --features vulkan\ncargo check --locked -p quasar-render-3d --no-default-features --features opengl\ncargo check --locked -p quasar-window --no-default-features\ncargo check --locked -p quasar-input --no-default-features\ncargo check --locked -p quasar-assets --no-default-features\ncargo check --locked -p quasar-diagnostics --no-default-features\ncargo check --locked -p quasar-app --no-default-features\ncargo check --locked -p quasar-jobs --no-default-features\ncargo check --locked -p quasar-sim --no-default-features\ncargo check --locked -p quasar-config --no-default-features\ncargo check --locked -p quasar-profile --no-default-features\ncargo check --locked -p quasar-spatial --no-default-features\ncargo check --locked -p quasar-physics --no-default-features\ncargo check --locked -p quasar-physics --no-default-features --features dim2\ncargo check --locked -p quasar-physics --no-default-features --features dim3\ncargo check --locked -p quasar-animation --no-default-features\ncargo check --locked -p quasar-nav --no-default-features\ncargo check --locked -p starfall --no-default-features\ncargo check --locked -p falling-sand --no-default-features\ncargo check --locked -p physics-playground --no-default-features\ncargo clippy --locked -p quasar-window --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p quasar-sim --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p quasar-jobs --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p quasar-app --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p quasar-assets --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p quasar-diagnostics --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p vulkanic-gal --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p vulkanic-gal --all-targets --no-default-features --features opengl -- -D warnings\ncargo clippy --locked -p vulkanic-gal --all-targets --no-default-features --features wgpu -- -D warnings\ncargo clippy --locked -p vulkanic-gal --all-targets --features opengl,wgpu -- -D warnings\ncargo clippy --locked -p vulkanic-gal --all-targets --features opengl,test-support -- -D warnings\ncargo clippy --locked -p quasar-render-2d --all-targets --no-default-features --features gpu -- -D warnings\ncargo clippy --locked -p quasar-render-2d --all-targets --no-default-features --features gpu,opengl -- -D warnings\ncargo clippy --locked -p quasar-render-3d --all-targets --no-default-features --features opengl -- -D warnings"
+                "cargo check --locked -p vulkanic-gal --no-default-features\ncargo check --locked -p vulkanic-gal --no-default-features --features vulkan\ncargo check --locked -p vulkanic-gal --no-default-features --features gles\ncargo check --locked -p vulkanic-gal --no-default-features --features metal,dx12\ncargo check --locked -p vulkanic-gal --no-default-features --features counters\ncargo check --locked -p quasar-frame --no-default-features\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,vulkan\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,gles\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,metal,dx12\ncargo check --locked -p quasar-render-3d --no-default-features --features vulkan\ncargo check --locked -p quasar-render-3d --no-default-features --features gles\ncargo check --locked -p quasar-window --no-default-features\ncargo check --locked -p quasar-input --no-default-features\ncargo check --locked -p quasar-assets --no-default-features\ncargo check --locked -p quasar-diagnostics --no-default-features\ncargo check --locked -p quasar-app --no-default-features\ncargo check --locked -p quasar-jobs --no-default-features\ncargo check --locked -p quasar-sim --no-default-features\ncargo check --locked -p quasar-config --no-default-features\ncargo check --locked -p quasar-profile --no-default-features\ncargo check --locked -p quasar-spatial --no-default-features\ncargo check --locked -p quasar-physics --no-default-features\ncargo check --locked -p quasar-physics --no-default-features --features dim2\ncargo check --locked -p quasar-physics --no-default-features --features dim3\ncargo check --locked -p quasar-animation --no-default-features\ncargo check --locked -p quasar-nav --no-default-features\ncargo check --locked -p starfall --no-default-features\ncargo check --locked -p falling-sand --no-default-features\ncargo check --locked -p physics-playground --no-default-features\ncargo clippy --locked -p quasar-window --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p quasar-sim --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p quasar-jobs --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p quasar-app --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p quasar-assets --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p quasar-diagnostics --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p vulkanic-gal --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p vulkanic-gal --all-targets --no-default-features --features gles -- -D warnings\ncargo clippy --locked -p vulkanic-gal --all-targets --no-default-features --features metal,dx12 -- -D warnings\ncargo clippy --locked -p vulkanic-gal --all-targets --features gles,vulkan -- -D warnings\ncargo clippy --locked -p vulkanic-gal --all-targets --features gles,counters -- -D warnings\ncargo clippy --locked -p quasar-render-2d --all-targets --no-default-features --features gpu -- -D warnings\ncargo clippy --locked -p quasar-render-2d --all-targets --no-default-features --features gpu,gles -- -D warnings\ncargo clippy --locked -p quasar-render-3d --all-targets --no-default-features --features gles -- -D warnings"
             ],
             [
                 "Verify optional collision integration dependencies",
@@ -279,15 +279,15 @@ SECTIONS: list[list] = [
         [
             [
                 "Headless indexed rendering and incremental tilemap feature matrix",
-                "cargo test --locked -p quasar-render-2d --no-default-features\ncargo test --locked -p quasar-render-2d --no-default-features --features assets\ncargo test --locked -p quasar-tilemap --no-default-features\ncargo test --locked -p quasar-tilemap --no-default-features --features render-2d\ncargo test --locked -p quasar-tilemap --no-default-features --features png\ncargo test --locked -p tilequest --no-default-features\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,vulkan\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,wgpu\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,opengl"
+                "cargo test --locked -p quasar-render-2d --no-default-features\ncargo test --locked -p quasar-render-2d --no-default-features --features assets\ncargo test --locked -p quasar-tilemap --no-default-features\ncargo test --locked -p quasar-tilemap --no-default-features --features render-2d\ncargo test --locked -p quasar-tilemap --no-default-features --features png\ncargo test --locked -p tilequest --no-default-features\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,vulkan\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,metal,dx12\ncargo check --locked -p quasar-render-2d --no-default-features --features gpu,gles"
             ],
             [
                 "Native Vulkan indexed pixels, palette lifetimes and shared atlases",
-                "VULKANIC_BACKEND=vulkan cargo test --locked -p quasar-render-2d --all-features -p quasar-composition -p tilequest --lib -- --include-ignored --test-threads=1"
+                "WGPU_BACKEND=vulkan cargo test --locked -p quasar-render-2d --all-features -p quasar-composition -p tilequest --lib -- --include-ignored --test-threads=1"
             ],
             [
-                "wgpu indexed pixels, palette lifetimes and shared atlases",
-                "VULKANIC_BACKEND=wgpu cargo test --locked -p quasar-render-2d --all-features -p quasar-composition -p tilequest --lib -- --include-ignored --test-threads=1"
+                "GLES rendering or explicit upstream capability error",
+                "WGPU_BACKEND=gl WGPU_VALIDATION_INDIRECT_CALL=0 cargo test --locked -p quasar-render-2d --all-features --lib gpu_backend_capability_errors_are_explicit -- --ignored --test-threads=1 --nocapture"
             ],
             [
                 "CPU-only retro example and GPU example parity",
@@ -307,8 +307,8 @@ SECTIONS: list[list] = [
                 "xvfb-run -a cargo test --locked -p quasar-ui --all-features --test render -- --ignored --test-threads=1"
             ],
             [
-                "Run OpenGL backend and cross-backend conformance tests",
-                "xvfb-run -a cargo test --locked -p vulkanic-gal --no-default-features --features vulkan,opengl --lib -- --include-ignored --test-threads=1"
+                "Check native re-export and renderer conformance",
+                "xvfb-run -a cargo test --locked -p quasar-render-3d --all-features --tests -- --include-ignored --test-threads=1\ncargo test --locked -p quasar-frame -p quasar-profile --features quasar-frame/vulkan --tests -- --ignored --test-threads=1"
             ],
             [
                 "Exercise native resize and failed-frame recovery",
@@ -367,8 +367,8 @@ SECTIONS: list[list] = [
                 "cargo run --locked -p physics-playground -- --headless --ticks 240 --autoplay\ncargo run --locked -p physics-playground -- --headless --ticks 120 --autoplay --screenshot /tmp/physics-playground.png"
             ],
             [
-                "Test Nightwatch shape-aware scene on Vulkan and wgpu",
-                "xvfb-run -a cargo test --locked -p nightwatch --test render -- --ignored --test-threads=1\nxvfb-run -a env VULKANIC_BACKEND=wgpu cargo test --locked -p nightwatch --features vulkanic-gal/wgpu --test render -- --ignored --test-threads=1"
+                "Test Nightwatch shape-aware scene on native wgpu Vulkan",
+                "xvfb-run -a cargo test --locked -p nightwatch --test render -- --ignored --test-threads=1\ncargo run --locked -p nightwatch --no-default-features --features graphics -- --headless --ticks 30 --autoplay --no-audio --resolution 640x360 --screenshot /tmp/nightwatch-graphics-headless.png"
             ],
             [
                 "Test Physics Playground shared-GAL rendering",

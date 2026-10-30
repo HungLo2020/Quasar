@@ -19,8 +19,7 @@ window implementing raw-window-handle traits and uses `quasar-frame` for target
 caching, acquire/present, cancellation and completion polling. A custom
 application can use `RenderState2D` on a caller-owned GAL instead, or skip the
 presenter and record directly through VulkanicGAL for higher-level 2D/3D
-rendering. Dynamic RGBA8 textures are persistent GPU resources updated through
-per-frame upload slots, so they compose with 3D and direct GAL work.
+rendering. Dynamic RGBA8 texture IDs retain immutable native upload generations, so they compose with 3D and direct GAL work.
 
 ## Windowing and input contract
 
@@ -197,60 +196,21 @@ Cursor locking falls back to confinement if the platform does not support a lock
 
 ## Presentation and lifetime
 
-VulkanicGAL's `vulkan`, `opengl` and `wgpu` backends are independent Cargo
-features; `vulkan` is the default. Vulkan-only dependencies (`ash`,
-`ash-window`), OpenGL-only dependencies (`glow`) and wgpu-only dependencies
-(`wgpu`, `naga`) are not compiled unless their feature is selected; Shaderc is
-shared by the two SPIR-V backends. `BackendChoice` names every backend in every
-configuration; requesting a backend that was compiled out returns an explicit
-unsupported error. The wgpu backend reaches Metal and Direct3D 12 through the
-same frontend, so renderers gained them without API changes.
+VulkanicGAL is an unmodified upstream wgpu re-export. Native types and command
+buffers pass directly between renderers and applications. Only VulkanicGAL owns
+the external graphics dependency; architecture tests enforce this boundary.
+`quasar-frame` supplies optional native setup, surface/readback and profiling
+helpers. See [native graphics migration](native-wgpu-migration.md) for the current
+API, feature forwarding, ownership and composition rules.
 
-Only VulkanicGAL may depend on native graphics crates. The
-`quasar-workspace-checks` tests fail if any other workspace crate reaches
-`ash`, `glow`, `wgpu`, `naga` or Shaderc through the lockfile (directly or
-through a third-party crate), or names them in source.
-
-`Renderer2D::headless_with(BackendChoice)` and
-`Renderer2D::from_windowed_gal(...)` are backend-neutral creation paths.
-Backend selection is typed: `GalOptions` carries a `GraphicsBackend` (`Auto`
-by default: native Vulkan, then wgpu), an optional fallback to automatic
-selection, and whether the `VULKANIC_BACKEND` developer override may replace
-an explicit choice. `VulkanicGal::backend_info()` reports the requested and
-selected backend, any override or fallback, and the device and driver, for
-debug screens and performance reports. `Renderer2D::headless()` and
-`for_window()` use `Auto`; `*_with` variants take `GalOptions`. The Vulkan
-presenter creates an owned surface through
-ash-window; the wgpu presenter creates one through wgpu. The backend
-retains an Arc to the native window until its Vulkan resources have been
-destroyed. The legacy raw-integer native-window constructor is unsafe: its
-caller must guarantee native handle validity and lifetime. OpenGL keeps its
-existing borrowed/isolated-context behavior; Quasar does not create an OpenGL
-window, context or buffer swap. Framebuffer pixels are uploaded into a
-persistent RGBA8 texture; a fullscreen quad uses the same viewport math as
-other 2D draws.
-
-A framebuffer is tightly packed RGBA8, top row first. Source dimensions stay
-fixed for one presenter. A persistent sampled GPU texture and a fullscreen quad
-handle letterboxing, nearest/linear filtering and scaling. `Viewport` maps
-physical cursor coordinates back to source pixels and rejects positions in the
-bars. A custom display aspect accommodates non-square source pixels. Integer
-scaling falls back to fit when the window is too small, and custom non-square
-proportions use fit scaling.
-
-Resize events mark the surface for recreation before the next acquisition.
-Zero-sized windows defer presentation. Acquire/present status handles changing
-and suboptimal swapchains. OS suspension drops the presenter before the game
-window; resume reconstructs both while preserving simulation state.
-
-`FrameSurface` caches acquired targets and `RenderState2D` caches passes.
-Up to three prepared slots keep geometry, uniforms and framebuffer uploads
-separate until their submission completes; synchronous retirement remains the
-default and completion polling is opt-in. Dynamic framebuffer pixels are staged
-per prepared command list, so out-of-order submission cannot overwrite an
-in-flight frame's contents. The imported GAL still serializes graphics backend
-lifetimes with a global lock; multiple simultaneous GAL instances are not
-currently supported by this layer.
+Surfaces retain an Arc window, defer zero-size acquisition and recover from
+outdated/lost images. A SurfaceFrame owns an acquired image until presentation
+or Drop. No global device lock or fixed prepared-frame registry exists.
+Native command buffers retain their resources; explicit encoder ordering governs
+writes, render passes and copies. Updated dynamic images use immutable snapshots
+so preparing or submitting another frame cannot corrupt an outstanding frame.
+The `Viewport` still handles fit/integer scaling, aspect correction, nearest/linear
+filtering, letterboxing and physical mouse coordinates.
 
 ## Timing and automation
 
@@ -319,10 +279,9 @@ Controls are stored under the shared configuration directory and validate action
 names and schema version. Explicit CLI presets are validated before graphics
 initialization and never replace saved controls.
 
-VulkanicGAL's shader disk cache is disabled unless `VULKANIC_SPIRV_CACHE_DIR` is
-explicitly set. The library does not invent a HOME/XDG location. Applications
-can opt in with a directory under their resolved cache path. Driver-owned shader
-caches are outside the application's storage API.
+Shader/pipeline cache behavior belongs to upstream wgpu and drivers. Quasar does
+not implement a Shaderc/SPIR-V disk cache or choose a hidden cache directory.
+Explicit application caches can use Basalt-resolved locations.
 
 ## Boundaries for the next consumers
 

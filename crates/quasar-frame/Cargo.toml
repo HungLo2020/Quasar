@@ -9,8 +9,10 @@ publish.workspace = true
 [features]
 default = []
 vulkan = ["vulkanic-gal/vulkan"]
-opengl = ["vulkanic-gal/opengl"]
-wgpu = ["vulkanic-gal/wgpu"]
+gles = ["vulkanic-gal/gles"]
+metal = ["vulkanic-gal/metal"]
+dx12 = ["vulkanic-gal/dx12"]
+native = ["vulkanic-gal/vulkan", "vulkanic-gal/metal", "vulkanic-gal/dx12", "vulkanic-gal/gles"]
 diagnostics = ["dep:quasar-diagnostics"]
 
 [dependencies]

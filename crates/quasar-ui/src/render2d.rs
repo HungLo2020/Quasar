@@ -52,10 +52,10 @@ impl UiRenderer {
     pub fn prepare_text(
         &mut self,
         state: &mut quasar_render_2d::RenderState2D,
-        gal: &mut quasar_render_2d::VulkanicGal,
+        gal: &quasar_render_2d::Gpu,
         textures: &mut quasar_render_2d::Textures,
         ui: &Ui,
-    ) -> quasar_render_2d::GalResult<()> {
+    ) -> quasar_render_2d::GraphicsResult<()> {
         if let Some(text) = &mut self.text {
             text.prepare(state, gal, textures, ui)?;
         }

@@ -9,7 +9,7 @@ autobins = false
 
 [features]
 default = ["desktop"]
-desktop = ["quasar-app/desktop", "quasar-render-2d/gpu", "quasar-render-2d/vulkan"]
+desktop = ["quasar-app/desktop", "quasar-render-2d/gpu", "quasar-render-2d/native"]
 
 [dependencies]
 quasar-app = { workspace = true, default-features = false }

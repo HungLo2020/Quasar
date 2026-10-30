@@ -8,10 +8,10 @@ collision-only FPS: no dynamic rigid-body integration is needed.
 ## Reusing the library
 
 ```toml
-quasar-physics = { version = "0.2.19", default-features = false, features = ["dim3"] }
+quasar-physics = { version = "0.2.20", default-features = false, features = ["dim3"] }
 # Optional CPU model-data fitting, without a decoder or renderer:
 # features = ["dim3", "model-assets"]
-quasar-nav = { version = "0.2.19", features = ["physics3d"] } # optional
+quasar-nav = { version = "0.2.20", features = ["physics3d"] } # optional
 ```
 
 `dim3::{Shape3, PlacedShape3, RigidPose3, Bounds3, CapsuleController3}` are

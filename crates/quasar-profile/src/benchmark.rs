@@ -138,6 +138,22 @@ impl BenchmarkSession {
         {
             return Err(BenchmarkError::MissingGpu);
         }
+        for (threshold, samples, name) in [
+            (
+                self.config.thresholds.max_resource_creates_p99,
+                summary.resource_creates.samples,
+                "resource creates",
+            ),
+            (
+                self.config.thresholds.max_host_write_bytes_p99,
+                summary.host_write_bytes.samples,
+                "host writes",
+            ),
+        ] {
+            if threshold.is_some() && samples < summary.window_samples as u64 {
+                return Err(BenchmarkError::MissingMetric(name));
+            }
+        }
         self.config
             .thresholds
             .check(&summary)
@@ -188,6 +204,7 @@ pub enum BenchmarkError {
     InvalidConfig(&'static str),
     NoSamples,
     MissingGpu,
+    MissingMetric(&'static str),
     Threshold(ProfileViolation),
 }
 impl std::fmt::Display for BenchmarkError {
@@ -198,6 +215,10 @@ impl std::fmt::Display for BenchmarkError {
             Self::MissingGpu => {
                 f.write_str("GPU threshold requires valid timestamps for every measured frame")
             }
+            Self::MissingMetric(name) => write!(
+                f,
+                "{name} threshold requires measured values for every frame; upstream backend details are unavailable"
+            ),
             Self::Threshold(e) => e.fmt(f),
         }
     }

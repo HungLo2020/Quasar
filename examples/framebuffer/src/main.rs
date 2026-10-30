@@ -118,72 +118,50 @@ fn paint(pixels: &mut [u8], frame: u64) {
 struct Bench {
     cpu: Vec<u64>,
     gpu: Vec<u64>,
-    latencies: Vec<u64>,
+    gpu_pending: Vec<quasar_render_2d::GpuTiming>,
     uploads: u64,
     waits: u64,
-    idles: u64,
-    creates: u64,
-    destroys: u64,
     allocations: u64,
     bytes: u64,
-    last_gpu: u64,
     started: Instant,
 }
 impl Bench {
-    fn begin(presenter: &FramebufferPresenter) -> Self {
-        let backend = presenter.backend_metrics();
-        let metrics = presenter.gal_metrics();
+    fn begin(_presenter: &FramebufferPresenter) -> Self {
         Self {
             cpu: Vec::new(),
             gpu: Vec::new(),
-            latencies: Vec::new(),
+            gpu_pending: Vec::new(),
             uploads: 0,
-            waits: backend.native_wait_count,
-            idles: backend.native_device_wait_idle_count,
-            creates: metrics.resource_creates,
-            destroys: metrics.resource_destroys,
+            waits: 0,
             allocations: ALLOCS.load(Ordering::Relaxed),
             bytes: ALLOC_BYTES.load(Ordering::Relaxed),
-            last_gpu: backend.gpu_timestamp_status,
             started: Instant::now(),
         }
     }
     fn sample(&mut self, presenter: &mut FramebufferPresenter, cpu_nanos: u64) {
         self.cpu.push(cpu_nanos);
         self.uploads += presenter.stats().texture_upload_bytes as u64;
-        self.latencies.extend(
-            presenter
-                .take_completion_latencies()
-                .into_iter()
-                .map(|(_, nanos)| nanos),
-        );
-        let backend = presenter.backend_metrics();
-        if backend.gpu_timestamp_status > self.last_gpu {
-            self.gpu.push(backend.gpu_frame_total_nanos);
-            self.last_gpu = backend.gpu_timestamp_status;
+        let r = presenter.renderer.frame_report();
+        self.waits += r.blocking_waits;
+        if let Some(t) = &r.gpu_timing {
+            self.gpu_pending.push(t.clone());
+        } else if let Some(n) = r.gpu_frame_nanos {
+            self.gpu.push(n);
         }
     }
     fn write(&self, path: &PathBuf, presenter: &FramebufferPresenter, poll: bool) -> Result {
-        let backend = presenter.backend_metrics();
-        let metrics = presenter.gal_metrics();
-        let report = serde_json::json!({
-            "build": if cfg!(debug_assertions) { "debug" } else { "release" },
-            "device": presenter.device_name(),
-            "policy": if poll { "completion-poll" } else { "synchronous" },
-            "frames": self.cpu.len(),
-            "warmup_frames": 64,
-            "elapsed_ms": self.started.elapsed().as_secs_f64() * 1000.,
-            "cpu_present_ms": distribution(&self.cpu),
-            "gpu_frame_ms": distribution(&self.gpu),
-            "submission_to_observed_completion_ms": distribution(&self.latencies),
-            "texture_upload_bytes": self.uploads,
-            "blocking_timeline_waits": backend.native_wait_count - self.waits,
-            "device_idle_waits": backend.native_device_wait_idle_count - self.idles,
-            "resource_creates": metrics.resource_creates - self.creates,
-            "resource_destroys": metrics.resource_destroys - self.destroys,
-            "rust_allocations": ALLOCS.load(Ordering::Relaxed) - self.allocations,
-            "rust_allocated_bytes": ALLOC_BYTES.load(Ordering::Relaxed) - self.bytes,
-        });
+        presenter.renderer.gpu.wait()?;
+        let gpu_samples: Vec<_> = self
+            .gpu
+            .iter()
+            .copied()
+            .chain(
+                self.gpu_pending
+                    .iter()
+                    .filter_map(quasar_render_2d::GpuTiming::nanos),
+            )
+            .collect();
+        let report = serde_json::json!({"build":if cfg!(debug_assertions){"debug"}else{"release"},"device":presenter.device_name(),"policy":if poll{"completion-poll"}else{"synchronous"},"frames":self.cpu.len(),"warmup_frames":64,"elapsed_ms":self.started.elapsed().as_secs_f64()*1000.,"cpu_present_ms":distribution(&self.cpu),"gpu_frame_ms":distribution(&gpu_samples),"texture_upload_bytes":self.uploads,"blocking_waits":self.waits,"rust_allocations":ALLOCS.load(Ordering::Relaxed)-self.allocations,"rust_allocated_bytes":ALLOC_BYTES.load(Ordering::Relaxed)-self.bytes});
         std::fs::write(path, serde_json::to_vec_pretty(&report)?)?;
         println!("benchmark={}", path.display());
         Ok(())
@@ -336,6 +314,10 @@ impl ApplicationHandler for App {
                 DisplayOptions::default(),
             )?;
             presenter.set_frame_overlap(self.options.poll);
+            presenter
+                .renderer
+                .gpu
+                .set_gpu_timestamps(self.options.benchmark.is_some());
             self.presenter = Some(presenter);
             self.window = Some(window);
             self.started = Instant::now();
@@ -395,9 +377,6 @@ fn main() -> Result {
     let options = Options::parse()?;
     if options.headless {
         return headless(&options);
-    }
-    if options.benchmark.is_some() {
-        vulkanic_gal::set_gpu_timestamps_requested(true);
     }
     let frames = options.frames.unwrap_or(if options.benchmark.is_some() {
         364

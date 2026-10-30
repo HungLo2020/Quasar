@@ -1,4 +1,4 @@
-//! Explicit, bounded shadow passes on the caller's GAL. No scene/object registry.
+//! Explicit, bounded shadow passes on the caller's device. No scene/object registry.
 use super::*;
 /// Nearest depth comparisons, optionally averaged in a fixed square PCF kernel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -37,7 +37,7 @@ impl Default for ShadowSettings {
         }
     }
 }
-/// Explicit worst-case budgets for at most three outstanding shadow generations.
+/// Explicit budgets for one immutable prepared shadow generation.
 #[derive(Clone, Copy, Debug)]
 pub struct ShadowConfig {
     /// Square map extent, 32..=4096 subject to device/memory limits.
@@ -46,9 +46,10 @@ pub struct ShadowConfig {
     pub max_maps: usize,
     /// Total caster draws across all maps in one preparation.
     pub max_casters: usize,
-    /// Budget for all three depth-array slots, including the minimum two layers.
+    /// Budget per prepared depth array, including the minimum two layers.
+    /// Applications bound outstanding native frames to control total GPU memory.
     pub max_depth_bytes: u64,
-    pub raster_bias: DepthBias,
+    pub raster_bias: DepthBiasState,
 }
 impl Default for ShadowConfig {
     fn default() -> Self {
@@ -57,9 +58,10 @@ impl Default for ShadowConfig {
             max_maps: 2,
             max_casters: 4096,
             max_depth_bytes: 64 * 1024 * 1024,
-            raster_bias: DepthBias {
-                constant_factor: 1.,
-                slope_factor: 1.5,
+            raster_bias: DepthBiasState {
+                constant: 1,
+                slope_scale: 1.5,
+                clamp: 0.,
             },
         }
     }
@@ -68,7 +70,7 @@ impl Default for ShadowConfig {
 pub struct ShadowCaster<'a> {
     pub mesh: &'a Mesh,
     pub model: Mat4,
-    pub texture_view: Handle,
+    pub texture_view: TextureView,
     pub alpha_cutoff: f32,
     pub opacity: f32,
 }
@@ -88,30 +90,22 @@ pub struct ShadowStats {
     pub uniform_upload_bytes: usize,
     pub allocated_depth_bytes: u64,
 }
-/// Owns a reservation on the atlas generation. Keep it until all receivers are prepared.
-/// Cloning/holding the binding prevents overwriting maps still referenced by consumers.
+/// Immutable atlas generation. Native texture references retain it across prepared frames.
 #[derive(Clone, Debug)]
 pub struct ShadowBinding {
-    pub(crate) view: Handle,
-    pub(crate) pair: Handle,
+    pub(crate) view: TextureView,
     pub(crate) records: Vec<[f32; 24]>,
-    pub(crate) usage: SubmissionUsage,
 }
 impl ShadowBinding {
-    pub fn texture_view(&self) -> Handle {
-        self.view
-    }
-    /// Include TrackSubmission with this receipt in custom GAL consumers of the view.
-    pub fn submission_usage(&self) -> SubmissionUsage {
-        self.usage.clone()
+    pub fn texture_view(&self) -> &TextureView {
+        &self.view
     }
     pub fn map_count(&self) -> usize {
         self.records.len()
     }
 }
-/// Submit commands before all receivers using the accompanying binding.
 pub struct PreparedShadows {
-    pub commands: CommandList,
+    pub commands: CommandBuffer,
     pub stats: ShadowStats,
     binding: ShadowBinding,
 }
@@ -120,34 +114,94 @@ impl PreparedShadows {
         &self.binding
     }
 }
-struct ShadowSlot {
-    texture: Handle,
-    view: Handle,
-    pair: Handle,
-    targets: Vec<Handle>,
-    passes: Vec<Handle>,
-    owned: Vec<Handle>,
-    uniform: Handle,
-    instances: Option<Handle>,
-    instance_capacity: usize,
-    capacity: usize,
-    sets: BTreeMap<(Handle, Handle), Handle>,
-    usage: SubmissionUsage,
+/// Caller-owned native depth array. Reusing it requires producer/receiver frame batches
+/// to remain ordered; `prepare` instead provides independent immutable generations.
+#[derive(Clone, Debug)]
+pub struct ShadowTarget {
+    view: TextureView,
+    layers: Vec<TextureView>,
 }
-/// Depth-only map producer using the caller's device and submission ordering.
+impl ShadowTarget {
+    pub fn new(gpu: &Gpu, config: ShadowConfig) -> GraphicsResult<Self> {
+        config.validate(gpu)?;
+        checked(gpu, || {
+            let texture = gpu.device.create_texture(&TextureDescriptor {
+                label: Some("shadow target"),
+                size: Extent3d {
+                    width: config.resolution,
+                    height: config.resolution,
+                    depth_or_array_layers: config.max_maps.max(2) as u32,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Depth32Float,
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            Self::from_texture(&texture)
+        })?
+    }
+    pub fn from_texture(texture: &Texture) -> GraphicsResult<Self> {
+        if texture.dimension() != TextureDimension::D2
+            || texture.width() != texture.height()
+            || texture.depth_or_array_layers() < 2
+            || texture.format() != TextureFormat::Depth32Float
+            || texture.sample_count() != 1
+            || texture.mip_level_count() != 1
+            || !texture
+                .usage()
+                .contains(TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING)
+        {
+            return Err(error(
+                "shadow target requires a sampled/renderable square Depth32Float array",
+            ));
+        }
+        let view = texture.create_view(&TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let layers = (0..texture.depth_or_array_layers())
+            .map(|layer| {
+                texture.create_view(&TextureViewDescriptor {
+                    dimension: Some(TextureViewDimension::D2),
+                    base_array_layer: layer,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        Ok(Self { view, layers })
+    }
+    pub fn texture_view(&self) -> &TextureView {
+        &self.view
+    }
+    pub fn texture(&self) -> &Texture {
+        self.view.texture()
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ShadowGroupKey {
+    vertices: Buffer,
+    image: TextureView,
+    sampler: Sampler,
+}
+#[derive(Default)]
+struct ShadowLayerCache {
+    instances: Option<Buffer>,
+    groups: HashMap<ShadowGroupKey, BindGroup>,
+}
 pub struct ShadowRenderState3D {
     config: ShadowConfig,
-    layout: Handle,
-    resource_layout: Handle,
-    pipeline: Handle,
-    sampler: Handle,
-    owned: Vec<Handle>,
-    slots: Vec<ShadowSlot>,
-    pairs: BTreeMap<Handle, Handle>,
-    sampler_overrides: BTreeMap<Handle, Handle>,
-    stride: usize,
+    layers: Vec<ShadowLayerCache>,
+    batch_buffer: Buffer,
+    bindings: BindGroupLayout,
+    pipeline: RenderPipeline,
+    sampler: Sampler,
+    samplers: BTreeMap<TextureView, Sampler>,
     submission: SubmissionConfig,
     work: RenderWork,
+    released: bool,
     #[cfg(feature = "diagnostics")]
     diagnostics: quasar_diagnostics::Diagnostics,
 }
@@ -156,177 +210,156 @@ impl ShadowConfig {
         u64::from(self.resolution)
             .checked_mul(u64::from(self.resolution))?
             .checked_mul(self.max_maps.max(2) as u64)?
-            .checked_mul(4 * 3)
+            .checked_mul(4)
     }
-    fn validate(self, gal: &VulkanicGal) -> GalResult<()> {
-        let c = gal.capabilities();
+    fn validate(self, gpu: &Gpu) -> GraphicsResult<()> {
         if !(32..=4096).contains(&self.resolution)
+            || self.resolution > gpu.device.limits().max_texture_dimension_2d
             || !(1..=16).contains(&self.max_maps)
-            || self.max_casters > 4096
-            || self.max_casters == 0
-            || !self.raster_bias.is_finite()
-            || self.raster_bias.constant_factor < 0.
-            || self.raster_bias.slope_factor < 0.
-            || self
-                .depth_bytes()
-                .is_none_or(|bytes| bytes > self.max_depth_bytes)
+            || self.max_maps.max(2) as u32 > gpu.device.limits().max_texture_array_layers
+            || !(1..=4096).contains(&self.max_casters)
+            || !self.raster_bias.slope_scale.is_finite()
+            || self.raster_bias.slope_scale < 0.
+            || self.raster_bias.constant < 0
+            || !self.raster_bias.clamp.is_finite()
+            || self.depth_bytes().is_none_or(|b| b > self.max_depth_bytes)
         {
-            return Err(GalError::invalid_argument(
+            return Err(error(
                 "invalid shadow resolution/map/caster/depth-memory budget or raster bias",
-            ));
-        }
-        if !c.features.depth_only_pass
-            || !c.features.texture_array_layers
-            || !c.features.storage_buffers
-            || !c.features.dynamic_buffer_offsets
-            || !c.features.uniform_buffers
-            || self.resolution > c.limits.max_texture_extent_2d
-            || self.max_maps.max(2) as u32 > c.limits.max_texture_array_layers
-            || c.limits.max_resource_layout_bindings < 3
-        {
-            return Err(GalError::unsupported_feature(
-                "shadow maps require depth-only passes, sampled depth arrays, storage/uniform buffers and dynamic offsets",
-            ));
-        }
-        if c.shader_conventions.glsl_dialect != GlslDialect::ExplicitBindings
-            || !c.shader_conventions.zero_to_one_clip_depth
-        {
-            return Err(GalError::unsupported_feature(
-                "shadow shaders require explicit bindings and [0,1] clip depth",
             ));
         }
         Ok(())
     }
 }
 impl ShadowRenderState3D {
-    pub fn new(gal: &mut VulkanicGal, config: ShadowConfig) -> GalResult<Self> {
-        Self::with_submission(gal, config, SubmissionConfig::default())
+    pub fn new(gpu: &Gpu, config: ShadowConfig) -> GraphicsResult<Self> {
+        Self::with_submission(gpu, config, SubmissionConfig::default())
     }
     pub fn with_submission(
-        gal: &mut VulkanicGal,
+        gpu: &Gpu,
         config: ShadowConfig,
         submission: SubmissionConfig,
-    ) -> GalResult<Self> {
-        config.validate(gal)?;
-        submission.validate(gal)?;
-        let mut owned = vec![];
-        let result = (|| {
-            let resource_layout = gal.create_resource_layout(ResourceLayoutDesc {
-                label: "3d-shadow-resources".into(),
-                bindings: {
-                    let mut bindings = vec![
-                        desc(0, ResourceBindingKind::CombinedTextureSampler, 0),
-                        desc(1, ResourceBindingKind::StorageBuffer, 0),
-                        desc(2, ResourceBindingKind::UniformBuffer, 1),
-                    ];
-                    if submission.instancing {
-                        bindings.push(desc(7, ResourceBindingKind::StorageBuffer, 0));
-                    }
-                    bindings
-                },
-            })?;
-            owned.push(resource_layout);
-            let layout = gal.create_pipeline_layout(PipelineLayoutDesc {
-                label: "3d-shadow-layout".into(),
-                resource_layouts: vec![resource_layout],
-            })?;
-            owned.push(layout);
-            let vertex = gal.create_shader_module(shader(
-                "3d-shadow-vertex",
-                ShaderStage::Vertex,
-                &if submission.instancing {
-                    instanced_shader(include_str!("shadow.vert"), true)
-                } else {
-                    include_str!("shadow.vert").into()
-                },
-            ))?;
-            owned.push(vertex);
-            let fragment = gal.create_shader_module(shader(
-                "3d-shadow-fragment",
-                ShaderStage::Fragment,
-                &if submission.instancing {
-                    instanced_shader(include_str!("shadow.frag"), false)
-                } else {
-                    include_str!("shadow.frag").into()
-                },
-            ))?;
-            owned.push(fragment);
-            let sampler = gal.create_sampler(SamplerDesc {
-                label: "3d-shadow-alpha-sampler".into(),
-                min_filter: SamplerFilter::Nearest,
-                mag_filter: SamplerFilter::Nearest,
-                mip_filter: SamplerFilter::Nearest,
-                address_u: SamplerAddressMode::ClampToEdge,
-                address_v: SamplerAddressMode::ClampToEdge,
-                address_w: SamplerAddressMode::ClampToEdge,
-                comparison: None,
-            })?;
-            owned.push(sampler);
-            let pipeline = gal.create_graphics_pipeline(GraphicsPipelineDesc {
-                label: "3d-shadow-depth".into(),
-                layout,
-                vertex_shader: vertex,
-                fragment_shader: fragment,
-                topology: PrimitiveTopology::Triangles,
-                cull_mode: CullMode::None,
-                front_face: FrontFace::CounterClockwise,
-                provoking_vertex: ProvokingVertex::First,
-                raster_y_direction: RasterYDirection::Up,
-                blend: BlendMode::Disabled,
-                depth_compare: Some(CompareOp::LessOrEqual),
-                depth_write: true,
-                depth_bias: Some(config.raster_bias),
-                color_formats: vec![],
-                depth_format: Some(TextureFormat::Depth32Float),
-                stencil: None,
-            })?;
-            owned.push(pipeline);
-            Ok((resource_layout, layout, pipeline, sampler))
-        })();
-        match result {
-            Ok((resource_layout, layout, pipeline, sampler)) => Ok(Self {
-                config,
-                layout,
-                resource_layout,
-                pipeline,
-                sampler,
-                owned,
-                slots: vec![],
-                pairs: BTreeMap::new(),
-                sampler_overrides: BTreeMap::new(),
-                stride: (gal.capabilities().limits.uniform_buffer_offset_alignment as usize)
-                    .max(if submission.instancing { 16 } else { 144 })
-                    .next_power_of_two(),
-                submission,
-                work: RenderWork::default(),
-                #[cfg(feature = "diagnostics")]
-                diagnostics: quasar_diagnostics::Diagnostics::disabled(),
-            }),
-            Err(e) => {
-                for h in owned.into_iter().rev() {
-                    let _ = gal.retire(h);
-                }
-                Err(e)
-            }
+    ) -> GraphicsResult<Self> {
+        if gpu.device.limits().max_storage_buffers_per_shader_stage < 2 {
+            return Err(error("shadow rendering requires vertex storage buffers"));
         }
+        config.validate(gpu)?;
+        submission.validate(gpu)?;
+        let entries = [
+            image_entry(0, TextureViewDimension::D2, false),
+            storage_entry(1, ShaderStages::VERTEX),
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            storage_entry(7, ShaderStages::VERTEX_FRAGMENT),
+            sampler_entry(16, false),
+        ];
+        let bindings = gpu
+            .device
+            .create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: Some("shadow resources"),
+                entries: &entries,
+            });
+        let layout = gpu
+            .device
+            .create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: Some("shadow layout"),
+                bind_group_layouts: &[Some(&bindings)],
+                immediate_size: 0,
+            });
+        let vertex = checked(gpu, || {
+            gpu.device.create_shader_module(ShaderModuleDescriptor {
+                label: Some("shadow vertex WGSL"),
+                source: ShaderSource::Wgsl(include_str!("shadow.vert.wgsl").into()),
+            })
+        })?;
+        let fragment = checked(gpu, || {
+            gpu.device.create_shader_module(ShaderModuleDescriptor {
+                label: Some("shadow alpha WGSL"),
+                source: ShaderSource::Wgsl(include_str!("shadow.frag.wgsl").into()),
+            })
+        })?;
+        let pipeline = checked(gpu, || {
+            gpu.device
+                .create_render_pipeline(&RenderPipelineDescriptor {
+                    label: Some("shadow pipeline"),
+                    layout: Some(&layout),
+                    vertex: VertexState {
+                        module: &vertex,
+                        entry_point: Some("main"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: PrimitiveState {
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(DepthStencilState {
+                        format: TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(CompareFunction::LessEqual),
+                        stencil: Default::default(),
+                        bias: config.raster_bias,
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(FragmentState {
+                        module: &fragment,
+                        entry_point: Some("main"),
+                        compilation_options: Default::default(),
+                        targets: &[],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+        })?;
+        let sampler = gpu.device.create_sampler(&SamplerDescriptor {
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            ..Default::default()
+        });
+        Ok(Self {
+            layers: (0..config.max_maps)
+                .map(|_| ShadowLayerCache::default())
+                .collect(),
+            batch_buffer: buffer(gpu, "shadow base", &[0; 16], BufferUsages::UNIFORM),
+            config,
+            bindings,
+            pipeline,
+            sampler,
+            samplers: BTreeMap::new(),
+            submission,
+            work: RenderWork::default(),
+            released: false,
+            #[cfg(feature = "diagnostics")]
+            diagnostics: quasar_diagnostics::Diagnostics::default(),
+        })
     }
-    pub fn set_texture_sampler(
-        &mut self,
-        gal: &mut VulkanicGal,
-        view: Handle,
-        sampler: Handle,
-    ) -> GalResult<()> {
-        if self.sampler_overrides.get(&view) == Some(&sampler) {
-            return Ok(());
+    pub fn resize(&mut self, gpu: &Gpu, resolution: u32) -> GraphicsResult<()> {
+        let mut next = Self::with_submission(
+            gpu,
+            ShadowConfig {
+                resolution,
+                ..self.config
+            },
+            self.submission,
+        )?;
+        next.samplers = self.samplers.clone();
+        #[cfg(feature = "diagnostics")]
+        {
+            next.diagnostics = self.diagnostics.clone();
         }
-        if self.pairs.contains_key(&view) {
-            let associations = std::mem::take(&mut self.sampler_overrides);
-            let result = self.clear_bindings(gal);
-            self.sampler_overrides = associations;
-            result?;
-        }
-        self.sampler_overrides.insert(view, sampler);
+        *self = next;
         Ok(())
+    }
+    pub fn config(&self) -> ShadowConfig {
+        self.config
     }
     pub fn work_stats(&self) -> RenderWork {
         self.work
@@ -335,602 +368,265 @@ impl ShadowRenderState3D {
     pub fn set_diagnostics(&mut self, d: quasar_diagnostics::Diagnostics) {
         self.diagnostics = d;
     }
-    fn slot(
-        &self,
-        gal: &mut VulkanicGal,
-        bytes: usize,
-        instance_bytes: usize,
-    ) -> GalResult<ShadowSlot> {
-        let mut owned = vec![];
-        let result = (|| {
-            let texture = gal.create_texture(TextureDesc {
-                label: "3d-shadow-array".into(),
-                dimension: TextureDimension::D2,
-                format: TextureFormat::Depth32Float,
-                extent: Extent3d {
-                    width: self.config.resolution,
-                    height: self.config.resolution,
-                    depth: 1,
-                },
-                mip_levels: 1,
-                array_layers: self.config.max_maps.max(2) as u32,
-                usages: vec![TextureUsage::DepthStencilAttachment, TextureUsage::Sampled],
-            })?;
-            owned.push(texture);
-            let view = gal.create_texture_view(TextureViewDesc {
-                label: "3d-shadow-sampled-array".into(),
-                texture,
-                format: TextureFormat::Depth32Float,
-                base_mip: 0,
-                mip_count: 1,
-                base_layer: 0,
-                layer_count: self.config.max_maps.max(2) as u32,
-            })?;
-            owned.push(view);
-            let sampler = gal.create_sampler(SamplerDesc {
-                label: "3d-shadow-comparison".into(),
-                min_filter: SamplerFilter::Nearest,
-                mag_filter: SamplerFilter::Nearest,
-                mip_filter: SamplerFilter::Nearest,
-                address_u: SamplerAddressMode::ClampToEdge,
-                address_v: SamplerAddressMode::ClampToEdge,
-                address_w: SamplerAddressMode::ClampToEdge,
-                comparison: Some(CompareOp::LessOrEqual),
-            })?;
-            owned.push(sampler);
-            let pair = gal.create_combined_texture_sampler(CombinedTextureSamplerDesc {
-                label: "3d-shadow-pair".into(),
-                texture_view: view,
-                sampler,
-            })?;
-            owned.push(pair);
-            let mut targets = vec![];
-            let mut passes = vec![];
-            for layer in 0..self.config.max_maps {
-                let layer_view = gal.create_texture_view(TextureViewDesc {
-                    label: format!("3d-shadow-layer-{layer}"),
-                    texture,
-                    format: TextureFormat::Depth32Float,
-                    base_mip: 0,
-                    mip_count: 1,
-                    base_layer: layer as u32,
-                    layer_count: 1,
-                })?;
-                owned.push(layer_view);
-                let target = gal.create_render_target(RenderTargetDesc {
-                    label: "3d-shadow-target".into(),
-                    color_views: vec![],
-                    depth_stencil_view: Some(layer_view),
-                    extent: Extent3d {
-                        width: self.config.resolution,
-                        height: self.config.resolution,
-                        depth: 1,
-                    },
-                })?;
-                owned.push(target);
-                targets.push(target);
-                let pass = gal.create_render_pass(RenderPassDesc {
-                    label: "3d-shadow-pass".into(),
-                    target,
-                    color_formats: vec![],
-                    depth_format: Some(TextureFormat::Depth32Float),
-                })?;
-                owned.push(pass);
-                passes.push(pass);
-            }
-            let uniform = buffer(
-                gal,
-                "3d-shadow-uniforms",
-                bytes.next_power_of_two(),
-                BufferUsage::Uniform,
-            )?;
-            owned.push(uniform);
-            let instances = if self.submission.instancing {
-                let h = buffer(
-                    gal,
-                    "3d-shadow-instances",
-                    instance_bytes.next_power_of_two(),
-                    BufferUsage::Storage,
-                )?;
-                owned.push(h);
-                Some(h)
-            } else {
-                None
-            };
-            Ok((texture, view, pair, targets, passes, uniform, instances))
-        })();
-        match result {
-            Ok((texture, view, pair, targets, passes, uniform, instances)) => {
-                if instances.is_some() {
-                    owned.pop();
-                }
-                owned.pop();
-                Ok(ShadowSlot {
-                    texture,
-                    view,
-                    pair,
-                    targets,
-                    passes,
-                    uniform,
-                    instances,
-                    instance_capacity: instance_bytes.next_power_of_two(),
-                    capacity: bytes.next_power_of_two(),
-                    owned,
-                    sets: BTreeMap::new(),
-                    usage: SubmissionUsage::default(),
-                })
-            }
-            Err(e) => {
-                for h in owned.into_iter().rev() {
-                    let _ = gal.retire(h);
-                }
-                Err(e)
-            }
-        }
+    pub fn set_texture_sampler(
+        &mut self,
+        _gpu: &Gpu,
+        view: &TextureView,
+        sampler: &Sampler,
+    ) -> GraphicsResult<()> {
+        self.samplers.insert(view.clone(), sampler.clone());
+        Ok(())
     }
-    /// Record passes without submitting. Each outstanding generation reserves a slot.
+    pub fn create_target(&self, gpu: &Gpu) -> GraphicsResult<ShadowTarget> {
+        if self.released {
+            return Err(error("shadow renderer released"));
+        }
+        ShadowTarget::new(gpu, self.config)
+    }
     pub fn prepare(
         &mut self,
-        gal: &mut VulkanicGal,
+        gpu: &Gpu,
         views: &[ShadowView<'_>],
-    ) -> GalResult<PreparedShadows> {
-        #[cfg(feature = "diagnostics")]
-        let _span = self.diagnostics.span("quasar.render3d", "shadows");
-        let count: usize = views.iter().map(|v| v.casters.len()).sum();
-        let mut indexes = std::collections::BTreeSet::new();
-        if self.layout.is_null()
-            || views.len() > self.config.max_maps
-            || count > self.config.max_casters
-            || count > self.submission.max_instances
-        {
-            return Err(GalError::invalid_argument(
-                "released shadow renderer or shadow map/caster budget exceeded",
-            ));
-        }
-        for v in views {
-            if v.light_index >= 4096
-                || !indexes.insert(v.light_index)
-                || !v.view_projection.finite()
-                || v.view_projection.0.iter().flatten().all(|x| *x == 0.)
-                || !v.settings.bias.is_finite()
-                || !(0. ..=0.1).contains(&v.settings.bias)
-                || !v.settings.normal_bias.is_finite()
-                || v.settings.normal_bias < 0.
-                || !v.settings.strength.is_finite()
-                || !(0. ..=1.).contains(&v.settings.strength)
-                || v.casters.iter().any(|c| {
-                    c.mesh.vertices.is_null()
-                        || !c.model.finite()
-                        || !c.alpha_cutoff.is_finite()
-                        || !(0. ..=1.).contains(&c.alpha_cutoff)
-                        || !c.opacity.is_finite()
-                        || !(0. ..=1.).contains(&c.opacity)
-                })
+    ) -> GraphicsResult<PreparedShadows> {
+        let target = self.create_target(gpu)?;
+        self.prepare_into(gpu, views, &target)
+    }
+    /// Encode into an explicit reusable native target. Keep each producer and its
+    /// receivers together on the queue before another frame writes that target.
+    pub fn prepare_into(
+        &mut self,
+        gpu: &Gpu,
+        views: &[ShadowView<'_>],
+        target: &ShadowTarget,
+    ) -> GraphicsResult<PreparedShadows> {
+        checked(gpu, || {
+            let total: usize = views.iter().map(|v| v.casters.len()).sum();
+            if self.released
+                || views.len() > self.config.max_maps
+                || total > self.config.max_casters
+                || total > self.submission.max_instances
             {
-                return Err(GalError::invalid_argument(
-                    "invalid shadow matrix/light index/settings/caster",
+                return Err(error(
+                    "released shadow renderer or map/caster budget exceeded",
                 ));
             }
-            for c in v.casters {
-                let info = gal.texture_view_info(c.texture_view)?;
-                if info.dimension != TextureDimension::D2
-                    || info.range.layer_count != 1
-                    || info.format == TextureFormat::R8Uint
-                    || !info.usages.contains(&TextureUsage::Sampled)
+            let mut light_indices = std::collections::BTreeSet::new();
+            for v in views {
+                if v.light_index >= 4096
+                    || !light_indices.insert(v.light_index)
+                    || !v.view_projection.finite()
+                    || v.view_projection.0.iter().flatten().all(|x| *x == 0.)
+                    || !v.settings.bias.is_finite()
+                    || !(0. ..=0.1).contains(&v.settings.bias)
+                    || !v.settings.normal_bias.is_finite()
+                    || v.settings.normal_bias < 0.
+                    || !v.settings.strength.is_finite()
+                    || !(0. ..=1.).contains(&v.settings.strength)
+                    || v.casters.iter().any(|c| {
+                        c.mesh.vertices.is_none()
+                            || c.mesh.indices.is_none()
+                            || !lighting::invertible_affine(c.model)
+                            || !(0. ..=1.).contains(&c.alpha_cutoff)
+                            || !(0. ..=1.).contains(&c.opacity)
+                    })
                 {
-                    return Err(GalError::invalid_argument(
-                        "shadow alpha texture must be sampled normalized/float 2D",
-                    ));
+                    return Err(error("invalid shadow matrix/light/settings/caster"));
                 }
             }
-        }
-        let bytes = count.max(1) * self.stride;
-        let completed = gal.poll_completed();
-        let mut selected = self.slots.iter().position(|s| {
-            !s.usage.has_pending_commands() && s.usage.last_submission() <= completed
-        });
-        if selected.is_none() && self.slots.len() < 3 {
-            let slot = self.slot(gal, bytes, count.max(1) * 144)?;
-            self.slots.push(slot);
-            selected = Some(self.slots.len() - 1);
-        }
-        if selected.is_none() {
-            let (i, id) = self
-                .slots
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| !s.usage.has_pending_commands())
-                .map(|(i, s)| (i, s.usage.last_submission()))
-                .min_by_key(|(_, id)| *id)
-                .ok_or_else(|| {
-                    GalError::submission(
-                        StatusCode::InFlight,
-                        "all shadow slots have outstanding producer/receiver bindings",
-                    )
-                })?;
-            gal.retire_through(id)?;
-            selected = Some(i);
-        }
-        let index = selected.unwrap();
-        if self.slots[index].capacity < bytes {
-            let new = buffer(
-                gal,
-                "3d-shadow-uniforms",
-                bytes.next_power_of_two(),
-                BufferUsage::Uniform,
-            )?;
-            let slot = &mut self.slots[index];
-            for h in std::mem::take(&mut slot.sets).into_values() {
-                gal.retire(h)?;
+            let size = target.texture().size();
+            if size.width != self.config.resolution
+                || size.height != self.config.resolution
+                || size.depth_or_array_layers < self.config.max_maps.max(2) as u32
+            {
+                return Err(error(
+                    "shadow target does not match configured resolution/map capacity",
+                ));
             }
-            gal.retire(slot.uniform)?;
-            slot.uniform = new;
-            slot.capacity = bytes.next_power_of_two();
-        }
-        let instance_bytes = count.max(1) * 144;
-        if self.submission.instancing && self.slots[index].instance_capacity < instance_bytes {
-            let new = buffer(
-                gal,
-                "3d-shadow-instances",
-                instance_bytes.next_power_of_two(),
-                BufferUsage::Storage,
-            )?;
-            let slot = &mut self.slots[index];
-            for h in std::mem::take(&mut slot.sets).into_values() {
-                gal.retire(h)?;
-            }
-            gal.retire(slot.instances.unwrap())?;
-            slot.instances = Some(new);
-            slot.instance_capacity = instance_bytes.next_power_of_two();
-        }
-        gal.begin_command_recording()?;
-        let result = self.record(gal, index, views, count, bytes);
-        let finish = gal.finish_command_recording();
-        result.and_then(|r| finish.map(|_| r))
-    }
-    fn record(
-        &mut self,
-        gal: &mut VulkanicGal,
-        index: usize,
-        views: &[ShadowView<'_>],
-        count: usize,
-        bytes: usize,
-    ) -> GalResult<PreparedShadows> {
-        let mut data = vec![0; bytes];
-        let mut draws = vec![];
-        let mut records = vec![];
-        let mut draw_index = 0usize;
-        let mut visible = 0usize;
-        let mut instance_data = Vec::new();
-        for (layer, v) in views.iter().enumerate() {
-            let mut work = vec![];
-            let mut previous = None;
-            let visibility = Visibility::new(self.submission.frustum_culling, v.view_projection);
-            for c in v.casters {
-                if !visibility.intersects(c.mesh, c.model) {
-                    continue;
-                }
-                let pair = if let Some(p) = self.pairs.get(&c.texture_view) {
-                    *p
-                } else {
-                    let p = gal.create_combined_texture_sampler(CombinedTextureSamplerDesc {
-                        label: "3d-shadow-alpha".into(),
-                        texture_view: c.texture_view,
-                        sampler: self
-                            .sampler_overrides
-                            .get(&c.texture_view)
-                            .copied()
-                            .unwrap_or(self.sampler),
-                    })?;
-                    self.pairs.insert(c.texture_view, p);
-                    p
-                };
-                let slot = &mut self.slots[index];
-                let key = (c.mesh.vertices, c.texture_view);
-                if let std::collections::btree_map::Entry::Vacant(entry) = slot.sets.entry(key) {
-                    let set = gal.create_resource_set(ResourceSetDesc {
-                        label: "3d-shadow-set".into(),
-                        layout: self.resource_layout,
-                        bindings: {
-                            let mut bindings = vec![
-                                binding(
-                                    0,
-                                    pair,
-                                    ResourceBindingKind::CombinedTextureSampler,
-                                    None,
-                                    vec![],
-                                ),
-                                binding(
-                                    1,
-                                    c.mesh.vertices,
-                                    ResourceBindingKind::StorageBuffer,
-                                    None,
-                                    vec![],
-                                ),
-                                binding(
-                                    2,
-                                    slot.uniform,
-                                    ResourceBindingKind::UniformBuffer,
-                                    Some(if self.submission.instancing { 16 } else { 144 }),
-                                    vec![0],
-                                ),
-                            ];
-                            if let Some(instances) = slot.instances {
-                                bindings.push(binding(
-                                    7,
-                                    instances,
-                                    ResourceBindingKind::StorageBuffer,
-                                    None,
-                                    vec![],
-                                ));
-                            }
-                            bindings
-                        },
-                    })?;
-                    entry.insert(set);
-                }
-                let values = v
-                    .view_projection
-                    .0
-                    .iter()
-                    .flatten()
-                    .chain(c.model.0.iter().flatten())
-                    .copied()
-                    .chain([c.alpha_cutoff, c.opacity, 0., 0.]);
-                let encoded: Vec<u8> = values.flat_map(f32::to_ne_bytes).collect();
-                let set = slot.sets[&key];
-                if self.submission.instancing {
-                    instance_data.extend_from_slice(&encoded);
-                    if previous == Some((set, c.mesh.indices)) {
-                        if let Some(CommandOp::DrawIndexed { instances, .. }) = work.last_mut() {
-                            *instances += 1;
-                        }
-                        visible += 1;
+            let view = target.view.clone();
+            let mut encoder = gpu.encoder("shadow maps");
+            let mut records = Vec::new();
+            let mut stats = ShadowStats {
+                maps: views.len(),
+                allocated_depth_bytes: u64::from(size.width)
+                    * u64::from(size.height)
+                    * u64::from(size.depth_or_array_layers)
+                    * 4,
+                ..Default::default()
+            };
+            let mut work = RenderWork {
+                candidates: total,
+                ..Default::default()
+            };
+            for (layer, v) in views.iter().enumerate() {
+                let visibility =
+                    Visibility::new(self.submission.frustum_culling, v.view_projection);
+                let mut data = Vec::new();
+                let mut batches: Vec<(&Mesh, TextureView, Sampler, u32, u32)> = Vec::new();
+                let mut count = 0;
+                for c in v.casters {
+                    if !visibility.intersects(c.mesh, c.model) {
+                        work.culled += 1;
                         continue;
                     }
-                    data[draw_index * self.stride..draw_index * self.stride + 4]
-                        .copy_from_slice(&(visible as u32).to_ne_bytes());
-                } else {
-                    data[draw_index * self.stride..draw_index * self.stride + 144]
-                        .copy_from_slice(&encoded);
+                    data.extend(bytes(
+                        v.view_projection
+                            .0
+                            .iter()
+                            .flatten()
+                            .chain(c.model.0.iter().flatten())
+                            .copied()
+                            .chain([c.alpha_cutoff, c.opacity, 0., 0.]),
+                    ));
+                    let sampler = self
+                        .samplers
+                        .get(&c.texture_view)
+                        .unwrap_or(&self.sampler)
+                        .clone();
+                    if self.submission.instancing
+                        && let Some(b) = batches.last_mut()
+                        && std::ptr::eq(b.0, c.mesh)
+                        && b.1 == c.texture_view
+                        && b.2 == sampler
+                    {
+                        b.4 += 1;
+                    } else {
+                        batches.push((c.mesh, c.texture_view.clone(), sampler, count, 1));
+                    }
+                    count += 1;
                 }
-                work.extend([
-                    CommandOp::TrackSubmission(c.mesh.usage.clone()),
-                    CommandOp::BindResourceSet {
-                        pipeline_layout: self.layout,
-                        set_index: 0,
-                        set,
-                        dynamic_offsets: [(draw_index * self.stride) as u64].into(),
-                    },
-                    CommandOp::SetIndexBuffer {
-                        buffer: c.mesh.indices,
-                        offset: 0,
-                        index_type: IndexType::U32,
-                    },
-                    CommandOp::DrawIndexed {
-                        indices: c.mesh.count,
-                        instances: 1,
-                    },
+                stats.uniform_upload_bytes += data.len();
+                work.visible += count as usize;
+                work.draws += batches.len();
+                stats.draws += batches.len();
+                if data.is_empty() {
+                    data.resize(144, 0);
+                }
+                let cache = &mut self.layers[layer];
+                if quasar_frame::grow_buffer(
+                    gpu,
+                    &mut cache.instances,
+                    "shadow instances",
+                    data.len() as u64,
+                    BufferUsages::STORAGE,
+                )? || cache.groups.len() > 4096
+                {
+                    cache.groups.clear();
+                }
+                let upload = quasar_frame::staging_buffer(gpu, "shadow instance upload", &data);
+                encoder.copy_buffer_to_buffer(
+                    &upload,
+                    0,
+                    cache.instances.as_ref().unwrap(),
+                    0,
+                    data.len() as u64,
+                );
+                let groups: Vec<_> = batches
+                    .iter()
+                    .map(|b| {
+                        let key = ShadowGroupKey {
+                            vertices: b.0.vertices.as_ref().unwrap().clone(),
+                            image: b.1.clone(),
+                            sampler: b.2.clone(),
+                        };
+                        if let Some(group) = cache.groups.get(&key) {
+                            return group.clone();
+                        }
+                        let group = gpu.device.create_bind_group(&BindGroupDescriptor {
+                            label: Some("shadow draw"),
+                            layout: &self.bindings,
+                            entries: &[
+                                BindGroupEntry {
+                                    binding: 0,
+                                    resource: BindingResource::TextureView(&b.1),
+                                },
+                                BindGroupEntry {
+                                    binding: 1,
+                                    resource: b.0.vertices.as_ref().unwrap().as_entire_binding(),
+                                },
+                                BindGroupEntry {
+                                    binding: 2,
+                                    resource: self.batch_buffer.as_entire_binding(),
+                                },
+                                BindGroupEntry {
+                                    binding: 7,
+                                    resource: cache.instances.as_ref().unwrap().as_entire_binding(),
+                                },
+                                BindGroupEntry {
+                                    binding: 16,
+                                    resource: BindingResource::Sampler(&b.2),
+                                },
+                            ],
+                        });
+                        cache.groups.insert(key, group.clone());
+                        group
+                    })
+                    .collect();
+                let layer_view = &target.layers[layer];
+                {
+                    let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                        label: Some("shadow depth"),
+                        color_attachments: &[],
+                        depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                            view: layer_view,
+                            depth_ops: Some(Operations {
+                                load: LoadOp::Clear(1.),
+                                store: StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        ..Default::default()
+                    });
+                    pass.set_pipeline(&self.pipeline);
+                    for (b, group) in batches.iter().zip(&groups) {
+                        pass.set_bind_group(0, group, &[]);
+                        pass.set_index_buffer(
+                            b.0.indices.as_ref().unwrap().slice(..),
+                            IndexFormat::Uint32,
+                        );
+                        pass.draw_indexed(0..b.0.count, 0, b.3..b.3 + b.4);
+                    }
+                }
+                let mut record = [0.; 24];
+                record[..16].copy_from_slice(
+                    &v.view_projection
+                        .0
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>(),
+                );
+                record[16..].copy_from_slice(&[
+                    v.light_index as f32,
+                    layer as f32,
+                    v.settings.bias,
+                    v.settings.normal_bias,
+                    1. / self.config.resolution as f32,
+                    v.settings.filter.radius(),
+                    v.settings.strength,
+                    0.,
                 ]);
-                previous = Some((set, c.mesh.indices));
-                draw_index += 1;
-                visible += 1;
+                records.push(record);
             }
-
-            let slot = &self.slots[index];
-            let (_, depth_view) = gal
-                .pass_target_depth_attachment(slot.targets[layer])?
-                .unwrap();
-            draws.push(CommandOp::BeginPass {
-                pass: slot.passes[layer],
-                target: slot.targets[layer],
-                colors: vec![],
-                depth_stencil: Some(PassAttachment {
-                    view: depth_view,
-                    load_op: AttachmentLoadOp::Clear,
-                    store_op: AttachmentStoreOp::Store,
-                    clear_color: None,
-                }),
-            });
-            draws.push(CommandOp::BindGraphicsPipeline(self.pipeline));
-            draws.extend(work);
-            draws.push(CommandOp::EndPass);
-            let mut record = [0.; 24];
-            for (out, value) in record.iter_mut().zip(v.view_projection.0.iter().flatten()) {
-                *out = *value;
-            }
-            record[16..].copy_from_slice(&[
-                v.light_index as f32,
-                layer as f32,
-                v.settings.bias,
-                v.settings.normal_bias,
-                1. / self.config.resolution as f32,
-                v.settings.filter.radius(),
-                v.settings.strength,
-                0.,
-            ]);
-            records.push(record);
-        }
-        let bytes = draw_index.max(1) * self.stride;
-        data.truncate(bytes);
-        self.work = RenderWork {
-            candidates: count,
-            visible,
-            culled: count - visible,
-            draws: draw_index,
-            instance_upload_bytes: instance_data.len(),
-        };
-        #[cfg(feature = "diagnostics")]
-        self.work.report(&self.diagnostics);
-        let slot = &self.slots[index];
-        let mut operations = vec![
-            CommandOp::TrackSubmission(slot.usage.clone()),
-            barrier(
-                slot.uniform,
-                TextureUsageState::ShaderRead,
-                TextureUsageState::TransferDst,
-            ),
-            CommandOp::HostWriteBuffer {
-                buffer: slot.uniform,
-                offset: 0,
-                data,
-            },
-            barrier(
-                slot.uniform,
-                TextureUsageState::TransferDst,
-                TextureUsageState::ShaderRead,
-            ),
-            barrier(
-                slot.texture,
-                TextureUsageState::Undefined,
-                TextureUsageState::DepthStencilAttachment,
-            ),
-        ];
-        if let Some(instances) = slot.instances
-            && !instance_data.is_empty()
-        {
-            operations.extend([
-                barrier(
-                    instances,
-                    TextureUsageState::ShaderRead,
-                    TextureUsageState::TransferDst,
-                ),
-                CommandOp::HostWriteBuffer {
-                    buffer: instances,
-                    offset: 0,
-                    data: instance_data,
-                },
-                barrier(
-                    instances,
-                    TextureUsageState::TransferDst,
-                    TextureUsageState::ShaderRead,
-                ),
-            ]);
-        }
-
-        operations.extend(draws);
-        operations.push(barrier(
-            slot.texture,
-            TextureUsageState::DepthStencilAttachment,
-            TextureUsageState::ShaderRead,
-        ));
-        let commands = gal.create_command_list(CommandListDesc {
-            label: "3d-shadow-prepared".into(),
-            operations,
-        })?;
-        Ok(PreparedShadows {
-            commands,
-            binding: ShadowBinding {
-                view: slot.view,
-                pair: slot.pair,
-                records,
-                usage: slot.usage.clone(),
-            },
-            stats: ShadowStats {
-                maps: views.len(),
-                draws: draw_index,
-                uniform_upload_bytes: bytes,
-                allocated_depth_bytes: self.config.depth_bytes().unwrap() / 3
-                    * self.slots.len() as u64,
-            },
-        })
+            work.instance_upload_bytes = stats.uniform_upload_bytes;
+            self.work = work;
+            #[cfg(feature = "diagnostics")]
+            self.work.report(&self.diagnostics);
+            Ok(PreparedShadows {
+                commands: encoder.finish(),
+                stats,
+                binding: ShadowBinding { view, records },
+            })
+        })?
     }
-    /// Clear surface receiver descriptor caches before resizing/releasing map generations.
-    pub fn resize(&mut self, gal: &mut VulkanicGal, resolution: u32) -> GalResult<()> {
-        let config = ShadowConfig {
-            resolution,
-            ..self.config
-        };
-        config.validate(gal)?;
-        self.clear_slots(gal)?;
-        self.config = config;
-        Ok(())
-    }
-    fn clear_slots(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
-        if self.slots.iter().any(|s| s.usage.has_pending_commands()) {
-            return Err(GalError::submission(
-                StatusCode::InFlight,
-                "shadow producer/receiver/binding still retained",
-            ));
-        }
-        for slot in self.slots.drain(..) {
-            for h in slot.sets.into_values() {
-                gal.retire(h)?;
-            }
-            gal.retire(slot.uniform)?;
-            if let Some(instances) = slot.instances {
-                gal.retire(instances)?;
-            }
-            for h in slot.owned.into_iter().rev() {
-                gal.retire(h)?;
-            }
+    pub fn clear_bindings(&mut self, _gpu: &Gpu) -> GraphicsResult<()> {
+        self.samplers.clear();
+        for layer in &mut self.layers {
+            layer.groups.clear();
         }
         Ok(())
     }
-    pub fn clear_bindings(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
-        if self.slots.iter().any(|s| s.usage.has_pending_commands()) {
-            return Err(GalError::submission(
-                StatusCode::InFlight,
-                "shadow commands/bindings retained",
-            ));
-        }
-        for slot in &mut self.slots {
-            for h in std::mem::take(&mut slot.sets).into_values() {
-                gal.retire(h)?;
-            }
-        }
-        for h in std::mem::take(&mut self.pairs).into_values() {
-            gal.retire(h)?;
-        }
-        self.sampler_overrides.clear();
+    pub fn release(&mut self, _gpu: &Gpu) -> GraphicsResult<()> {
+        self.released = true;
+        self.samplers.clear();
         Ok(())
-    }
-    pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
-        self.clear_slots(gal)?;
-        for h in std::mem::take(&mut self.pairs).into_values() {
-            gal.retire(h)?;
-        }
-        for h in self.owned.drain(..).rev() {
-            gal.retire(h)?;
-        }
-        self.layout = Handle::NULL;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn depth_budget_accounts_for_three_slots_and_minimum_array_layers() {
-        assert_eq!(
-            ShadowConfig::default().depth_bytes(),
-            Some(24 * 1024 * 1024)
-        );
-        assert_eq!(
-            ShadowConfig {
-                max_maps: 1,
-                ..ShadowConfig::default()
-            }
-            .depth_bytes(),
-            Some(24 * 1024 * 1024)
-        );
-        assert_eq!(
-            ShadowConfig {
-                resolution: 2048,
-                ..ShadowConfig::default()
-            }
-            .depth_bytes(),
-            Some(96 * 1024 * 1024)
-        );
-        assert!(
-            ShadowConfig {
-                resolution: u32::MAX,
-                max_maps: 16,
-                ..ShadowConfig::default()
-            }
-            .depth_bytes()
-            .is_none()
-        );
     }
 }

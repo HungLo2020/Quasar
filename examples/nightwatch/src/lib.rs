@@ -40,7 +40,7 @@ error_from!(quasar_config::CliError);
 error_from!(std::num::ParseIntError);
 error_from!(std::io::Error);
 #[cfg(feature = "graphics")]
-error_from!(vulkanic_gal::GalError);
+error_from!(quasar_frame::GraphicsError);
 #[cfg(feature = "graphics")]
 error_from!(quasar_render_2d::Error);
 pub type Result<T> = std::result::Result<T, GameError>;

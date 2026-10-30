@@ -30,52 +30,30 @@ in Pong with `--no-default-features`; this 3D example is explicitly GPU-dependen
    applicable, then HUD. Acquired-image transitions belong to GAL.
 4. Submit one combined frame batch and present once.
 
-The explicit `submit_explicit` implementation opens/closes GAL recording scopes
-and submits directly. It was implemented and tested before extracting
-`quasar-frame::record_and_submit`. `--explicit` retains that direct submission
-path; both native modes use the extracted surface-target cache. `RenderState2D`
-and `MeshRenderer3D` do not require the surface helper, and clients can
-coordinate raw GAL acquire/present without it; the windowed `Renderer2D` and
-`FramebufferPresenter` use it. There is no renderer registry, ECS, render graph
-or plugin system.
+Native encoder buffers are ordered world, application passes, then HUD and
+submitted on one native queue. The `--explicit` path spells out acquire, prepare
+and present; the ordinary path calls `FrameSurface::render`. Both use identical
+renderers and native commands. `submit_explicit` demonstrates direct queue use
+for offscreen composition. No renderer requires the surface helper or a runner.
 
-The application owns GAL, its surface and source texture. Each renderer owns
-its pipelines, descriptors and transient storage. The 2D renderer creates a
-private view of the shared image instead of copying it. Targets, textures and
-renderers must all belong to the same GAL. Release renderer/pass/binding caches
-before releasing their owners, and use GAL retirement for submitted work.
+The application owns the native device/surface and source texture. Each renderer
+owns pipelines and caches; the 2D renderer retains the source view without a copy.
+Native command buffers retain referenced resources and are consumed on submit.
+Dropping prepared buffers abandons work; dropping mesh/renderer owners leaves
+already encoded work valid. No global device lock or artificial slot exhaustion
+exists. See [migration](../../docs/native-wgpu-migration.md).
 
-Three bounded transient slots use `SubmissionUsage` receipts to distinguish
-unsubmitted commands from incomplete GPU work. Cloning a command list retains
-its reservation; dropping all unsubmitted copies abandons it. A renderer refuses
-cleanup while prepared copies remain. Only completed ranges are reused. Bounded
-pressure waits for an eligible submission, without ordinary device-idle waits.
-
-## Verification
+The ignored GPU suite covers shared-texture color pixels, depth ordering, dynamic
+framebuffer composition, reverse submission after owner Drop, error/panic
+recovery, invalid 3D view registration, preloaded tilemaps and stencil overlays.
+Native exercises cover resize, fullscreen, zero-size deferral, intentional
+preparation failure and subsequent recovery. Native ownership reports must show
+zero live user-owned buffers/textures/views after teardown.
 
 ```sh
-cargo test --workspace --locked -- --include-ignored
-cargo clippy --workspace --all-targets --locked -- -D warnings
+WGPU_BACKEND=vulkan cargo test -p quasar-composition --lib -- --include-ignored --test-threads=1
 cargo run -p quasar-composition -- --frames 40 --exercise-window
 ```
-
-GPU tests are explicitly ignored by default. The composition suite verifies:
-
-- The cube renders, HUD color loads preserve it, and the shared texture samples
-  correctly without a CPU copy.
-- A farther triangle drawn last cannot overwrite a nearer triangle.
-- Pending and cloned commands reserve resources even when unrelated uploads
-  complete; three retained preparations return bounded `InFlight` pressure.
-- Frames prepared together retain their exact pixels when submitted out of order.
-- Abandonment, rejected submissions and preparation errors allow later valid use.
-- The extracted recording scope closes during panic unwinding.
-- Repeated target sizes and outstanding submissions retire all resource handles.
-
-The native exercise resizes, enters/exits fullscreen, defers/restores a zero-size
-surface, intentionally rejects a frame, cancels its acquired image, and continues
-presenting. Final resource counters must balance. Linux/Wayland with NVIDIA
-Vulkan was exercised locally. CI is configured to use Mesa/software Vulkan and Xvfb; other native
-platforms are not established by these tests.
 
 ## Measuring synchronous versus overlapping frames
 
@@ -83,24 +61,15 @@ platforms are not established by these tests.
 python3 tools/benchmark_composition.py --frames 600 --pairs 3 --output /tmp/composition-benchmark
 ```
 
-The driver builds release, disables GAL validation for timing, requests GPU
-queries, uses 64 warmup frames, requests no vsync, and alternates synchronous and
-completion-polling runs. Correctness tests run separately with validation on.
-`--sync` keeps the original per-frame waiting policy. Both benchmark paths use
-the same scene, shaders, caches and slot allocator, isolating the scheduling
-change. This is not a comparison against an archived v0.2.0 binary or MattMC.
+Benchmark runs use the same native scene and distinguish synchronous waiting
+from completion polling. Reports contain CPU submit/acquire/present/frame
+percentiles, optional native GPU timestamps, actual requested waits, Rust
+allocation traffic and optional native allocator reports. Unsupported counters
+are absent. CPU completion observation is not input-to-photon latency.
 
-Reports include CPU frame/submit/acquire/present distributions, GPU timing sample
-counts, waits, GAL creates/destroys, whole-process Rust allocation counts/bytes,
-upload traffic, submission-completion latency, and engine-frame completion
-latency. Engine-frame latency runs from acquire entry through host-observed GPU
-completion. These observations include polling cadence and exclude input event
-dispatch, compositor and physical display latency. Physical input-to-photon
-latency needs separate instrumentation.
-
-Polling can trade latency for CPU/GPU overlap. Keep synchronous mode available
-for latency-sensitive clients and compare appropriate workloads before selecting
-policy. A tiny cube does not establish gameplay performance for a large world.
+Current runs should be compared on the same adapter/driver and build profile.
+Historical measurements below describe the old graphics engine and are retained
+as evidence rather than a current API or performance guarantee.
 
 ## Recorded baseline: 2026-10-23
 

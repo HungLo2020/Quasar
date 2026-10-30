@@ -9,33 +9,35 @@ build system or editor.
 
 ## Pipeline
 
-1. VulkanicGAL's `SubmitProfile` records validation, command generation,
-   backend encode/submit, native command-buffer work, hazards, GPU scope
-   timestamps, uploads, resource deltas, waits and swapchain state.
-2. `quasar-frame::FrameReport` adds acquire/present/CPU frame time around one
-   surface transaction. `OffscreenTarget` provides the same command/readback
-   path for headless screenshots and renderer tests.
-3. `quasar-profile::FrameSample` adds renderer draws/upload counters and maps a
-   `FrameReport` into neutral metrics.
-4. `FrameProfiler` retains a bounded window and computes min/mean/p50/p95/p99/max
-   for CPU/GPU frame time, acquire, present, submit, draws, uploads, resource
-   churn and synchronization waits. Optional GPU scopes are preserved as
-   distributions.
-5. `ProfileThresholds::check` checks only explicitly supplied p99 limits.
-   `write_json` writes a machine-readable `ProfileSummary`.
+1. `quasar-frame::FrameReport` measures CPU prepare, submit, acquire, present and
+   poll/wait cost around native operations. It counts requested blocking waits.
+2. Enable `gpu.set_gpu_timestamps(true)` for native query-set timing. GPU timing
+   is absent when unsupported. Each asynchronous `gpu_timing` handle belongs to
+   its originating frame and resolves after native device polling.
+3. `FrameSample::from_frame_report` preserves that handle; `FrameProfiler`
+   resolves completed handles at summary time. Wait/poll outstanding work before
+   final reports and threshold checks. Add renderer draw/upload statistics with
+   `with_renderer_stats`.
+4. `FrameProfiler` retains a bounded sample window and computes percentiles;
+   `BenchmarkSession` adds warmup, metadata, configured thresholds and JSON output.
+
+VulkanicGAL supplies no private SubmitProfile or synthetic resource/validation
+counters. Backend-internal measurements unavailable through upstream API remain
+unsupplied. Native allocator reports are optional and distinguish allocated from
+reserved bytes. User-provided scope timings remain supported in FrameSample;
+Quasar does not currently instrument per-pass GPU scopes automatically.
 
 ## Integration benchmark
 
 `examples/starfall` is the representative game integration benchmark. It runs
-one GAL, one `FrameSurface`, 3D world rendering and a 2D HUD with GPU scope tags
-for `world_3d` and `hud_2d`:
+one GAL, one `FrameSurface`, 3D world rendering and a 2D HUD with frame GPU timestamps when enabled:
 
 ```sh
 cargo run -p starfall -- --benchmark --benchmark-frames 120 \
   --benchmark-file /tmp/starfall-profile.json
 ```
 
-The artifact includes frame CPU/GPU distributions, per-scope GPU time, draws,
+The artifact includes frame CPU/GPU distributions, draws,
 geometry/texture/uniform uploads, host writes, resource creates/destroys,
 blocking waits and device-idle waits. The existing composition fixture remains
 available for detailed device/backends comparisons:
@@ -69,7 +71,7 @@ same device/driver and compare distributions, not absolute numbers across hosts.
 - CI does not claim GPU performance from compile-only runs or compare
   thresholds across different GPUs/drivers.
 
-## Sample measurements
+## Historical sample measurements (before native migration)
 
 Starfall release, RTX 2070/Linux X11, 1280x720, 120 frames:
 
@@ -119,3 +121,9 @@ compositor behavior, not simulation time.
   reports resource counts and upload bytes rather than fabricating allocation
   byte totals.
 - The composition benchmark's historical files are not silently rewritten.
+
+Native frame samples mark backend-private counters unavailable. Their summary
+distributions contain zero samples, rather than fake zero-cost measurements.
+Configured resource-create/host-write thresholds fail explicitly when those
+measurements are unavailable; draw/upload and CPU/GPU frame thresholds remain
+available through renderer statistics and native timing.

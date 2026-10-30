@@ -10,13 +10,13 @@ use quasar_app::{
 };
 use quasar_core::FixedStepConfig;
 use quasar_diagnostics::{Diagnostics, DiagnosticsConfig, Field, Level, TextSink};
-use quasar_frame::{CompletionPolicy, FrameSurface};
+use quasar_frame::{CompletionPolicy, FrameSurface, Gpu};
 use quasar_input::{Key, MouseButton};
 use quasar_profile::{BenchmarkSession, FrameSample};
 use quasar_window::{DesktopConfig, WindowConfig, winit::event::WindowEvent};
 use std::sync::Arc;
 use std::time::Duration;
-use vulkanic_gal::{resources::*, *};
+use vulkanic_gal::{InstanceDescriptor, InstanceFlags, PresentMode};
 
 pub fn run(settings: Settings) -> Result<()> {
     let config = AppConfig {
@@ -72,7 +72,7 @@ struct App {
     paused: bool,
     graphics: Option<Graphics>,
     surface: Option<FrameSurface>,
-    gal: Option<VulkanicGal>,
+    gal: Option<Gpu>,
     frames: u64,
     done: bool,
     profile: BenchmarkSession,
@@ -86,29 +86,23 @@ impl App {
         }
         let window = c.window.ok_or("missing desktop window")?;
         let size = window.native().inner_size();
-        set_gpu_timestamps_requested(self.settings.benchmark);
-        let mut gal = VulkanicGal::create_windowed_vulkan(
-            "Nightwatch",
-            window.shared_native(),
-            FrameSurfaceDesc {
-                label: "nightwatch-surface".into(),
-                extent: Extent3d {
-                    width: size.width.max(1),
-                    height: size.height.max(1),
-                    depth: 1,
-                },
-                color_format: TextureFormat::Bgra8Unorm,
-                present_mode: if self.settings.benchmark {
-                    PresentMode::AutoNoVsync
-                } else {
-                    PresentMode::AutoVsync
-                },
-                max_frames_in_flight: 3,
-            },
-        )?;
-        if let Some(validation) = self.settings.validation {
-            gal.set_full_validation(validation);
+        let mut descriptor = InstanceDescriptor::new_without_display_handle_from_env();
+        if let Some(enabled) = self.settings.validation {
+            descriptor.flags.set(InstanceFlags::VALIDATION, enabled);
         }
+        let validation = descriptor.flags.contains(InstanceFlags::VALIDATION);
+        let (gal, mut surface) = FrameSurface::for_window_with_descriptor(
+            window.shared_native(),
+            size.width,
+            size.height,
+            descriptor,
+        )?;
+        surface.config.present_mode = if self.settings.benchmark {
+            PresentMode::AutoNoVsync
+        } else {
+            PresentMode::AutoVsync
+        };
+        surface.reconfigure(&gal)?;
         for (key, value) in [
             (
                 "build",
@@ -118,7 +112,7 @@ impl App {
                     "optimized".into()
                 },
             ),
-            ("validation", gal.full_validation().to_string()),
+            ("validation", validation.to_string()),
             ("instancing", self.settings.instancing.to_string()),
             ("frustum_culling", self.settings.frustum_culling.to_string()),
             (
@@ -133,12 +127,12 @@ impl App {
         ] {
             self.profile.set_metadata(key, &value)?;
         }
-        let backend = gal.backend_info();
+        let backend = gal.adapter.get_info();
         for (key, value) in [
-            ("backend", backend.selected.display_name().to_string()),
-            ("device", backend.device.name),
-            ("driver", backend.device.driver),
-            ("api", backend.device.api),
+            ("backend", format!("{:?}", backend.backend)),
+            ("device", backend.name),
+            ("driver", backend.driver),
+            ("api", format!("{:?}", backend.backend)),
             ("shadows", self.settings.shadows.to_string()),
             ("normal_maps", self.settings.normal_maps.to_string()),
             ("debug_assertions", cfg!(debug_assertions).to_string()),
@@ -153,7 +147,7 @@ impl App {
             [
                 Field::new("instancing", self.settings.instancing),
                 Field::new("frustum_culling", self.settings.frustum_culling),
-                Field::new("validation", gal.full_validation()),
+                Field::new("validation", validation),
             ],
         );
         let asset_root = self
@@ -162,7 +156,7 @@ impl App {
             .clone()
             .unwrap_or_else(Graphics::default_asset_root);
         self.graphics = Some(Graphics::with_asset_root(
-            &mut gal,
+            &gal,
             nightwatch::render::GraphicsOptions {
                 shadows: self.settings.shadows,
                 normal_maps: self.settings.normal_maps,
@@ -175,7 +169,8 @@ impl App {
             .as_mut()
             .unwrap()
             .set_diagnostics(self.diagnostics.clone());
-        self.surface = Some(FrameSurface::new(size.width.max(1), size.height.max(1)));
+        self.surface = Some(surface);
+        gal.set_gpu_timestamps(self.settings.benchmark);
         self.gal = Some(gal);
         if self.settings.audio {
             self.audio = crate::sound::Audio::open(self.settings.audio_device.as_deref());
@@ -184,23 +179,21 @@ impl App {
     }
     fn release(&mut self) -> Result<()> {
         self.audio.take();
-        if let Some(mut gal) = self.gal.take() {
-            if let Some(mut surface) = self.surface.take() {
-                surface.finish(&mut gal)?;
-                surface.release_targets(&mut gal)?;
-            }
-            if let Some(mut graphics) = self.graphics.take() {
-                graphics.release(&mut gal)?;
-            }
-            gal.shutdown_frame_surface()?;
-            gal.retire_through(gal.latest_submission_id())?;
-            let metrics = gal.metrics();
-            println!(
-                "nightwatch resources created={} destroyed={}",
-                metrics.resource_creates, metrics.resource_destroys
-            );
-            if metrics.resource_creates != metrics.resource_destroys {
-                return Err("GPU resource imbalance at teardown".into());
+        if let Some(gpu) = self.gal.take() {
+            gpu.wait()?;
+            drop(self.graphics.take());
+            drop(self.surface.take());
+            gpu.wait()?;
+            if let Some(report) = gpu.instance.generate_report() {
+                let buffers = report.hub.buffers.num_kept_from_user;
+                let textures = report.hub.textures.num_kept_from_user;
+                let views = report.hub.texture_views.num_kept_from_user;
+                println!(
+                    "nightwatch resources live_buffers={buffers} live_textures={textures} live_views={views}"
+                );
+                if buffers + textures + views != 0 {
+                    return Err("GPU resources remain owned at teardown".into());
+                }
             }
         }
         Ok(())
@@ -383,10 +376,11 @@ impl Application for App {
         self.release()
     }
     fn shutdown(&mut self, _: &mut AppContext<'_>) -> Result<()> {
+        // Drain native query callbacks before serializing frame-correlated samples.
+        self.release()?;
         if let Some(path) = &self.settings.benchmark_file {
             self.profile.write_json(path)?;
         }
-        self.release()?;
         if self.settings.benchmark {
             self.profile.report(&self.diagnostics)?;
         }

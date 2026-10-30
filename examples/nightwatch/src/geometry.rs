@@ -1,10 +1,11 @@
 //! Procedural geometry and a shared white texture; no external assets required.
+use quasar_frame::{Gpu, GraphicsResult, texture_2d};
 use quasar_render_3d::Vertex;
-use vulkanic_gal::{commands::BufferImageCopyRegion, resources::*, *};
-pub(crate) fn upload_white(gal: &mut VulkanicGal) -> GalResult<(Handle, Handle)> {
+use vulkanic_gal::*;
+pub(crate) fn upload_white(gal: &Gpu) -> GraphicsResult<(Texture, TextureView)> {
     upload_rgba(gal, 1, 1, vec![255; 4])
 }
-pub(crate) fn upload_normal(gal: &mut VulkanicGal, metal: bool) -> GalResult<(Handle, Handle)> {
+pub(crate) fn upload_normal(gal: &Gpu, metal: bool) -> GraphicsResult<(Texture, TextureView)> {
     let mut pixels = Vec::with_capacity(64 * 64 * 4);
     let height = |x: f32, y: f32| {
         if metal {
@@ -29,107 +30,30 @@ pub(crate) fn upload_normal(gal: &mut VulkanicGal, metal: bool) -> GalResult<(Ha
     upload_rgba(gal, 64, 64, pixels)
 }
 fn upload_rgba(
-    gal: &mut VulkanicGal,
+    gal: &Gpu,
     width: u32,
     height: u32,
     pixels: Vec<u8>,
-) -> GalResult<(Handle, Handle)> {
-    let size = Extent3d {
+) -> GraphicsResult<(Texture, TextureView)> {
+    let texture = texture_2d(
+        &gal.device,
+        "Nightwatch procedural texture",
         width,
         height,
-        depth: 1,
-    };
-    let texture = gal.create_texture(TextureDesc {
-        label: "playground-white".into(),
-        dimension: TextureDimension::D2,
-        format: TextureFormat::Rgba8Unorm,
-        extent: size,
-        mip_levels: 1,
-        array_layers: 1,
-        usages: vec![TextureUsage::Sampled, TextureUsage::TransferDst],
-    })?;
-    let view = match gal.create_texture_view(TextureViewDesc {
-        label: "playground-white-view".into(),
-        texture,
-        format: TextureFormat::Rgba8Unorm,
-        base_mip: 0,
-        mip_count: 1,
-        base_layer: 0,
-        layer_count: 1,
-    }) {
-        Ok(view) => view,
-        Err(error) => {
-            let _ = gal.retire(texture);
-            return Err(error);
-        }
-    };
-    let upload = match gal.create_buffer(BufferDesc {
-        label: "playground-white-upload".into(),
-        size: pixels.len() as u64,
-        memory: MemoryDomain::Upload,
-        usages: vec![BufferUsage::TransferSrc, BufferUsage::HostWrite],
-    }) {
-        Ok(upload) => upload,
-        Err(error) => {
-            let _ = gal.retire(view);
-            let _ = gal.retire(texture);
-            return Err(error);
-        }
-    };
-    let result = gal.submit(SubmissionBatch {
-        label: "playground-white-upload".into(),
-        command_lists: vec![CommandList::from(CommandListDesc {
-            label: "playground-white-upload".into(),
-            operations: vec![
-                CommandOp::HostWriteBuffer {
-                    buffer: upload,
-                    offset: 0,
-                    data: pixels,
-                },
-                CommandOp::Barrier(ResourceBarrier {
-                    resource: upload,
-                    subresources: None,
-                    before: TextureUsageState::TransferDst,
-                    after: TextureUsageState::TransferSrc,
-                    src_queue: QueueClass::Graphics,
-                    dst_queue: QueueClass::Graphics,
-                }),
-                CommandOp::Barrier(ResourceBarrier {
-                    resource: texture,
-                    subresources: None,
-                    before: TextureUsageState::Undefined,
-                    after: TextureUsageState::TransferDst,
-                    src_queue: QueueClass::Graphics,
-                    dst_queue: QueueClass::Graphics,
-                }),
-                CommandOp::CopyBufferToTexture(BufferImageCopyRegion {
-                    buffer: upload,
-                    buffer_offset: 0,
-                    bytes_per_row: width * 4,
-                    rows_per_image: height,
-                    texture,
-                    texture_mip: 0,
-                    texture_layer: 0,
-                    texture_origin: TextureOrigin3d { x: 0, y: 0, z: 0 },
-                    extent: size,
-                }),
-                CommandOp::Barrier(ResourceBarrier {
-                    resource: texture,
-                    subresources: None,
-                    before: TextureUsageState::TransferDst,
-                    after: TextureUsageState::ShaderRead,
-                    src_queue: QueueClass::Graphics,
-                    dst_queue: QueueClass::Graphics,
-                }),
-            ],
-        })],
-    });
-    let _ = gal.retire(upload);
-    if let Err(error) = result {
-        let _ = gal.retire(view);
-        let _ = gal.retire(texture);
-        return Err(error);
-    }
+        TextureFormat::Rgba8Unorm,
+        TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+    )?;
+    gal.queue.write_texture(
+        texture.as_image_copy(),
+        &pixels,
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
+        },
+        texture.size(),
+    );
+    let view = texture.create_view(&Default::default());
     Ok((texture, view))
 }
 

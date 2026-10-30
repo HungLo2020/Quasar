@@ -1,0 +1,53 @@
+{
+  "acquire_ms": {
+    "mean": 0.017934983333333335,
+    "p50": 0.017233,
+    "p95": 0.023813,
+    "p99": 0.029357,
+    "samples": 300
+  },
+  "blocking_waits": 0,
+  "build": "release",
+  "configured_frames": 3,
+  "cpu_frame_ms": {
+    "mean": 9.198615893333333,
+    "p50": 9.015301,
+    "p95": 10.390965,
+    "p99": 11.183779,
+    "samples": 300
+  },
+  "cpu_submit_ms": {
+    "mean": 0.05553170333333333,
+    "p50": 0.049504,
+    "p95": 0.073226,
+    "p99": 0.087073,
+    "samples": 300
+  },
+  "device": "NVIDIA GeForce RTX 2070",
+  "device_creations": 1,
+  "elapsed_ms": 2897.147871,
+  "explicit_submission": false,
+  "frames": 300,
+  "gpu_allocator": {
+    "allocated_bytes": 2617408,
+    "reserved_bytes": 268435456
+  },
+  "gpu_frame_ms": {
+    "mean": 0.04313877333333333,
+    "p50": 0.037472,
+    "p95": 0.096256,
+    "p99": 0.098272,
+    "samples": 300
+  },
+  "policy": "completion-poll",
+  "present_ms": {
+    "mean": 8.902364243333334,
+    "p50": 8.744763,
+    "p95": 10.036101,
+    "p99": 10.821594,
+    "samples": 300
+  },
+  "rust_allocated_bytes": 14922441,
+  "rust_allocations": 81172,
+  "timing_note": "Native timestamps when available; no synthetic resource or completion counters"
+}

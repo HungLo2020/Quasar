@@ -1,8 +1,8 @@
 use physics_playground::render::Graphics;
 use physics_playground::world::{MAX_PROPS, Playground, PlaygroundInput, PropKind, autoplay_input};
+use quasar_frame::Gpu;
 use quasar_frame::OffscreenTarget;
 use quasar_spatial::{Aabb, Frustum, Plane};
-use vulkanic_gal::BackendChoice;
 
 fn stand(world: &mut Playground, ticks: u32) {
     for _ in 0..ticks {
@@ -200,28 +200,32 @@ fn props_hold_transform_data_for_every_kind() {
 #[test]
 #[ignore = "requires a Vulkan-capable graphics device"]
 fn offscreen_scene_is_non_uniform_and_resources_balance() {
-    let mut gal =
-        vulkanic_gal::VulkanicGal::create(BackendChoice::Vulkan, "playground test").unwrap();
-    let mut graphics = Graphics::new(&mut gal).unwrap();
-    let mut target = OffscreenTarget::new(&mut gal, 480, 270).unwrap();
+    let gal = Gpu::headless().unwrap();
+    let mut graphics = Graphics::new(&gal).unwrap();
+    let target = OffscreenTarget::new(&gal, 480, 270).unwrap();
     let mut world = Playground::new(29);
     for _ in 0..30 {
         world.update(autoplay_input(&world));
     }
     let report = target
-        .render(&mut gal, |gal, target| {
-            graphics.commands(gal, target, &world)
-        })
+        .render(&gal, |gal, target| graphics.commands(gal, target, &world))
         .unwrap();
     assert_eq!(report.rgba.len(), 480 * 270 * 4);
     let colors: std::collections::BTreeSet<_> =
         report.rgba.as_chunks::<4>().0.iter().copied().collect();
     assert!(colors.len() > 8);
-    target.release(&mut gal).unwrap();
-    graphics.release(&mut gal).unwrap();
-    gal.retire_through(gal.latest_submission_id()).unwrap();
-    let metrics = gal.metrics();
-    assert_eq!(metrics.resource_creates, metrics.resource_destroys);
+    target.release(&gal).unwrap();
+    graphics.release(&gal).unwrap();
+
+    drop(graphics);
+    gal.wait().unwrap();
+    let h = gal.instance.generate_report().unwrap().hub;
+    assert_eq!(
+        h.buffers.num_kept_from_user
+            + h.textures.num_kept_from_user
+            + h.texture_views.num_kept_from_user,
+        0
+    );
 }
 
 #[test]

@@ -4,8 +4,8 @@
 //! module only maps its pages onto persistent `DynamicTexture` objects on the
 //! caller's `RenderState2D`. Unchanged pages are never uploaded again.
 use crate::{TextureId, Textures};
+use quasar_frame::{Gpu, GraphicsResult};
 use quasar_text::GlyphAtlas;
-use vulkanic_gal::{GalResult, VulkanicGal};
 
 /// Upload counters for one or more `sync` calls.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -54,10 +54,10 @@ impl GpuTextAtlas {
     pub fn sync(
         &mut self,
         state: &mut crate::RenderState2D,
-        gal: &mut VulkanicGal,
+        gal: &Gpu,
         textures: &mut Textures,
         atlas: &mut GlyphAtlas,
-    ) -> GalResult<()> {
+    ) -> GraphicsResult<()> {
         for index in 0..atlas.pages().len() {
             let page = &atlas.pages()[index];
             if self.pages.len() <= index {
@@ -85,9 +85,9 @@ impl GpuTextAtlas {
     pub fn release(
         &mut self,
         state: &mut crate::RenderState2D,
-        gal: &mut VulkanicGal,
+        gal: &Gpu,
         textures: &mut Textures,
-    ) -> GalResult<()> {
+    ) -> GraphicsResult<()> {
         for page in std::mem::take(&mut self.pages) {
             state.destroy_dynamic_texture(gal, textures, page)?;
         }

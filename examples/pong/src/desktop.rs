@@ -48,8 +48,8 @@ impl From<quasar_render_2d::Error> for AppError {
         Self(Box::new(error))
     }
 }
-impl From<quasar_render_2d::GalError> for AppError {
-    fn from(error: quasar_render_2d::GalError) -> Self {
+impl From<quasar_render_2d::GraphicsError> for AppError {
+    fn from(error: quasar_render_2d::GraphicsError) -> Self {
         Self(Box::new(error))
     }
 }

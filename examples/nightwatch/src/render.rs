@@ -4,24 +4,23 @@ use crate::{
     Result, geometry,
     world::{Weapon, World},
 };
+use quasar_frame::{Gpu, GraphicsResult, RenderTarget, error};
 use quasar_profile::RendererStats;
 use quasar_render_2d::{Canvas, Color, DisplayOptions, LoadOp, Rect, RenderState2D, Textures};
 use quasar_render_3d::*;
-use vulkanic_gal::{resources::*, *};
+use vulkanic_gal::{CommandBuffer, TextureView};
 
 pub struct Graphics {
     world: SurfaceRenderState3D,
     weapon: SurfaceRenderState3D,
     shadows: ShadowRenderState3D,
+    shadow_target: Option<ShadowTarget>,
     options: GraphicsOptions,
-    normal_concrete: Handle,
-    normal_concrete_view: Handle,
-    normal_metal: Handle,
-    normal_metal_view: Handle,
+    normal_concrete_view: TextureView,
+    normal_metal_view: TextureView,
     hud: RenderState2D,
     cube: Mesh,
-    texture: Handle,
-    view: Handle,
+    view: TextureView,
     textures: Textures,
     stats: RendererStats,
     work: RenderWork,
@@ -74,10 +73,10 @@ impl Instance {
     }
 }
 impl Graphics {
-    pub fn new(gal: &mut VulkanicGal) -> GalResult<Self> {
+    pub fn new(gal: &Gpu) -> GraphicsResult<Self> {
         Self::with_options(gal, GraphicsOptions::default())
     }
-    pub fn with_options(gal: &mut VulkanicGal, options: GraphicsOptions) -> GalResult<Self> {
+    pub fn with_options(gal: &Gpu, options: GraphicsOptions) -> GraphicsResult<Self> {
         Self::with_submission(
             gal,
             options,
@@ -89,10 +88,10 @@ impl Graphics {
         )
     }
     pub fn with_submission(
-        gal: &mut VulkanicGal,
+        gal: &Gpu,
         options: GraphicsOptions,
         submission: SubmissionConfig,
-    ) -> GalResult<Self> {
+    ) -> GraphicsResult<Self> {
         Self::with_asset_root(
             gal,
             options,
@@ -101,114 +100,40 @@ impl Graphics {
         )
     }
     pub fn with_asset_root(
-        gal: &mut VulkanicGal,
+        gal: &Gpu,
         options: GraphicsOptions,
         submission: SubmissionConfig,
         root: &std::path::Path,
-    ) -> GalResult<Self> {
-        let mut world = SurfaceRenderState3D::with_submission(gal, 16, 2, submission)?;
-        let mut weapon = match SurfaceRenderState3D::with_submission(gal, 8, 2, submission) {
-            Ok(x) => x,
-            Err(e) => {
-                let _ = world.release(gal);
-                return Err(e);
-            }
-        };
-        let mut hud = match RenderState2D::new(gal) {
-            Ok(x) => x,
-            Err(e) => {
-                let _ = weapon.release(gal);
-                let _ = world.release(gal);
-                return Err(e);
-            }
-        };
-        let (v, i) = geometry::cube();
-        let mut cube = match Mesh::upload(gal, &v, &i) {
-            Ok(x) => x,
-            Err(e) => {
-                let _ = hud.release(gal);
-                let _ = weapon.release(gal);
-                let _ = world.release(gal);
-                return Err(e);
-            }
-        };
-        let (texture, view) = match geometry::upload_white(gal) {
-            Ok(x) => x,
-            Err(e) => {
-                let _ = cube.release(gal);
-                let _ = hud.release(gal);
-                let _ = weapon.release(gal);
-                let _ = world.release(gal);
-                return Err(e);
-            }
-        };
-        let mut owned = vec![];
-        let resources = (|| {
-            let (normal_concrete, normal_concrete_view) = geometry::upload_normal(gal, false)?;
-            owned.extend([normal_concrete, normal_concrete_view]);
-            let (normal_metal, normal_metal_view) = geometry::upload_normal(gal, true)?;
-            owned.extend([normal_metal, normal_metal_view]);
-            let shadows = ShadowRenderState3D::with_submission(
-                gal,
-                ShadowConfig {
-                    resolution: options.shadow_resolution,
-                    max_depth_bytes: 96 * 1024 * 1024,
-                    ..ShadowConfig::default()
-                },
-                submission,
-            )?;
-            let models = match crate::models::Models::load(gal, root) {
-                Ok(m) => m,
-                Err(e) => {
-                    let mut shadows = shadows;
-                    let _ = shadows.release(gal);
-                    return Err(e);
-                }
-            };
-            Ok((
-                normal_concrete,
-                normal_concrete_view,
-                normal_metal,
-                normal_metal_view,
-                shadows,
-                models,
-            ))
-        })();
-        let (
-            normal_concrete,
-            normal_concrete_view,
-            normal_metal,
-            normal_metal_view,
-            shadows,
-            models,
-        ) = match resources {
-            Ok(r) => r,
-            Err(e) => {
-                for h in owned.into_iter().rev() {
-                    let _ = gal.retire(h);
-                }
-                let _ = cube.release(gal);
-                let _ = hud.release(gal);
-                let _ = weapon.release(gal);
-                let _ = world.release(gal);
-                let _ = gal.retire(view);
-                let _ = gal.retire(texture);
-                return Err(e);
-            }
-        };
+    ) -> GraphicsResult<Self> {
+        let world = SurfaceRenderState3D::with_submission(gal, 16, 2, submission)?;
+        let weapon = SurfaceRenderState3D::with_submission(gal, 8, 2, submission)?;
+        let hud = RenderState2D::new(gal)?;
+        let (vertices, indices) = geometry::cube();
+        let cube = Mesh::upload(gal, &vertices, &indices)?;
+        let (_texture, view) = geometry::upload_white(gal)?;
+        let (_normal_concrete, normal_concrete_view) = geometry::upload_normal(gal, false)?;
+        let (_normal_metal, normal_metal_view) = geometry::upload_normal(gal, true)?;
+        let shadows = ShadowRenderState3D::with_submission(
+            gal,
+            ShadowConfig {
+                resolution: options.shadow_resolution,
+                max_depth_bytes: 96 * 1024 * 1024,
+                ..Default::default()
+            },
+            submission,
+        )?;
+        let models = crate::models::Models::load(gal, root)?;
         Ok(Self {
+            shadow_target: None,
             shadows,
             models,
             options,
-            normal_concrete,
             normal_concrete_view,
-            normal_metal,
             normal_metal_view,
             world,
             weapon,
             hud,
             cube,
-            texture,
             view,
             textures: Textures::default(),
             stats: RendererStats::default(),
@@ -230,7 +155,7 @@ impl Graphics {
     pub fn asset_root(&self) -> &std::path::Path {
         &self.models.root
     }
-    pub fn reload_assets(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
+    pub fn reload_assets(&mut self, gal: &Gpu) -> GraphicsResult<()> {
         self.world.clear_bindings(gal)?;
         self.weapon.clear_bindings(gal)?;
         self.shadows.clear_bindings(gal)?;
@@ -246,18 +171,30 @@ impl Graphics {
     pub fn effects(&self) -> (bool, bool) {
         (self.options.shadows, self.options.normal_maps)
     }
-    pub fn resize_shadow_maps(&mut self, gal: &mut VulkanicGal, resolution: u32) -> GalResult<()> {
+    pub fn resize_shadow_maps(&mut self, gal: &Gpu, resolution: u32) -> GraphicsResult<()> {
+        let target = if self.shadow_target.is_some() {
+            Some(ShadowTarget::new(
+                gal,
+                ShadowConfig {
+                    resolution,
+                    ..self.shadows.config()
+                },
+            )?)
+        } else {
+            None
+        };
+        self.shadows.resize(gal, resolution)?;
         self.world.clear_bindings(gal)?;
         self.weapon.clear_bindings(gal)?;
-        self.shadows.resize(gal, resolution)?;
+        self.shadow_target = target;
         self.options.shadow_resolution = resolution;
         Ok(())
     }
     fn draws<'a>(
         cube: &'a Mesh,
-        view: Handle,
+        view: &TextureView,
         instances: &[Instance],
-        normal_view: Option<Handle>,
+        normal_view: Option<&TextureView>,
         receive: bool,
     ) -> Vec<SurfaceDraw3D<'a>> {
         instances
@@ -292,12 +229,12 @@ impl Graphics {
     }
     pub fn commands(
         &mut self,
-        gal: &mut VulkanicGal,
-        target: Handle,
+        gal: &Gpu,
+        target: &RenderTarget,
         w: &World,
         paused: bool,
-    ) -> GalResult<Vec<CommandList>> {
-        let extent = gal.pass_target_extent(target)?;
+    ) -> GraphicsResult<Vec<CommandBuffer>> {
+        let extent = target;
         let aspect = extent.width as f32 / extent.height as f32;
         let projection = Mat4::perspective(80.0f32.to_radians(), aspect, 0.04, 100.).unwrap();
         self.models
@@ -357,11 +294,11 @@ impl Graphics {
         let instances = scene(w);
         let mut draws = Self::draws(
             &self.cube,
-            self.view,
+            &self.view,
             &instances,
             self.options
                 .normal_maps
-                .then_some(self.normal_concrete_view),
+                .then_some(&self.normal_concrete_view),
             true,
         );
         for prop in w.props() {
@@ -409,9 +346,17 @@ impl Graphics {
                 });
             }
         }
-        let shadow_frame = (!views.is_empty())
-            .then(|| self.shadows.prepare(gal, &views))
-            .transpose()?;
+        let shadow_frame = if views.is_empty() {
+            None
+        } else {
+            if self.shadow_target.is_none() {
+                self.shadow_target = Some(self.shadows.create_target(gal)?);
+            }
+            Some(
+                self.shadows
+                    .prepare_into(gal, &views, self.shadow_target.as_ref().unwrap())?,
+            )
+        };
         let shadow_stats = shadow_frame
             .as_ref()
             .map_or(ShadowStats::default(), |s| s.stats);
@@ -437,9 +382,9 @@ impl Graphics {
         let weapon_instances = weapon(w);
         let mut draws = Self::draws(
             &self.cube,
-            self.view,
+            &self.view,
             &weapon_instances,
-            self.options.normal_maps.then_some(self.normal_metal_view),
+            self.options.normal_maps.then_some(&self.normal_metal_view),
             false,
         );
         let (root, reload) = weapon_pose(w);
@@ -502,11 +447,10 @@ impl Graphics {
                     clear_color: None,
                     clear_depth: true,
                 },
-                depth_before: TextureUsageState::DepthStencilAttachment,
             },
         )?;
-        let mut canvas = Canvas::new(extent.width, extent.height)
-            .map_err(|e| GalError::invalid_argument(e.to_string()))?;
+        let mut canvas =
+            Canvas::new(extent.width, extent.height).map_err(|e| error(e.to_string()))?;
         hud(&mut canvas, w, paused, self.effects());
         let hud = self.hud.prepare(
             gal,
@@ -530,54 +474,24 @@ impl Graphics {
                 + gun.stats.uniform_upload_bytes
                 + shadow_stats.uniform_upload_bytes) as u64,
         };
-        let attachment = gal.pass_target_color_attachment(target)?;
-        let between = || {
-            CommandList::from(CommandListDesc {
-                label: "nightwatch-custom-pass-boundary".into(),
-                operations: vec![CommandOp::Barrier(ResourceBarrier {
-                    resource: attachment,
-                    subresources: None,
-                    before: TextureUsageState::ColorAttachment,
-                    after: TextureUsageState::ColorAttachment,
-                    src_queue: QueueClass::Graphics,
-                    dst_queue: QueueClass::Graphics,
-                })],
-            })
-        };
         let mut commands: Vec<_> = shadow_frame.into_iter().map(|s| s.commands).collect();
         commands.push(world.commands);
-        if target.kind() != Some(HandleKind::FrameTarget) {
-            commands.push(between());
-        }
         commands.push(gun.commands);
-        if target.kind() != Some(HandleKind::FrameTarget) {
-            commands.push(between());
-        }
         commands.push(hud.commands);
         Ok(commands)
     }
-    pub fn release_targets(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
+    pub fn release_targets(&mut self, gal: &Gpu) -> GraphicsResult<()> {
         self.world.release_targets(gal)?;
         self.weapon.release_targets(gal)?;
         self.hud.release_targets(gal)
     }
-    pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
+    pub fn release(&mut self, gal: &Gpu) -> GraphicsResult<()> {
         self.world.release(gal)?;
         self.weapon.release(gal)?;
         self.shadows.release(gal)?;
         self.hud.release(gal)?;
         self.models.release(gal)?;
         self.cube.release(gal)?;
-        gal.retire(self.view)?;
-        gal.retire(self.texture)?;
-        for h in [
-            self.normal_concrete_view,
-            self.normal_concrete,
-            self.normal_metal_view,
-            self.normal_metal,
-        ] {
-            gal.retire(h)?;
-        }
         Ok(())
     }
 }
@@ -902,24 +816,15 @@ pub fn screenshot_with_asset_root(
     submission: SubmissionConfig,
     root: Option<&std::path::Path>,
 ) -> Result<()> {
-    let mut gal = VulkanicGal::create(BackendChoice::Vulkan, "Nightwatch screenshot")?;
-    let default = Graphics::default_asset_root();
-    let mut graphics =
-        Graphics::with_asset_root(&mut gal, options, submission, root.unwrap_or(&default))?;
-    let mut target = quasar_frame::OffscreenTarget::new(&mut gal, width, height)?;
-    let result = target.render(&mut gal, |gal, target| {
-        graphics.commands(gal, target, w, false)
-    });
-    target.release(&mut gal)?;
-    graphics.release(&mut gal)?;
-    gal.retire_through(gal.latest_submission_id())?;
-    let image = result?;
+    let gal = Gpu::headless()?;
+    let mut graphics = Graphics::with_asset_root(
+        &gal,
+        options,
+        submission,
+        root.unwrap_or(&Graphics::default_asset_root()),
+    )?;
+    let target = quasar_frame::OffscreenTarget::new(&gal, width, height)?;
+    let image = target.render(&gal, |gpu, target| graphics.commands(gpu, target, w, false))?;
     quasar_render_2d::write_png(path, width, height, &image.rgba)?;
-    println!(
-        "screenshot={} draws={} host_upload_bytes={}",
-        path.display(),
-        graphics.stats.draws,
-        image.profile.host_write_bytes
-    );
     Ok(())
 }

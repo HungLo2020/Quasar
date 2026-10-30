@@ -2,7 +2,7 @@
 use super::*;
 
 /// Default lit fragment source, also a starting point for custom shader variants.
-pub const DEFAULT_LIT_FRAGMENT_SHADER: &str = include_str!("lit.frag");
+pub const DEFAULT_LIT_FRAGMENT_SHADER: &str = include_str!("surface.frag.wgsl");
 
 /// Color textures are decoded explicitly; GAL UNORM targets do not perform sRGB conversion.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -52,7 +52,7 @@ pub enum Light {
     },
 }
 impl Light {
-    fn encoded(self) -> GalResult<[f32; 16]> {
+    pub(crate) fn encoded(self) -> GraphicsResult<[f32; 16]> {
         let (position, kind, direction, range, color, intensity, inner, outer, attenuation) =
             match self {
                 Self::Directional {
@@ -103,9 +103,7 @@ impl Light {
                         || outer_angle <= inner_angle
                         || outer_angle >= std::f32::consts::FRAC_PI_2
                     {
-                        return Err(GalError::invalid_argument(
-                            "spot half-angles require 0 <= inner < outer < pi/2",
-                        ));
+                        return Err(error("spot half-angles require 0 <= inner < outer < pi/2"));
                     }
                     (
                         position,
@@ -130,7 +128,7 @@ impl Light {
             || !range.is_finite()
             || range <= 0.
         {
-            return Err(GalError::invalid_argument(
+            return Err(error(
                 "invalid light position/direction/color/intensity/range",
             ));
         }
@@ -182,7 +180,7 @@ impl Default for Lighting<'_> {
 }
 /// Classic material parameters. Base tint, emissive and specular colors are linear.
 /// Texture decoding is explicit; alpha is never gamma-corrected.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct LitMaterial {
     pub base: Material,
     pub shading: ShadingModel,
@@ -193,7 +191,7 @@ pub struct LitMaterial {
     pub texture_color_space: ColorSpace,
 }
 impl LitMaterial {
-    pub fn textured(texture_view: Handle) -> Self {
+    pub fn textured(texture_view: &TextureView) -> Self {
         Self {
             base: Material::textured(texture_view),
             shading: ShadingModel::BlinnPhong,
@@ -204,7 +202,7 @@ impl LitMaterial {
             texture_color_space: ColorSpace::Linear,
         }
     }
-    pub(crate) fn parameters(self) -> [f32; 12] {
+    pub(crate) fn parameters(&self) -> [f32; 12] {
         [
             self.specular[0],
             self.specular[1],
@@ -228,7 +226,7 @@ impl LitMaterial {
             0.,
         ]
     }
-    fn valid(self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         positive_rgb(self.specular)
             && positive_rgb([self.base.tint[0], self.base.tint[1], self.base.tint[2]])
             && (0. ..=1.).contains(&self.base.tint[3])
@@ -245,213 +243,10 @@ pub struct LitDraw3D<'a> {
     pub material: LitMaterial,
 }
 
-/// Pass load/clear policy plus the caller-declared prior depth attachment state.
-/// This permits depth clearing between world and weapon passes without discarding
-/// synchronization with earlier depth writes in the same submission.
-#[derive(Clone, Copy, Debug)]
-pub struct LitPassOptions {
-    pub pass: PassOptions,
-    pub depth_before: TextureUsageState,
-}
-impl Default for LitPassOptions {
-    fn default() -> Self {
-        PassOptions::default().into()
-    }
-}
-impl From<PassOptions> for LitPassOptions {
-    fn from(pass: PassOptions) -> Self {
-        Self {
-            depth_before: if pass.clear_depth {
-                TextureUsageState::Undefined
-            } else {
-                TextureUsageState::DepthStencilAttachment
-            },
-            pass,
-        }
-    }
-}
-/// Opt-in renderer with the same GAL command/lifetime contract as RenderState3D.
-/// No window, scene, ECS, frame coordinator, or implicit submission is created.
-pub struct LitRenderState3D {
-    pub(crate) core: RenderState3D,
-    pub(crate) max_lights: usize,
-}
-pub(crate) struct LightingFrame<'a> {
-    pub bytes: Vec<u8>,
-    pub materials: &'a [LitMaterial],
-    pub depth_before: TextureUsageState,
-    pub surface: Option<surface::SurfaceFrame<'a>>,
-}
-impl LitRenderState3D {
-    pub fn with_submission(
-        gal: &mut VulkanicGal,
-        max_lights: usize,
-        submission: SubmissionConfig,
-    ) -> GalResult<Self> {
-        if max_lights > 4096 {
-            return Err(GalError::invalid_argument("light budget exceeds 4096"));
-        }
-        Ok(Self {
-            core: RenderState3D::new_submission_configured(
-                gal,
-                Some(DEFAULT_LIT_FRAGMENT_SHADER),
-                48 + max_lights.max(1) * 64,
-                0,
-                submission,
-            )?,
-            max_lights,
-        })
-    }
-    pub fn work_stats(&self) -> RenderWork {
-        self.core.work_stats()
-    }
-    #[cfg(feature = "diagnostics")]
-    pub fn set_diagnostics(&mut self, d: quasar_diagnostics::Diagnostics) {
-        self.core.set_diagnostics(d);
-    }
-    /// A fixed per-slot light budget, 0..=4096. Overflow is an explicit error.
-    pub fn new(gal: &mut VulkanicGal, max_lights: usize) -> GalResult<Self> {
-        Self::with_fragment_shader(gal, max_lights, DEFAULT_LIT_FRAGMENT_SHADER)
-    }
-    /// Custom GLSL fragment shader using the documented lit shader interface.
-    /// Allows game-defined BRDF/style without modifying GAL or adopting scene data.
-    pub fn with_fragment_shader(
-        gal: &mut VulkanicGal,
-        max_lights: usize,
-        fragment: &str,
-    ) -> GalResult<Self> {
-        if max_lights > 4096 {
-            return Err(GalError::invalid_argument("light budget exceeds 4096"));
-        }
-        let capabilities = gal.capabilities();
-        if !capabilities.features.storage_buffers
-            || !capabilities.features.uniform_buffers
-            || !capabilities.features.dynamic_buffer_offsets
-            || capabilities.limits.max_resource_layout_bindings < 4
-            || (48 + max_lights.max(1) * 64) as u64 > capabilities.limits.max_buffer_size
-        {
-            return Err(GalError::unsupported_feature(
-                "lit renderer needs storage/uniform buffers, dynamic offsets and four bindings within backend limits",
-            ));
-        }
-        Ok(Self {
-            core: RenderState3D::new_configured(gal, Some(fragment), 48 + max_lights.max(1) * 64)?,
-            max_lights,
-        })
-    }
-    pub fn prepare(
-        &mut self,
-        gal: &mut VulkanicGal,
-        target: Handle,
-        camera: LitCamera3D,
-        lighting: Lighting<'_>,
-        draws: &[LitDraw3D<'_>],
-        options: impl Into<LitPassOptions>,
-    ) -> GalResult<Prepared3D> {
-        self.prepare_internal(gal, target, camera, lighting, draws, options.into(), None)
-    }
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn prepare_internal(
-        &mut self,
-        gal: &mut VulkanicGal,
-        target: Handle,
-        camera: LitCamera3D,
-        lighting: Lighting<'_>,
-        draws: &[LitDraw3D<'_>],
-        options: LitPassOptions,
-        surface: Option<surface::SurfaceFrame<'_>>,
-    ) -> GalResult<Prepared3D> {
-        if draws.len() > 4096 {
-            return Err(GalError::invalid_argument("lit draw budget exceeds 4096"));
-        }
-        if lighting.output_color_space == ColorSpace::Srgb
-            && draws.iter().any(|d| d.material.base.transparent)
-        {
-            return Err(GalError::invalid_argument(
-                "blend transparent materials in a linear target; encode the final composite separately",
-            ));
-        }
-        if !matches!(
-            options.depth_before,
-            TextureUsageState::Undefined | TextureUsageState::DepthStencilAttachment
-        ) {
-            return Err(GalError::invalid_argument(
-                "depth_before must be Undefined or DepthStencilAttachment; transition custom prior uses explicitly",
-            ));
-        }
-        if !camera.position.iter().all(|x| x.is_finite())
-            || !positive_rgb(lighting.ambient)
-            || lighting.lights.len() > self.max_lights
-            || draws
-                .iter()
-                .any(|d| !d.material.valid() || !invertible_affine(d.model))
-        {
-            return Err(GalError::invalid_argument(
-                "invalid lit camera/material/model or light budget exceeded",
-            ));
-        }
-        let mut values = vec![
-            lighting.ambient[0],
-            lighting.ambient[1],
-            lighting.ambient[2],
-            0.,
-            camera.position[0],
-            camera.position[1],
-            camera.position[2],
-            0.,
-            lighting.lights.len() as f32,
-            if lighting.output_color_space == ColorSpace::Srgb {
-                1.
-            } else {
-                0.
-            },
-            0.,
-            0.,
-        ];
-        for light in lighting.lights {
-            values.extend(light.encoded()?);
-        }
-        let bytes: Vec<u8> = values.into_iter().flat_map(f32::to_ne_bytes).collect();
-        let materials: Vec<_> = draws.iter().map(|d| d.material).collect();
-        let base: Vec<_> = draws
-            .iter()
-            .map(|d| Draw3D {
-                mesh: d.mesh,
-                model: d.model,
-                material: d.material.base,
-            })
-            .collect();
-        self.core.prepare_frame(
-            gal,
-            target,
-            Camera3D {
-                view_projection: camera.view_projection,
-                light_direction: [0., 1., 0.],
-            },
-            &base,
-            options.pass,
-            Some(&LightingFrame {
-                bytes,
-                materials: &materials,
-                depth_before: options.depth_before,
-                surface,
-            }),
-        )
-    }
-    pub fn clear_bindings(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
-        self.core.clear_bindings(gal)
-    }
-    pub fn release_targets(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
-        self.core.release_targets(gal)
-    }
-    pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
-        self.core.release(gal)
-    }
-}
-fn positive_rgb(rgb: [f32; 3]) -> bool {
+pub(crate) fn positive_rgb(rgb: [f32; 3]) -> bool {
     rgb.iter().all(|x| x.is_finite() && *x >= 0.)
 }
-fn invertible_affine(m: Mat4) -> bool {
+pub(crate) fn invertible_affine(m: Mat4) -> bool {
     let a = m.0;
     let determinant = a[0][0] * (a[1][1] * a[2][2] - a[2][1] * a[1][2])
         - a[1][0] * (a[0][1] * a[2][2] - a[2][1] * a[0][2])
@@ -513,5 +308,159 @@ mod tests {
         assert!(!invertible_affine(
             Mat4::perspective(1., 1., 0.1, 10.).unwrap()
         ));
+    }
+}
+
+/// Native pass load/clear choices; wgpu owns attachment synchronization.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LitPassOptions {
+    pub pass: PassOptions,
+}
+impl From<PassOptions> for LitPassOptions {
+    fn from(pass: PassOptions) -> Self {
+        Self { pass }
+    }
+}
+pub struct LitRenderState3D {
+    pub(crate) core: Core3D,
+    pub(crate) max_lights: usize,
+}
+impl LitRenderState3D {
+    pub fn new(gpu: &Gpu, max_lights: usize) -> GraphicsResult<Self> {
+        Self::with_submission(gpu, max_lights, SubmissionConfig::default())
+    }
+    pub fn with_submission(
+        gpu: &Gpu,
+        max_lights: usize,
+        submission: SubmissionConfig,
+    ) -> GraphicsResult<Self> {
+        if max_lights > 4096 {
+            return Err(error("light budget exceeds 4096"));
+        }
+        Ok(Self {
+            core: Core3D::new(gpu, true, submission, None)?,
+            max_lights,
+        })
+    }
+    /// A WGSL fragment entry point using the documented native surface binding layout.
+    pub fn with_fragment_shader(
+        gpu: &Gpu,
+        max_lights: usize,
+        fragment: &str,
+    ) -> GraphicsResult<Self> {
+        if max_lights > 4096 {
+            return Err(error("light budget exceeds 4096"));
+        }
+        Ok(Self {
+            core: Core3D::new(gpu, true, SubmissionConfig::default(), Some(fragment))?,
+            max_lights,
+        })
+    }
+    pub(crate) fn light_bytes(
+        &self,
+        camera: LitCamera3D,
+        lighting: Lighting<'_>,
+    ) -> GraphicsResult<Vec<u8>> {
+        if !camera.position.iter().all(|x| x.is_finite())
+            || !positive_rgb(lighting.ambient)
+            || lighting.lights.len() > self.max_lights
+        {
+            return Err(error("invalid lighting/camera or light budget exceeded"));
+        }
+        let mut values = vec![
+            lighting.ambient[0],
+            lighting.ambient[1],
+            lighting.ambient[2],
+            0.,
+            camera.position[0],
+            camera.position[1],
+            camera.position[2],
+            0.,
+            lighting.lights.len() as f32,
+            f32::from(lighting.output_color_space == ColorSpace::Srgb),
+            0.,
+            0.,
+        ];
+        for light in lighting.lights {
+            values.extend(light.encoded()?);
+        }
+        if lighting.lights.is_empty() {
+            values.resize(28, 0.);
+        }
+        Ok(bytes(values))
+    }
+    pub fn prepare(
+        &mut self,
+        gpu: &Gpu,
+        target: &RenderTarget,
+        camera: LitCamera3D,
+        lighting: Lighting<'_>,
+        draws: &[LitDraw3D<'_>],
+        options: impl Into<LitPassOptions>,
+    ) -> GraphicsResult<Prepared3D> {
+        if draws.iter().any(|d| !d.material.valid()) {
+            return Err(error("invalid lit material"));
+        }
+        if lighting.output_color_space == ColorSpace::Srgb
+            && (target.format.is_srgb() || draws.iter().any(|d| d.material.base.transparent))
+        {
+            return Err(error(
+                "use a linear target for blending; encode sRGB only once",
+            ));
+        }
+        let data = self.light_bytes(camera, lighting)?;
+        let input: Vec<_> = draws
+            .iter()
+            .map(|d| Input {
+                mesh: d.mesh,
+                model: d.model,
+                base: &d.material.base,
+                lit: Some(&d.material),
+                normal: None,
+                receives_shadows: false,
+            })
+            .collect();
+        self.core.prepare(
+            gpu,
+            target,
+            Camera3D {
+                view_projection: camera.view_projection,
+                light_direction: [0., 1., 0.],
+            },
+            &input,
+            options.into().pass,
+            Some(&data),
+            None,
+        )
+    }
+    pub fn set_texture_sampler(
+        &mut self,
+        _gpu: &Gpu,
+        view: &TextureView,
+        sampler: &Sampler,
+    ) -> GraphicsResult<()> {
+        self.core.samplers.insert(view.clone(), sampler.clone());
+        Ok(())
+    }
+    pub fn work_stats(&self) -> RenderWork {
+        self.core.work
+    }
+    #[cfg(feature = "diagnostics")]
+    pub fn set_diagnostics(&mut self, d: quasar_diagnostics::Diagnostics) {
+        self.core.diagnostics = d;
+    }
+    pub fn clear_bindings(&mut self, _gpu: &Gpu) -> GraphicsResult<()> {
+        self.core.groups.clear();
+        self.core.samplers.clear();
+        self.core.normal_samplers.clear();
+        Ok(())
+    }
+    pub fn release_targets(&mut self, _gpu: &Gpu) -> GraphicsResult<()> {
+        self.core.depths.clear();
+        Ok(())
+    }
+    pub fn release(&mut self, _gpu: &Gpu) -> GraphicsResult<()> {
+        self.core.release();
+        Ok(())
     }
 }

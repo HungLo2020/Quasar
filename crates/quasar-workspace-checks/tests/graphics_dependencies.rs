@@ -1,5 +1,5 @@
-//! Native graphics APIs (Vulkan through `ash`, OpenGL through `glow`, wgpu,
-//! and their shader toolchains) belong to VulkanicGAL's private backends.
+//! VulkanicGAL is the sole dependency entry point for external upstream wgpu
+//! and its transitive driver/shader dependencies. It contains no private backend.
 //! No other workspace crate may depend on them, directly or through a
 //! third-party crate; renderers and games reach the GPU only through
 //! VulkanicGAL's public API.
@@ -218,7 +218,7 @@ fn native_graphics_crates_are_reachable_only_through_vulkanic_gal() {
         .collect();
     assert!(
         violations.is_empty(),
-        "native graphics crates must be used only by {GAL}'s backends; \
+        "native graphics crates must be used only by {GAL}'s upstream dependency; \
          these dependency paths bypass it:\n  {}",
         violations.join("\n  ")
     );
@@ -237,8 +237,8 @@ fn vulkanic_gal_remains_the_owner_of_its_backend_dependencies() {
     assert!(
         gal.dependencies
             .iter()
-            .any(|dependency| dependency.split(' ').next() == Some("ash")),
-        "{GAL} no longer depends on ash; update this check's expectations"
+            .any(|dependency| dependency.split(' ').next() == Some("wgpu")),
+        "{GAL} no longer depends on upstream wgpu; update this check's expectations"
     );
 }
 
@@ -296,7 +296,7 @@ fn no_source_outside_vulkanic_gal_names_a_native_graphics_crate() {
     }
     assert!(
         violations.is_empty(),
-        "native graphics crates must stay inside {GAL}'s backends:\n  {}",
+        "native graphics crates must stay inside {GAL}'s upstream dependency:\n  {}",
         violations.join("\n  ")
     );
 }
@@ -360,5 +360,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             .map(String::as_str)
             .collect::<BTreeSet<_>>(),
         expected
+    );
+}
+
+#[test]
+fn gal_is_an_unmodified_upstream_reexport() {
+    let source =
+        fs::read_to_string(workspace_root().join("crates/vulkanic-gal/src/lib.rs")).unwrap();
+    let code: Vec<_> = source
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("//"))
+        .collect();
+    assert_eq!(code, ["pub use wgpu;", "pub use wgpu::*;"]);
+    let graph = workspace_graph();
+    let package = graph.packages.values().find(|p| p.name == GAL).unwrap();
+    assert_eq!(package.dependencies.len(), 1);
+    assert_eq!(
+        package.dependencies[0].split_whitespace().next(),
+        Some("wgpu")
     );
 }
