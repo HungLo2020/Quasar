@@ -73,7 +73,8 @@ with valid, independent resources. No invalid cross-instance panic is treated as
 an acceptable rendering result.
 
 For release 0.2.20 the gates were repeated after the version bump: the complete
-native suite again passed 530 tests with none ignored, all 85 matrix steps passed
+native suite passed 531 tests with none ignored, including the Windows dependency
+regression below, all 85 matrix steps passed
 without skips, and default/all-feature strict Clippy passed. `verify_pong.py`
 confirmed matching 12,000-tick solo/local replay states and PNGs;
 `verify_tilemap.py` passed CLI interoperability, replay and relocation checks.
@@ -127,6 +128,21 @@ Rust allocation counts increased: 77.23 to 270.57/frame for composition and
 55.31 to 227.75/frame for framebuffer. Framebuffer allocated bytes dropped from
 about 1.035 MB to 31.8 KB/frame by avoiding the old full CPU-frame Vec copy.
 The raw distributions and timing-scope limits matter when assessing these costs.
+
+## Windows dependency resolution regression
+
+The first Windows CI run exposed incompatible native API types: `gpu-allocator`
+had resolved its broad Windows dependency range to 0.54 while `wgpu-hal` used
+0.62. The Cargo-generated lockfile now selects 0.62.2 for the allocator and
+gamepad backend while CPAL legitimately keeps 0.54. No package version or
+upstream source was changed. A platform-independent workspace regression test
+compares the allocator/backend dependency edges and fails on the original lock.
+This catches the mismatch on Linux as well as on Windows before GPU compilation.
+The VulkanicGAL API remains exactly the same two upstream re-exports. Local
+Windows-target (`x86_64-pc-windows-msvc`) checks passed for VulkanicGAL and
+`quasar-input`, both with all features/targets enabled. CI also enables all input
+features on its Windows/macOS runners. These checks compile Windows code; they
+do not execute a Windows GPU on the Linux host.
 
 ## Platform and measurement limits
 

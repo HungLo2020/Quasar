@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo check --locked -p quasar-window -p quasar-app -p quasar-input --all-targets
+      - run: cargo check --locked -p quasar-window -p quasar-app -p quasar-input --all-targets --all-features
       - run: cargo check --locked -p quasar-audio --all-features
 
       - run: cargo check --locked -p vulkanic-gal -p quasar-frame -p quasar-render-2d -p quasar-render-3d --all-targets --all-features

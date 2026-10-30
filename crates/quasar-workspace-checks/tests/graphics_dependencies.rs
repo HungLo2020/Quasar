@@ -381,3 +381,26 @@ fn gal_is_an_unmodified_upstream_reexport() {
         Some("wgpu")
     );
 }
+
+#[test]
+fn dx12_allocator_and_backend_share_windows_api_types() {
+    let graph = workspace_graph();
+    let windows_api = |name: &str| {
+        let package = graph.packages.values().find(|p| p.name == name).unwrap();
+        let dependencies: Vec<_> = package
+            .dependencies
+            .iter()
+            .filter(|d| d.split_whitespace().next() == Some("windows"))
+            .flat_map(|d| graph.resolve(d))
+            .collect();
+        assert_eq!(dependencies.len(), 1, "{name} must select one Windows API");
+        dependencies
+    };
+    // Both libraries pass native COM types across their boundary. Other consumers
+    // such as CPAL may legitimately retain an older, independent Windows API.
+    assert_eq!(
+        windows_api("gpu-allocator"),
+        windows_api("wgpu-hal"),
+        "the DX12 allocator and backend must resolve the same Windows API types"
+    );
+}
