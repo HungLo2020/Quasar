@@ -11,6 +11,7 @@ Graph trait ── astar / dijkstra ── SearchOutcome<Path>
                   └─ Grid<N, GridCell<N>> ── A* heuristic, costs, dynamic blocking
                         ├─ tilemap adapter (optional, headless)
                         ├─ spatial AABB adapter (optional)
+                        ├─ physics3d capsule-baked graph (optional)
                         ├─ jobs adapter (optional)
                         └─ navmesh adapter (optional, mature `navmesh` crate)
 ```
@@ -60,8 +61,20 @@ caller's predicate.
 
 `Grid::<2>::set_aabb_blocked` marks cells covered by a `quasar-spatial` AABB.
 Physics Playground computes Rapier collider AABBs, converts them to planar
-spatial AABBs, and updates the nav grid every 15 simulation ticks. This keeps
+spatial AABBs, and updates navigation when prop poses change. This keeps
 Rapier's broad phase authoritative and uses the grid only for path planning.
+
+### Shape-aware 3D collision
+
+The optional `physics3d` feature adds `CollisionGrid3`, a flat XZ graph baked
+from an updated `quasar-physics::dim3::CollisionWorld` and a capsule controller.
+Both occupied cells and all connections use actual Rapier shape queries, so
+round obstacles retain curved clearance and thin obstacles cannot be crossed
+between free cell centers. `nearest_reachable` attaches real actor positions
+using capsule clearance. The graph cache is immutable, capped at 262,144 cells
+and must be rebaked when geometry or agent dimensions change. Ordinary grids
+remain physics-free. Nightwatch demonstrates this adapter; see
+[3D collision](collision-3d.md) for ownership and limitations.
 
 ### Jobs
 

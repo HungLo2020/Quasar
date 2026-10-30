@@ -1,21 +1,18 @@
 //! Game-owned model selection and placements; decoding/upload are reusable library APIs.
+use crate::props::ModelId;
 use quasar_assets::{AssetServer, CacheBudget, GltfLoader, Handle as AssetHandle, model::Model3D};
+use quasar_physics::dim3::{Bounds3, RigidPose3, model_bounds, model_bounds_selected};
 use quasar_render_3d::*;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 use vulkanic_gal::*;
-pub(crate) const FILES: [&str; 7] = [
-    "blaster-kit/blaster-d.glb",
-    "blaster-kit/blaster-f.glb",
-    "blaster-kit/crate-medium.glb",
-    "blaster-kit/crate-wide.glb",
-    "survival-kit/barrel.glb",
-    "survival-kit/workbench.glb",
-    "survival-kit/metal-panel.glb",
-];
 pub(crate) struct Models {
     server: AssetServer,
-    handles: Vec<AssetHandle<Model3D>>,
-    pub gpu: Vec<UploadedModel>,
+    handles: BTreeMap<ModelId, AssetHandle<Model3D>>,
+    pub gpu: BTreeMap<ModelId, UploadedModel>,
+    bounds: BTreeMap<ModelId, Bounds3>,
     pub root: PathBuf,
 }
 fn failure(e: impl std::fmt::Display) -> GalError {
@@ -40,8 +37,9 @@ impl Models {
         });
         let mut result = Self {
             server,
-            handles: Vec::new(),
-            gpu: Vec::new(),
+            handles: BTreeMap::new(),
+            gpu: BTreeMap::new(),
+            bounds: BTreeMap::new(),
             root: root.into(),
         };
         result.reload(gal)?;
@@ -58,7 +56,7 @@ impl Models {
                 Field::new(
                     "texture_bytes",
                     self.gpu
-                        .iter()
+                        .values()
                         .map(|m| m.texture_upload_bytes as u64)
                         .sum::<u64>(),
                 ),
@@ -67,7 +65,7 @@ impl Models {
                 Field::new(
                     "default_pose_models",
                     self.handles
-                        .iter()
+                        .values()
                         .filter(|m| m.warnings.iter().any(|w| w.contains("animation clips")))
                         .count() as u64,
                 ),
@@ -76,20 +74,28 @@ impl Models {
         self.server.set_diagnostics(Some(diagnostics));
     }
     pub fn reload(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
-        if self.gpu.iter().any(UploadedModel::has_pending_commands) {
+        if self.gpu.values().any(UploadedModel::has_pending_commands) {
             return Err(GalError::submission(
                 StatusCode::InFlight,
                 "Nightwatch model commands are retained",
             ));
         }
-        for path in FILES {
-            self.server.invalidate(path, true).map_err(failure)?;
+        for id in ModelId::ALL {
+            self.server.invalidate(id.file(), true).map_err(failure)?;
         }
-        let mut next = Vec::new();
-        let mut handles = Vec::new();
+        let mut next = BTreeMap::new();
+        let mut handles = BTreeMap::new();
+        let mut bounds = BTreeMap::new();
         let result = (|| {
-            for path in FILES {
-                let model = self.server.load::<GltfLoader>(path).map_err(failure)?;
+            for id in ModelId::ALL {
+                let model = self.server.load::<GltfLoader>(id.file()).map_err(failure)?;
+                let fitted = if id == ModelId::Workbench {
+                    model_bounds_selected(&model, |i| i.name == "workbench")
+                } else {
+                    model_bounds(&model)
+                }
+                .map_err(failure)?;
+                bounds.insert(id, fitted);
                 let gpu = UploadedModel::upload(
                     gal,
                     &model,
@@ -98,20 +104,21 @@ impl Models {
                         ..ModelUploadOptions::default()
                     },
                 )?;
-                next.push(gpu);
-                handles.push(model);
+                next.insert(id, gpu);
+                handles.insert(id, model);
             }
             Ok(())
         })();
         if let Err(e) = result {
-            for m in &mut next {
+            for m in next.values_mut() {
                 let _ = m.release(gal);
             }
             return Err(e);
         }
         let mut old = std::mem::replace(&mut self.gpu, next);
         self.handles = handles;
-        for model in &mut old {
+        self.bounds = bounds;
+        for model in old.values_mut() {
             model.release(gal)?;
         }
         Ok(())
@@ -123,40 +130,24 @@ impl Models {
         weapon: &mut SurfaceRenderState3D,
         shadows: &mut ShadowRenderState3D,
     ) -> GalResult<()> {
-        for (index, m) in self.gpu.iter().enumerate() {
-            m.bind_samplers(gal, if index < 2 { &mut *weapon } else { &mut *world })?;
-            if index >= 2 {
-                m.bind_shadow_samplers(gal, shadows)?;
+        for (&id, m) in &self.gpu {
+            m.bind_samplers(gal, world)?;
+            if id.is_weapon() {
+                m.bind_samplers(gal, weapon)?;
             }
+            m.bind_shadow_samplers(gal, shadows)?;
         }
         Ok(())
     }
-    pub fn fit_uniform(&self, index: usize, center: [f32; 3], half: [f32; 3]) -> Mat4 {
-        let (min, max) = self.gpu[index].bounds().unwrap();
-        let scale = (0..3)
-            .map(|i| half[i] * 2. / (max[i] - min[i]).max(0.001))
-            .fold(f32::INFINITY, f32::min);
-        Mat4::translation(center[0], center[1], center[2])
-            * Mat4::scale(scale, scale, scale)
-            * Mat4::translation(
-                -(min[0] + max[0]) / 2.,
-                -(min[1] + max[1]) / 2.,
-                -(min[2] + max[2]) / 2.,
-            )
-    }
-    pub fn fit(&self, index: usize, center: [f32; 3], half: [f32; 3]) -> Mat4 {
-        let (min, max) = self.gpu[index].bounds().expect("validated nonempty model");
-        let scale = std::array::from_fn::<_, 3, _>(|i| half[i] * 2. / (max[i] - min[i]).max(0.001));
-        Mat4::translation(center[0], center[1], center[2])
-            * Mat4::scale(scale[0], scale[1], scale[2])
-            * Mat4::translation(
-                -(min[0] + max[0]) / 2.,
-                -(min[1] + max[1]) / 2.,
-                -(min[2] + max[2]) / 2.,
-            )
+    pub fn fit(&self, id: ModelId, pose: RigidPose3, half: [f32; 3]) -> Mat4 {
+        Mat4(
+            self.bounds[&id]
+                .fit_matrix(pose, half)
+                .expect("validated prop/model fit"),
+        )
     }
     pub fn release(&mut self, gal: &mut VulkanicGal) -> GalResult<()> {
-        for m in &mut self.gpu {
+        for m in self.gpu.values_mut() {
             m.release(gal)?;
         }
         self.gpu.clear();

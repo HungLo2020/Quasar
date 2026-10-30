@@ -36,6 +36,8 @@ mod grid;
 mod jobs;
 #[cfg(feature = "navmesh")]
 pub mod navmesh_support;
+#[cfg(feature = "physics3d")]
+pub mod physics3d;
 #[cfg(feature = "tilemap")]
 mod tilemap;
 

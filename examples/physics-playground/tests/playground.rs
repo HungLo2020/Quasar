@@ -112,6 +112,7 @@ fn spawning_ball_adds_a_prop_until_the_cap() {
 fn moving_through_the_sensor_sets_the_trigger_state() {
     let mut world = Playground::new(13);
     let mut entered = false;
+    let mut surface_entered_before_center = false;
     for _ in 0..220 {
         world.update(PlaygroundInput {
             forward: 1.0,
@@ -119,12 +120,19 @@ fn moving_through_the_sensor_sets_the_trigger_state() {
         });
         if world.zone_active() {
             entered = true;
+            surface_entered_before_center |= !world
+                .sensor_bounds()
+                .contains_point(&world.player_position().map(f64::from));
         }
     }
     assert!(
         entered,
         "player never entered the sensor zone at {:?}",
         world.player_position()
+    );
+    assert!(
+        surface_entered_before_center,
+        "trigger must use the capsule surface"
     );
 }
 

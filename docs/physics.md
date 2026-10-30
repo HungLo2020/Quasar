@@ -19,7 +19,8 @@ risk incompatible behavior. Quasar's layer therefore focuses on:
 6. optional `quasar-spatial` AABB/index conversion;
 7. preserving direct access to every Rapier API.
 
-No renderer, window, asset, ECS, editor or application runner is a dependency.
+No renderer, window, ECS, editor or application runner is a dependency. Asset
+data is an optional integration behind `model-assets`.
 
 ## Features and default build
 
@@ -29,6 +30,7 @@ No renderer, window, asset, ECS, editor or application runner is a dependency.
 | `dim3` | no | Compile Rapier 3D integration (opt in) |
 | `dynamics` | yes | Compile the Quasar fixed-step wrappers and event stepping |
 | `events` | yes | Collect Rapier collision/contact-force events |
+| `model-assets` | no | CPU bounds, structural selection and explicit cylinder fitting; enables dim3 |
 | `spatial` | no | `quasar-spatial` AABB conversion and collider index construction |
 | `enhanced-determinism` | no | Forward Rapier's cross-run determinism feature |
 
@@ -72,6 +74,15 @@ Rapier's `detect_collisions` (broad/narrow phase) without integrating bodies.
 work without the `dynamics` feature. A `CollisionWorld` still uses Rapier's
 container type internally, but no rigid-body stepping is performed by the
 Quasar API.
+
+### Explicit 3D geometry
+
+`Shape3`/`PlacedShape3`, `RigidPose3`, `Bounds3` and `CapsuleController3` are
+collision-only helpers. They share validated shape/pose data across rendering,
+movement, rays and optional navigation, while all collision algorithms remain
+Rapier/Parry. Optional `model-assets` consumes decoded CPU model data without
+loading files or creating automatic triangle meshes. See
+[3D collision](collision-3d.md) for shape selection, scaling and Nightwatch.
 
 ### Dynamics path
 
@@ -157,6 +168,11 @@ and optional collision impulses. The 3D playground demonstrates walking,
 jumping, pushing dynamic boxes and raycast interaction.
 
 ## Reference demos
+
+- `examples/nightwatch`: named authoritative prop definitions, individual barrel
+  cylinders, compound workbench, capsule movement/hits and optional
+  `quasar-nav/physics3d` swept-edge navigation. Headless needs no GPU or decoder.
+
 
 - `examples/falling-sand`: cellular sand with static Rapier obstacles, one
   dynamic ball and `quasar-spatial` obstacle/ball queries.

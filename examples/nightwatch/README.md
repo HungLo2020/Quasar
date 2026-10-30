@@ -52,9 +52,11 @@ Directional/colored point/spot lights, an unlit/emissive path, per-pixel
 Lambert/Blinn–Phong shading, directional sun shadows, perspective flashlight
 shadows, procedural concrete/metal normal maps and explicit linear/sRGB handling use public
 `quasar-render-3d` APIs. `quasar-nav` supplies bounded A* queries; the game owns
-agents and steering. Simple fixed-step axis movement against static boxes
-belongs to this sample, rather than imposing a physics dependency on rendering.
-Collision is a compact FPS sample model, not a general physics solver.
+agents and steering. Collision-only `quasar-physics`/Rapier supplies swept
+character capsules, round barrel cylinders, cuboids and compound props. Rendering,
+bullets and navigation consume the same named prop definitions. Physics remains
+independent of the render crates. See [3D collision](../../docs/collision-3d.md)
+for ownership, coordinates, shape selection and reuse.
 
 The library's `World` accepts explicit `Input` values and can be driven without
 a window, GPU, audio device or `quasar-app`. The desktop adapter opts into the
@@ -222,8 +224,10 @@ material tints, rather than replicas of real weapons.
 The glTF loader and GPU adapter are public Quasar APIs. Nightwatch owns only its
 asset selection, cover placement and animation policy. Recoil moves the loaded
 weapon; named magazine parts move during reload. Crate clips are explicitly
-imported at their default pose. Existing collision/navigation remains game-owned;
-box colliders conservatively approximate the imported cover and barrel groups.
+imported at their default pose. `props.rs` owns named model assignments, placements
+and explicit colliders: individual barrel cylinders, crate/wall cuboids, a
+compound workbench and character capsules. Navigation validates both nodes and
+edges against those same shapes.
 
 `--asset-root PATH`, `assets.root` in TOML/JSON, and `NIGHTWATCH_ASSET_ROOT` select
 an editable copy with the same pack layout. F5 stages replacements for the whole

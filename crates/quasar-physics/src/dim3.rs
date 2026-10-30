@@ -513,3 +513,9 @@ pub fn aabb_to_rapier(aabb: quasar_spatial::Aabb<3>) -> rapier3d::geometry::Aabb
         maxs: Vector::new(aabb.max[0] as f32, aabb.max[1] as f32, aabb.max[2] as f32),
     }
 }
+
+pub use crate::shapes3::{Bounds3, PlacedShape3, PrimitiveFit3, RigidPose3, Shape3, ShapeError3};
+#[cfg(feature = "model-assets")]
+pub use crate::shapes3::{model_bounds, model_bounds_selected, model_cylinder_y};
+
+pub use crate::character3::{CapsuleController3, CharacterMove3};

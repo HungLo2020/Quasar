@@ -1,4 +1,5 @@
 //! One GAL, lit world + lit first-person weapon + direct GAL barriers + 2D HUD.
+use crate::props::{ModelId, PropVisual};
 use crate::{
     Result, geometry,
     world::{Weapon, World},
@@ -314,15 +315,17 @@ impl Graphics {
             color: [0.38, 0.5, 0.7],
             intensity: 0.65,
         }];
-        for (position, color) in [
-            ([-9., 3., -7.], [0.1, 0.7, 1.]),
-            ([8., 3., -5.], [1., 0.3, 0.08]),
-            ([-8., 3., 8.], [0.2, 0.55, 1.]),
-            ([9., 3., 9.], [1., 0.65, 0.25]),
-            ([0., 4., -12.], [0.8, 0.1, 0.12]),
-        ] {
+        for prop in w.props() {
+            let PropVisual::Cuboid {
+                color,
+                emissive: true,
+                ..
+            } = prop.visual
+            else {
+                continue;
+            };
             lights.push(Light::Point {
-                position,
+                position: prop.pose.translation,
                 color,
                 intensity: 2.2,
                 range: 11.,
@@ -361,48 +364,18 @@ impl Graphics {
                 .then_some(self.normal_concrete_view),
             true,
         );
-        for (index, o) in w.obstacles.iter().enumerate() {
-            let asset = if index == 4 {
-                5
-            } else if index % 3 == 2 && (o.half[0] - o.half[2]).abs() < 0.5 {
-                4
-            } else if o.half[0] > o.half[2] * 1.3 {
-                3
-            } else {
-                2
+        for prop in w.props() {
+            let PropVisual::Model { asset, half } = prop.visual else {
+                continue;
             };
-            let mut imported = if asset == 4 {
-                [-1., 1.]
-                    .into_iter()
-                    .flat_map(|side| {
-                        self.models.gpu[asset].draws(self.models.fit_uniform(
-                            asset,
-                            [
-                                o.center[0] + side * o.half[0] * 0.5,
-                                o.center[1],
-                                o.center[2],
-                            ],
-                            [o.half[0] * 0.48, o.half[1], o.half[2]],
-                        ))
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                self.models.gpu[asset].draws(self.models.fit(asset, o.center, o.half))
-            };
-            // Muted industrial finishes are game material choices; source textures stay unchanged.
+            let mut imported =
+                self.models.gpu[&asset].draws(self.models.fit(asset, prop.pose, half));
             for draw in &mut imported {
                 for (c, tint) in [0.5, 0.65, 0.28].into_iter().enumerate() {
                     draw.material.lit.base.tint[c] *= tint;
                 }
             }
             draws.extend(imported);
-        }
-        for z in [-10., -4., 2., 8.] {
-            draws.extend(self.models.gpu[6].draws(self.models.fit(
-                6,
-                [14.3, 2.2, z],
-                [0.035, 1.0, 1.2],
-            )));
         }
         let casters: Vec<_> = draws
             .iter()
@@ -470,18 +443,26 @@ impl Graphics {
             false,
         );
         let (root, reload) = weapon_pose(w);
-        let gun_index = usize::from(w.weapon == Weapon::Rifle);
-        let gun_scale = if gun_index == 0 { 0.65 } else { 0.75 };
+        let gun_id = if w.weapon == Weapon::Rifle {
+            ModelId::Rifle
+        } else {
+            ModelId::Pistol
+        };
+        let gun_scale = if gun_id == ModelId::Pistol {
+            0.65
+        } else {
+            0.75
+        };
         let gun_root = root
             * Mat4::translation(0., 0., -0.14 + w.recoil * 0.035)
             * Mat4::scale(gun_scale, gun_scale, gun_scale);
-        for (i, instance) in self.models.gpu[gun_index].instances().iter().enumerate() {
+        for (i, instance) in self.models.gpu[&gun_id].instances().iter().enumerate() {
             let parent = if instance.name == "magazine" {
                 gun_root * Mat4::translation(0., -reload * 0.28, reload * 0.08)
             } else {
                 gun_root
             };
-            let mut draw = self.models.gpu[gun_index].draw(i, parent).unwrap();
+            let mut draw = self.models.gpu[&gun_id].draw(i, parent).unwrap();
             draw.material.receives_shadows = false;
             for (c, tint) in [0.5, 0.65, 0.25].into_iter().enumerate() {
                 draw.material.lit.base.tint[c] *= tint;
@@ -608,27 +589,13 @@ fn scene(w: &World) -> Vec<Instance> {
         for z in -4..4 {
             let value = if (x + z) % 2 == 0 { 0.12 } else { 0.095 };
             add(
-                [x as f32 * 4. + 2., -0.12, z as f32 * 4. + 2.],
+                [x as f32 * 4. + 2., -0.118, z as f32 * 4. + 2.],
                 [1.98, 0.12, 1.98],
                 [value, value * 1.1, value * 1.2],
             );
         }
     }
     for side in [-1., 1.] {
-        add([side * 15., 2.5, 0.], [0.5, 2.5, 15.], [0.12, 0.16, 0.19]);
-        add([0., 2.5, side * 15.], [15., 2.5, 0.5], [0.13, 0.17, 0.20]);
-        for z in -3..4 {
-            add(
-                [side * 14.35, 2.6, z as f32 * 4.],
-                [0.18, 2.6, 0.25],
-                [0.19, 0.24, 0.28],
-            );
-        }
-        add(
-            [side * 14.25, 4.5, 0.],
-            [0.22, 0.14, 14.],
-            [0.22, 0.25, 0.28],
-        );
         for z in -6..7 {
             add(
                 [side * 2.4, 0.012, z as f32 * 2.],
@@ -637,53 +604,29 @@ fn scene(w: &World) -> Vec<Instance> {
             );
         }
     }
-    add([0., 2., -14.4], [3., 2., 0.2], [0.1, 0.13, 0.15]);
-    for x in -7..8 {
-        add(
-            [x as f32 * 0.38, 2., -14.15],
-            [0.025, 1.8, 0.035],
-            [0.22, 0.25, 0.26],
-        );
+    for prop in w.props() {
+        if let PropVisual::Cuboid {
+            half,
+            color,
+            emissive,
+        } = prop.visual
+        {
+            let mut instance = if emissive {
+                Instance::glow([0.; 3], half, color)
+            } else {
+                Instance::cube([0.; 3], half, color)
+            };
+            instance = instance.transformed(Mat4(prop.pose.matrix().expect("validated prop pose")));
+            out.push(instance);
+        }
     }
-    for (position, color) in [
-        ([-9., 3., -7.], [0.1, 0.7, 1.]),
-        ([8., 3., -5.], [1., 0.3, 0.08]),
-        ([-8., 3., 8.], [0.2, 0.55, 1.]),
-        ([9., 3., 9.], [1., 0.65, 0.25]),
-    ] {
-        add(
-            [position[0], 1.5, position[2]],
-            [0.08, 1.5, 0.08],
-            [0.16, 0.2, 0.22],
-        );
-        add(
-            [position[0], 3.1, position[2]],
-            [0.5, 0.12, 0.22],
-            [0.08, 0.1, 0.12],
-        );
-        // Emissive glass is added below once the mutable closure is no longer used.
-        let _ = color;
-    }
-    for (position, color) in [
-        ([-9., 3., -7.], [0.1, 0.7, 1.]),
-        ([8., 3., -5.], [1., 0.3, 0.08]),
-        ([-8., 3., 8.], [0.2, 0.55, 1.]),
-        ([9., 3., 9.], [1., 0.65, 0.25]),
-    ] {
-        out.push(Instance::glow(position, [0.40, 0.05, 0.18], color));
-    }
-    out.push(Instance::glow(
-        [0., 4.3, -14.1],
-        [1.8, 0.10, 0.06],
-        [0.8, 0.08, 0.06],
-    ));
     for (index, z) in w.zombies.iter().enumerate() {
         let dead = if z.alive() {
             0.
         } else {
             (z.dead_ticks as f32 / 35.).min(1.)
         };
-        let root = Mat4::translation(z.position[0], 0.08, z.position[1])
+        let root = Mat4::translation(z.position[0], z.feet_y + 0.08, z.position[1])
             * Mat4::rotation_y(z.yaw)
             * Mat4::rotation_x(dead * 1.5);
         let skin = if z.hit_ticks > 0 {

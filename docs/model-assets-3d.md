@@ -152,8 +152,9 @@ can use the existing async worker to decode CPU data before applying a GPU
 generation on their render thread. F5 clears obsolete bindings and requests a
 fresh CPU/GPU generation; errors are
 reported through diagnostics and the old models remain playable. Procedural floor,
-lights, hands and enemies remain game-generated; imported cover fits the existing
-collision bounds. Barrel groups use conservative box colliders. Source models
+lights, hands and enemies remain game-generated. Named prop definitions now share
+placements and fitting anchors with explicit cylinder, cuboid and compound
+colliders; see [3D collision](collision-3d.md). Source models
 and their license/integrity records are described in
 [the asset manifest](../examples/nightwatch/assets/README.md).
 
@@ -180,3 +181,13 @@ GPU checks require a device and are ignored by ordinary CPU CI. Linux Vulkan and
 wgpu runs establish local behavior, not other operating-system/hardware parity.
 The format follows the [glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html);
 this subset does not claim complete glTF conformance.
+
+## Explicit collision profiles
+
+Models do not acquire collision automatically. Optional
+`quasar-physics/model-assets` reads decoded CPU `Model3D` data for bounds,
+selected structural instances and an explicitly requested containing Y-cylinder.
+`Bounds3::fit_matrix` shares the model anchor and transform with an authored
+primitive/compound. Nightwatch uses named assets and explicit collision profiles
+without requiring a scene graph. See [3D collision](collision-3d.md) for units,
+scale, reload ownership, approximation limits and alignment tests.

@@ -1,8 +1,10 @@
 //! A scene/ECS-free FPS: game-owned state, navigation, and optional shared-GAL rendering.
+mod collision;
 #[cfg(feature = "graphics")]
 mod geometry;
 #[cfg(feature = "graphics")]
 mod models;
+pub mod props;
 #[cfg(feature = "graphics")]
 pub mod render;
 pub mod settings;
@@ -47,3 +49,5 @@ error_from!(quasar_config::ConfigError);
 error_from!(quasar_profile::BenchmarkError);
 error_from!(quasar_diagnostics::ParseLevelError);
 error_from!(std::num::TryFromIntError);
+
+error_from!(quasar_physics::dim3::ShapeError3);

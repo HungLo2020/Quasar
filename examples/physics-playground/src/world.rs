@@ -743,11 +743,17 @@ impl Playground {
             self.collision_events += 1;
             let _ = event;
         }
-        // The sensor query is cheap and authoritative for the HUD; collision
-        // events above still exercise the event channel and counters.
+        // Query the full player capsule: its center may remain outside a trigger
+        // while its surface has entered it (e.g. when stopped by a nearby prop).
+        // Events above still exercise the event channel and counters.
+        let player = &self.physics.colliders[self.player_collider];
         self.zone_active = self
             .physics
-            .intersect_point(self.player_position, QueryFilter::default())
+            .intersect_shape(
+                *player.position(),
+                player.shape(),
+                QueryFilter::default().exclude_collider(self.player_collider),
+            )
             .any(|(handle, _)| handle == self.sensor);
         self.tick = self.tick.saturating_add(1);
     }

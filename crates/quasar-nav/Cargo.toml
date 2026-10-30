@@ -8,12 +8,14 @@ publish.workspace = true
 
 [features]
 default = []
+physics3d = ["dep:quasar-physics", "quasar-physics/dim3"]
 jobs = ["dep:quasar-jobs"]
 spatial = ["dep:quasar-spatial"]
 tilemap = ["dep:quasar-tilemap"]
 navmesh = ["dep:navmesh"]
 
 [dependencies]
+quasar-physics = { workspace = true, optional = true }
 navmesh = { version = "0.12.1", optional = true }
 quasar-jobs = { workspace = true, optional = true }
 quasar-spatial = { workspace = true, optional = true }

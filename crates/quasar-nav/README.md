@@ -7,7 +7,7 @@ agents, steering, ECS, renderer or global world.
 ```toml
 quasar-nav = { path = "crates/quasar-nav" }
 # Optional layers
-# features = ["jobs", "spatial", "tilemap", "navmesh"]
+# features = ["jobs", "spatial", "tilemap", "navmesh", "physics3d"]
 ```
 
 ## Core APIs
@@ -61,9 +61,16 @@ assert_eq!(path.nodes.first(), Some(&GridCell::new2(0, 0)));
 - `set_aabb_blocked` marks cells covered by `quasar-spatial::Aabb<2>`.
 - Physics Playground converts Rapier/Quasar-Physics collider AABBs into
   `quasar-spatial` bounds, blocks grid cells, replans agents and shows debug
-  paths. `quasar-nav` does not depend on Rapier or duplicate its broad phase.
+  paths. The default `quasar-nav` build does not depend on Rapier.
 - Steering and agent bodies remain game-owned; Physics Playground uses
   kinematic Rapier bodies for its visual agents.
+
+- With optional `physics3d`, `CollisionGrid3` bakes nodes and swept-capsule edges
+  against a caller-owned `quasar-physics::dim3::CollisionWorld`. Thin obstacles
+  and curved surfaces use their actual collision shapes. Nightwatch demonstrates
+  deterministic routing and capsule steering. Re-bake after geometry changes;
+  the graph is flat XZ at one fixed feet height, capped at 262,144 cells. See
+  [3D collision](../../docs/collision-3d.md). No agent or world ownership is imposed.
 
 ## Optional navmesh
 
@@ -121,7 +128,8 @@ tilemap metadata, spatial AABBs, jobs and navmesh adapters.
   chunks or hierarchical graphs (not yet provided).
 - No built-in agent steering, local avoidance, flow fields, hierarchical
   pathfinding or navmesh generation.
-- Line-of-sight is conservative cell sampling, not exact polygon visibility.
+- Ordinary grid line-of-sight uses conservative cell sampling; the optional
+  physics adapter uses actual swept-capsule clearance.
 - Path smoothing is greedy and preserves the path endpoints.
 - A limited cost makes the search return `LimitReached` when an edge would
   exceed the budget and the goal was not reached.

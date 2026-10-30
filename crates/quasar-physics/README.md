@@ -38,6 +38,15 @@ assert!(hit.is_some());
 No rigid bodies are integrated unless the caller explicitly reaches the raw
 Rapier world through `Deref`/`raw_mut()`.
 
+### Explicit 3D shapes and characters
+
+With `dim3`, `Shape3`, `PlacedShape3` and `RigidPose3` validate cuboids, cylinders,
+capsules and flattened compounds. `CapsuleController3` wraps Rapier capsule
+sweeps/sliding, feet coordinates, clearance queries and ray hits without dynamics.
+`Bounds3` shares a render-neutral fitting transform. Optional `model-assets`
+consumes decoded model data; it never implicitly generates mesh colliders.
+See [3D collision architecture](../../docs/collision-3d.md) and Nightwatch for reuse.
+
 ### Fixed-step dynamics
 
 `dim2::PhysicsWorld` and `dim3::PhysicsWorld` wrap Rapier's own `PhysicsWorld`
@@ -78,6 +87,7 @@ query pipelines and every advanced Rapier feature.
 | `dim3` | no | Compile Rapier 3D integration (opt in) |
 | `dynamics` | yes | Compile the Quasar fixed-step wrappers and event stepping |
 | `events` | yes | Collect Rapier collision/contact-force events via `std::sync::mpsc` |
+| `model-assets` | no | CPU model bounds, selected structural instances and explicit containing-cylinder fitting (enables dim3) |
 | `spatial` | no | `quasar-spatial` AABB conversion and collider index construction |
 | `enhanced-determinism` | no | Forward Rapier's cross-run determinism feature |
 
@@ -161,5 +171,5 @@ dimensions.
 - `CollisionWorld` still uses Rapier's `PhysicsWorld` storage internally for
   compatibility, but its public API exposes collider-only updates.
 - All worlds and handles are caller-owned; there are no global registries.
-- Joints and character controllers are available from Rapier but not given
-  Quasar-specific convenience wrappers beyond the demos.
+- Advanced joints/controller policies remain available directly through Rapier;
+  the reusable capsule helper intentionally keeps a small fixed policy.

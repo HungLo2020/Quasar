@@ -21,6 +21,7 @@
 //!   `dim3::PhysicsWorld` wrappers. Without it only collision worlds remain.
 //! - `events` (default): collect Rapier collision/contact-force events during
 //!   stepping through `std::sync::mpsc` channels.
+//! - `model-assets`: optional decoded-model bounds and explicit cylinder fitting (3D).
 //! - `spatial`: opt-in conversions and collider index construction using
 //!   `quasar-spatial`. No dependency exists in the other direction.
 //! - `enhanced-determinism`: forwards Rapier's feature of the same name.
@@ -34,10 +35,14 @@
 //! `advance` when replay matters.
 mod common;
 
+#[cfg(feature = "dim3")]
+mod character3;
 #[cfg(feature = "dim2")]
 pub mod dim2;
 #[cfg(feature = "dim3")]
 pub mod dim3;
+#[cfg(feature = "dim3")]
+mod shapes3;
 
 #[cfg(feature = "dim2")]
 pub use rapier2d;

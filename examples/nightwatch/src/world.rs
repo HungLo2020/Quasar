@@ -1,5 +1,13 @@
 //! Game rules only. No renderer, window, ECS, scene document, clock or global state.
-use quasar_nav::{Grid, GridCell, SearchOptions, SearchOutcome};
+use crate::{
+    collision::Scene,
+    props::{self, Prop, SKIN},
+};
+use quasar_nav::{GridCell, SearchOptions, SearchOutcome};
+use quasar_physics::{
+    dim3::{CollisionWorld, RayHit, ShapeError3},
+    rapier3d::pipeline::QueryFilter,
+};
 pub const DT: f32 = 1.0 / 60.0;
 pub const EYE_HEIGHT: f32 = 1.65;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,23 +46,10 @@ pub struct Input {
     pub flashlight: bool,
     pub restart: bool,
 }
-#[derive(Clone, Copy, Debug)]
-pub struct Obstacle {
-    pub center: [f32; 3],
-    pub half: [f32; 3],
-    pub color: [f32; 3],
-}
-impl Obstacle {
-    pub fn min(self) -> [f32; 3] {
-        std::array::from_fn(|i| self.center[i] - self.half[i])
-    }
-    pub fn max(self) -> [f32; 3] {
-        std::array::from_fn(|i| self.center[i] + self.half[i])
-    }
-}
 #[derive(Clone, Debug)]
 pub struct Zombie {
     pub position: [f32; 2],
+    pub feet_y: f32,
     pub yaw: f32,
     pub health: f32,
     pub gait: f32,
@@ -93,7 +88,8 @@ pub struct World {
     pub wave: u32,
     pub flashlight: bool,
     pub zombies: Vec<Zombie>,
-    pub obstacles: Vec<Obstacle>,
+    scene: Scene,
+    grounded: bool,
     pub shot: Option<Shot>,
     pub distance_walked: f32,
     pub velocity_y: f32,
@@ -101,32 +97,13 @@ pub struct World {
     rng: u64,
     cooldown: u32,
     next_wave: u32,
-    nav: Grid<2>,
 }
 impl World {
     pub fn new(seed: u64) -> Self {
-        let obstacles = vec![
-            obstacle([-5., 1.15, -2.], [1.4, 1.15, 2.0], [0.30, 0.35, 0.28]),
-            obstacle([4.5, 0.8, -4.5], [2.3, 0.8, 1.0], [0.32, 0.23, 0.13]),
-            obstacle([-4., 0.7, 5.], [1.4, 0.7, 1.3], [0.35, 0.24, 0.13]),
-            obstacle([7.5, 1.4, 3.], [0.85, 1.4, 2.5], [0.14, 0.22, 0.26]),
-            obstacle([0., 0.6, -0.5], [1.6, 0.6, 0.65], [0.3, 0.32, 0.34]),
-            obstacle([-9., 0.8, -8.], [1.2, 0.8, 1.0], [0.24, 0.28, 0.16]),
-            obstacle([10., 1., -9.], [1.5, 1., 1.5], [0.3, 0.21, 0.13]),
-        ];
-        let mut nav = Grid::new([32, 32]).unwrap();
-        for z in 0..32 {
-            for x in 0..32 {
-                let p = [x as f32 - 15.5, z as f32 - 15.5];
-                let blocked = p[0].abs() > 14.3
-                    || p[1].abs() > 14.3
-                    || obstacles.iter().any(|o| inside(p, *o, 0.55));
-                nav.set_blocked(GridCell::new2(x, z), blocked).unwrap();
-            }
-        }
+        let scene = Scene::new(props::courtyard()).expect("valid courtyard collision definitions");
         let mut w = Self {
             tick: 0,
-            player: [0., EYE_HEIGHT, 10.],
+            player: [0., EYE_HEIGHT + SKIN * 2., 10.],
             yaw: 0.,
             pitch: 0.,
             health: 100.,
@@ -142,7 +119,8 @@ impl World {
             wave: 1,
             flashlight: true,
             zombies: vec![],
-            obstacles,
+            scene,
+            grounded: true,
             shot: None,
             distance_walked: 0.,
             velocity_y: 0.,
@@ -150,7 +128,6 @@ impl World {
             rng: seed.max(1),
             cooldown: 0,
             next_wave: 0,
-            nav,
         };
         for position in [
             [-6., -8.],
@@ -163,6 +140,33 @@ impl World {
             w.spawn(position);
         }
         w
+    }
+    pub fn props(&self) -> &[Prop] {
+        &self.scene.props
+    }
+    pub fn collision(&self) -> &CollisionWorld {
+        &self.scene.world
+    }
+    pub fn navigation(&self) -> &quasar_nav::physics3d::CollisionGrid3 {
+        &self.scene.nav
+    }
+    /// Stages all geometry and navigation before replacing the active set.
+    pub fn set_props(&mut self, props: Vec<Prop>) -> Result<(), ShapeError3> {
+        let scene = Scene::new(props)?;
+        self.scene = scene;
+        for z in &mut self.zombies {
+            z.path.clear();
+            z.waypoint = 0;
+        }
+        Ok(())
+    }
+    pub fn raycast_world(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        distance: f32,
+    ) -> Option<RayHit> {
+        self.scene.world.raycast(origin, direction, distance, true)
     }
     pub fn forward(&self) -> [f32; 3] {
         let c = self.pitch.cos();
@@ -243,18 +247,30 @@ impl World {
             (-self.yaw.cos() * f + self.yaw.sin() * s) / length * speed * DT,
         ];
         let before = [self.player[0], self.player[2]];
-        if input.jump && self.player[1] <= EYE_HEIGHT + 0.001 {
+        if input.jump && self.grounded {
             self.velocity_y = 4.2;
         }
         self.velocity_y -= 10. * DT;
-        self.player[1] = (self.player[1] + self.velocity_y * DT).max(EYE_HEIGHT);
-        if self.player[1] == EYE_HEIGHT {
+        let desired = [delta[0], self.velocity_y * DT, delta[1]];
+        let motion = self
+            .scene
+            .player
+            .move_feet(
+                &self.scene.world,
+                [self.player[0], self.player[1] - EYE_HEIGHT, self.player[2]],
+                desired,
+                DT,
+                QueryFilter::default(),
+            )
+            .expect("finite player motion");
+        self.player = [motion.feet[0], motion.feet[1] + EYE_HEIGHT, motion.feet[2]];
+        self.grounded = motion.grounded;
+        if (self.velocity_y < 0. && motion.grounded)
+            || (self.velocity_y > 0. && motion.translation[1] + 1e-4 < desired[1])
+        {
             self.velocity_y = 0.;
         }
-        let feet = self.player[1] - EYE_HEIGHT;
-        let moved = move_actor(before, delta, 0.32, feet, &self.obstacles);
-        self.player[0] = moved[0];
-        self.player[2] = moved[1];
+        let moved = [self.player[0], self.player[2]];
         self.distance_walked += distance(before, moved);
         self.update_zombies();
         self.zombies.retain(|z| z.alive() || z.dead_ticks < 110);
@@ -267,8 +283,10 @@ impl World {
                 for _ in 0..(self.wave as usize * 2 + 4).min(24) {
                     let angle = self.random() * std::f32::consts::TAU;
                     let p = [angle.sin() * 12.5, angle.cos() * 12.5];
-                    let cell = nearest_free(&self.nav, cell(p));
-                    self.spawn(center(cell));
+                    if let Some(cell) = self.scene.nav.nearest_free(self.scene.nav.cell(p)) {
+                        let point = self.scene.nav.point(cell);
+                        self.spawn([point[0], point[2]]);
+                    }
                 }
             }
         }
@@ -280,13 +298,22 @@ impl World {
         (self.rng >> 40) as f32 / 16777216.
     }
     fn spawn(&mut self, position: [f32; 2]) {
-        let position = if self.obstacles.iter().any(|o| inside(position, *o, 0.4)) {
-            center(nearest_free(&self.nav, cell(position)))
+        let position = if self.scene.zombie.overlaps(
+            &self.scene.world,
+            [position[0], SKIN * 2., position[1]],
+            QueryFilter::default(),
+        ) {
+            let Some(cell) = self.scene.nav.nearest_free(self.scene.nav.cell(position)) else {
+                return;
+            };
+            let p = self.scene.nav.point(cell);
+            [p[0], p[2]]
         } else {
             position
         };
         self.zombies.push(Zombie {
             position,
+            feet_y: SKIN * 2.,
             yaw: 0.,
             health: 100.,
             gait: 0.,
@@ -305,23 +332,21 @@ impl World {
         self.shots_fired += 1;
         let direction = self.forward();
         let mut best = self
-            .obstacles
-            .iter()
-            .filter_map(|o| ray_box(self.player, direction, o.min(), o.max()))
-            .fold(60., f32::min);
+            .raycast_world(self.player, direction, 60.)
+            .map_or(60., |hit| hit.distance);
         let mut hit = None;
         for (i, z) in self.zombies.iter().enumerate().filter(|(_, z)| z.alive()) {
-            let body = ray_box(
+            let body = self.scene.zombie.ray_distance(
+                [z.position[0], z.feet_y, z.position[1]],
                 self.player,
                 direction,
-                [z.position[0] - 0.36, 0., z.position[1] - 0.3],
-                [z.position[0] + 0.36, 1.85, z.position[1] + 0.3],
+                best,
             );
             if let Some(t) = body
                 && t < best
             {
                 best = t;
-                hit = Some((i, self.player[1] + direction[1] * t > 1.4));
+                hit = Some((i, self.player[1] + direction[1] * t > z.feet_y + 1.4));
             }
         }
         if let Some((i, head)) = hit {
@@ -341,7 +366,9 @@ impl World {
     }
     fn update_zombies(&mut self) {
         let player = [self.player[0], self.player[2]];
-        let goal = nearest_free(&self.nav, cell(player));
+        let Some(goal) = self.scene.nav.nearest_free(self.scene.nav.cell(player)) else {
+            return;
+        };
         for (i, z) in self.zombies.iter_mut().enumerate() {
             z.hit_ticks = z.hit_ticks.saturating_sub(1);
             z.attack_cooldown = z.attack_cooldown.saturating_sub(1);
@@ -351,12 +378,19 @@ impl World {
             }
             let gap = distance(z.position, player);
             if (self.tick + i as u64 * 7).is_multiple_of(40) || z.path.is_empty() {
-                let start = nearest_free(&self.nav, cell(z.position));
-                if let SearchOutcome::Found(path) = self.nav.find_path(
+                let Some(start) = self.scene.nav.nearest_reachable(
+                    &self.scene.world,
+                    &self.scene.zombie,
+                    [z.position[0], z.feet_y, z.position[1]],
+                    QueryFilter::default(),
+                ) else {
+                    continue;
+                };
+                if let SearchOutcome::Found(path) = self.scene.nav.find_path(
                     start,
                     goal,
                     SearchOptions {
-                        max_visited: 2048,
+                        max_visited: 8192,
                         ..SearchOptions::default()
                     },
                 ) {
@@ -364,13 +398,35 @@ impl World {
                     z.waypoint = 1;
                 }
             }
-            let target = if gap < 1.5 {
+            let feet = [z.position[0], z.feet_y, z.position[1]];
+            let direct = self.scene.zombie.clear_segment(
+                &self.scene.world,
+                feet,
+                [player[0], z.feet_y, player[1]],
+                QueryFilter::default(),
+            );
+            while z.waypoint + 1 < z.path.len() {
+                let point = self.scene.nav.point(z.path[z.waypoint + 1]);
+                if !self.scene.zombie.clear_segment(
+                    &self.scene.world,
+                    feet,
+                    point,
+                    QueryFilter::default(),
+                ) {
+                    break;
+                }
+                z.waypoint += 1;
+            }
+            let target = if direct {
                 player
             } else {
                 z.path
                     .get(z.waypoint)
                     .copied()
-                    .map(center)
+                    .map(|cell| {
+                        let p = self.scene.nav.point(cell);
+                        [p[0], p[2]]
+                    })
                     .unwrap_or(z.position)
             };
             let delta = [target[0] - z.position[0], target[1] - z.position[1]];
@@ -380,17 +436,27 @@ impl World {
             }
             if len > 0.05 && gap > 0.85 {
                 let speed = (0.75 + self.wave as f32 * 0.08).min(1.9);
-                z.position = move_actor(
-                    z.position,
-                    [delta[0] / len * speed * DT, delta[1] / len * speed * DT],
-                    0.33,
-                    0.,
-                    &self.obstacles,
-                );
+                let motion = self
+                    .scene
+                    .zombie
+                    .move_feet(
+                        &self.scene.world,
+                        feet,
+                        [
+                            delta[0] / len * speed * DT,
+                            -0.02,
+                            delta[1] / len * speed * DT,
+                        ],
+                        DT,
+                        QueryFilter::default(),
+                    )
+                    .expect("finite zombie motion");
+                z.position = [motion.feet[0], motion.feet[2]];
+                z.feet_y = motion.feet[1];
                 z.yaw = delta[0].atan2(delta[1]);
                 z.gait += speed * DT * 7.;
             }
-            if gap < 1.05 && z.attack_cooldown == 0 {
+            if gap < 1.05 && direct && z.attack_cooldown == 0 {
                 z.attack_cooldown = 55;
                 self.health = (self.health - 10.).max(0.);
                 self.hurt_ticks = 20;
@@ -417,6 +483,8 @@ impl World {
             self.next_wave as u64,
             self.flashlight as u64,
             self.seed,
+            self.scene.fingerprint,
+            self.grounded as u64,
             self.muzzle_ticks as u64,
             self.hurt_ticks as u64,
             self.hit_marker as u64,
@@ -437,7 +505,7 @@ impl World {
             write(f.to_bits() as u64);
         }
         for z in &self.zombies {
-            for f in z.position.into_iter().chain([z.health, z.gait]) {
+            for f in z.position.into_iter().chain([z.feet_y, z.health, z.gait]) {
                 write(f.to_bits() as u64);
             }
             write(z.yaw.to_bits() as u64);
@@ -462,82 +530,8 @@ impl World {
         h
     }
 }
-fn obstacle(center: [f32; 3], half: [f32; 3], color: [f32; 3]) -> Obstacle {
-    Obstacle {
-        center,
-        half,
-        color,
-    }
-}
-fn inside(p: [f32; 2], o: Obstacle, r: f32) -> bool {
-    p[0] > o.center[0] - o.half[0] - r
-        && p[0] < o.center[0] + o.half[0] + r
-        && p[1] > o.center[2] - o.half[2] - r
-        && p[1] < o.center[2] + o.half[2] + r
-}
-fn move_actor(
-    mut p: [f32; 2],
-    delta: [f32; 2],
-    radius: f32,
-    feet: f32,
-    obstacles: &[Obstacle],
-) -> [f32; 2] {
-    for axis in 0..2 {
-        let mut next = p;
-        next[axis] = (p[axis] + delta[axis]).clamp(-14.5 + radius, 14.5 - radius);
-        if !obstacles
-            .iter()
-            .any(|o| o.center[1] + o.half[1] > feet && inside(next, *o, radius))
-        {
-            p = next;
-        }
-    }
-    p
-}
-fn cell(p: [f32; 2]) -> GridCell<2> {
-    GridCell::new2(
-        (p[0] + 16.).floor().clamp(0., 31.) as i32,
-        (p[1] + 16.).floor().clamp(0., 31.) as i32,
-    )
-}
-fn center(c: GridCell<2>) -> [f32; 2] {
-    [c.coords[0] as f32 - 15.5, c.coords[1] as f32 - 15.5]
-}
-fn nearest_free(nav: &Grid<2>, c: GridCell<2>) -> GridCell<2> {
-    for r in 0..5 {
-        for x in -r..=r {
-            for z in -r..=r {
-                let p = GridCell::new2(c.coords[0] + x, c.coords[1] + z);
-                if !nav.is_blocked(p) {
-                    return p;
-                }
-            }
-        }
-    }
-    c
-}
 fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
-}
-/// Slab ray cast, including parallel rays and origins inside a box.
-pub fn ray_box(origin: [f32; 3], direction: [f32; 3], min: [f32; 3], max: [f32; 3]) -> Option<f32> {
-    let (mut enter, mut exit) = (0.0f32, 1000.0f32);
-    for i in 0..3 {
-        if direction[i].abs() < 1e-8 {
-            if origin[i] < min[i] || origin[i] > max[i] {
-                return None;
-            }
-        } else {
-            let a = (min[i] - origin[i]) / direction[i];
-            let b = (max[i] - origin[i]) / direction[i];
-            enter = enter.max(a.min(b));
-            exit = exit.min(a.max(b));
-            if enter > exit {
-                return None;
-            }
-        }
-    }
-    Some(enter)
 }
 pub fn autoplay(w: &World) -> Input {
     let target = w.zombies.iter().filter(|z| z.alive()).min_by(|a, b| {
@@ -568,7 +562,7 @@ mod tests {
     #[test]
     fn shots_hit_heads_and_obstacles_block_them() {
         let mut w = World::new(1);
-        w.obstacles.clear();
+        w.set_props(vec![]).unwrap();
         w.zombies.clear();
         w.spawn([0., 5.]);
         w.update(Input {
@@ -581,8 +575,15 @@ mod tests {
         let mut w = World::new(1);
         w.zombies.clear();
         w.spawn([0., 5.]);
-        w.obstacles
-            .push(obstacle([0., 1., 7.], [1., 1., 0.5], [1.; 3]));
+        let mut props = w.props().to_vec();
+        props.push(Prop::cuboid(
+            999,
+            "test blocker",
+            [0., 1., 7.],
+            [1., 1., 0.5],
+            [1.; 3],
+        ));
+        w.set_props(props).unwrap();
         w.update(Input {
             fire: true,
             ..Input::default()
@@ -635,7 +636,11 @@ mod tests {
         }
         assert!(w.player[2] >= 0.3);
         for z in w.zombies.iter().filter(|z| z.alive()) {
-            assert!(!w.obstacles.iter().any(|o| inside(z.position, *o, 0.3)));
+            assert!(!w.scene.zombie.overlaps(
+                &w.scene.world,
+                [z.position[0], z.feet_y, z.position[1]],
+                QueryFilter::default()
+            ));
         }
     }
     #[test]

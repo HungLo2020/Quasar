@@ -12,6 +12,7 @@ dim2 = ["dep:rapier2d"]
 dim3 = ["dep:rapier3d"]
 dynamics = []
 events = []
+model-assets = ["dim3", "dep:quasar-assets", "quasar-assets/model"]
 spatial = ["dep:quasar-spatial"]
 enhanced-determinism = [
   "rapier2d?/enhanced-determinism",
@@ -19,6 +20,7 @@ enhanced-determinism = [
 ]
 
 [dependencies]
+quasar-assets = { workspace = true, optional = true }
 quasar-spatial = { workspace = true, optional = true }
 rapier2d = { version = "0.36.1", optional = true }
 rapier3d = { version = "0.36.1", optional = true }
