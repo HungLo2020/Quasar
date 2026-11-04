@@ -805,3 +805,87 @@ fn framebuffer_presenter_reuses_a_private_image_and_preserves_rgba_updates() {
         0
     );
 }
+
+#[test]
+fn composed_canvas_remaps_resources_clips_and_preserves_state() {
+    let mut textures = Textures::default();
+    let image = textures.insert(Image::new(1, 1, vec![255, 0, 0, 255]).unwrap());
+    let mut source = Canvas::new(4, 4).unwrap();
+    source.sprite(Sprite::new(image, Rect::new(0., 0., 4., 4.)));
+    let mut destination = Canvas::new(12, 12).unwrap();
+    destination.set_transform(Transform2D::translation(2., 0.));
+    destination
+        .append_canvas(
+            &source,
+            [2., 2.],
+            [2., 2.],
+            Some(Rect::new(4., 4., 3., 3.)),
+            |id| id,
+        )
+        .unwrap();
+    destination.rect(Rect::new(0., 0., 1., 1.), [255, 255, 255, 255]);
+    assert_eq!(destination.quads()[0].clip, Rect::new(4., 4., 3., 3.));
+    assert_eq!(destination.quads()[1].origin, [2., 0.]);
+    let pixels = reference::rasterize(&destination, &textures).unwrap();
+    let pixel = |x: usize, y: usize| &pixels[(y * 12 + x) * 4..(y * 12 + x) * 4 + 4];
+    assert_eq!(pixel(4, 4), &[255, 0, 0, 255]);
+    assert_eq!(pixel(3, 4), &[0, 0, 0, 255]);
+    let count = destination.quads().len();
+    assert!(
+        destination
+            .append_canvas(&source, [0., 0.], [-1., 1.], None, |id| id)
+            .is_err()
+    );
+    assert_eq!(destination.quads().len(), count);
+}
+
+#[test]
+fn drawing_helpers_keep_transform_and_measure_bitmap_text() {
+    let mut canvas = Canvas::new(32, 32).unwrap();
+    canvas.set_transform(Transform2D::translation(2., 3.));
+    canvas.line([0., 0.], [8., 0.], 2., Color::WHITE);
+    canvas.polyline(&[[0., 0.], [2., 2.], [4., 0.]], 1., Color::WHITE);
+    canvas.outline_rect(Rect::new(1., 1., 8., 8.), 1., Color::WHITE);
+    canvas.circle_outline([16., 16.], 4., 8, 1., Color::WHITE);
+    canvas.rect(Rect::new(0., 0., 1., 1.), Color::WHITE);
+    assert_eq!(canvas.quads().last().unwrap().origin, [2., 3.]);
+    assert_eq!(Canvas::bitmap_text_width("", 2.), 0.);
+    assert_eq!(Canvas::bitmap_text_width("A B", 2.), 34.);
+    canvas.validate(&Textures::default()).unwrap();
+}
+
+#[test]
+fn composition_remaps_images_and_palettes_and_retains_pixel_state() {
+    let mut textures = Textures::default();
+    let old_image = textures.insert(Image::new(1, 1, vec![1, 1, 1, 255]).unwrap());
+    let new_image = textures.insert(Image::new(1, 1, vec![1, 1, 1, 255]).unwrap());
+    let old_palette = textures.insert(Image::new(256, 1, vec![255; 1024]).unwrap());
+    let new_palette = textures.insert(Image::new(256, 1, vec![255; 1024]).unwrap());
+    let mut source = Canvas::new(2, 2).unwrap();
+    source.set_palette(Some(PaletteBinding {
+        texture: old_palette,
+        transparent_index: Some(0),
+    }));
+    let pixels = PixelState {
+        write_mask: 1,
+        ..Default::default()
+    };
+    source.set_pixel_state(pixels);
+    source.sprite(Sprite::new(old_image, Rect::new(0., 0., 2., 2.)));
+    let mut dest = Canvas::new(4, 4).unwrap();
+    dest.append_canvas(&source, [1., 1.], [1., 1.], None, |id| {
+        if id == old_image {
+            new_image
+        } else if id == old_palette {
+            new_palette
+        } else {
+            id
+        }
+    })
+    .unwrap();
+    let quad = &dest.quads()[0];
+    assert_eq!(quad.texture, new_image);
+    assert_eq!(quad.palette.unwrap().texture, new_palette);
+    assert_eq!(quad.pixels, pixels);
+    dest.validate(&textures).unwrap();
+}

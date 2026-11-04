@@ -157,7 +157,9 @@ impl Canvas {
     fn centered(&mut self, y: i32, text: &str, scale: i32, color: [u8; 4]) {
         let text: String = text.chars().take((290 / (6 * scale)) as usize).collect();
         self.text(
-            (WIDTH as i32 - (text.len() as i32 * 6 - 1) * scale) / 2,
+            (WIDTH as i32
+                - quasar_render_2d::Canvas::bitmap_text_width(&text, scale as f32) as i32)
+                / 2,
             y,
             &text,
             scale,

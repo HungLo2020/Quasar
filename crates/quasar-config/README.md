@@ -1,8 +1,7 @@
 # quasar-config
 
 Reusable typed settings and common CLI arguments for Quasar games and ordinary
-Rust applications. There is no global configuration and no file is ever
-overwritten.
+Rust applications. There is no global configuration; loading never writes files.
 
 ```toml
 quasar-config = { path = "../Quasar/crates/quasar-config", features = ["toml", "json"] }
@@ -94,3 +93,20 @@ cargo clippy -p quasar-config --all-targets -- -D warnings
 - Environment values are string-parsed heuristically; typed getters reject
   incompatible values.
 - Unknown keys are retained in memory but not automatically written back.
+
+## Explicit atomic saves
+
+With `storage` and the relevant format feature enabled, `save_file_typed(path,
+&settings)` serializes a caller-owned `Serialize` value as TOML or JSON based
+on the extension, then atomically replaces the destination. For example:
+
+```sh
+cargo run -p quasar-config --example desktop --features storage -- --save-settings /tmp/desktop.toml
+```
+
+Saving is explicit and does not persist the merged precedence map automatically.
+Serialization replaces the whole document and does not preserve comments, unknown
+fields or formatting. The caller must decide whether an existing invalid or newer
+file may be replaced. The temporary file is synced, but the parent directory is
+not synced; destination metadata is not retained and concurrent writers are not
+coordinated. Atomic replacement depends on the filesystem and platform.

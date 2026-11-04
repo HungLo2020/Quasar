@@ -76,18 +76,26 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
     }
 }
 
-pub fn write_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+/// Atomically replace a file with already serialized bytes. The temporary file is
+/// created beside the destination and synced before replacement. This does not
+/// sync the parent directory or preserve destination metadata.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer_pretty(&mut file, value).map_err(io::Error::other)?;
-    file.write_all(b"\n")?;
+    file.write_all(bytes)?;
     file.as_file().sync_all()?;
     file.persist(path).map_err(|error| error.error)?;
     Ok(())
+}
+
+pub fn write_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    let mut bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
+    bytes.push(b'\n');
+    write_atomic(path, &bytes)
 }
 
 #[cfg(test)]

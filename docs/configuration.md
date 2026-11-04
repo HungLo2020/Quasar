@@ -32,7 +32,10 @@ TOML is the recommended human-edited format (comments, nested tables and typed
 Serde values); JSON is fully supported for compatibility and machine-generated
 files. `FileFormat::from_path` selects `.toml` or `.json` explicitly; unknown
 extensions are errors, never guessed. Loading never overwrites or converts an
-existing file. The optional `storage` feature loads a shared Basalt config
+existing file. With the optional `storage` feature, `save_file_typed` explicitly
+serializes a caller-owned value and atomically replaces a TOML or JSON file.
+It does not preserve comments or automatically persist merged overrides; callers
+must protect invalid or newer files themselves. The optional `storage` feature loads a shared Basalt config
 through `GamePaths`.
 
 `load_file_typed::<T>` provides strongly typed Serde loading. `TypedConfig::<T>`

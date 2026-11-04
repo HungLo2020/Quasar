@@ -91,10 +91,15 @@ impl Demo {
         if overlay {
             let mut canvas =
                 Canvas::new(target.width, target.height).map_err(quasar_frame::error)?;
-            canvas.rect(Rect::new(12., 12., 270., 80.), [7, 15, 25, 210]);
-            canvas.text([24., 24.], "ONE GAL / 3D + 2D", 2., [235, 245, 250, 255]);
-            canvas.text([24., 48.], "SHARED GPU TEXTURE", 1., [135, 215, 220, 255]);
-            canvas.sprite(Sprite::new(self.shared_id, Rect::new(232., 48., 32., 32.)));
+            let mut panel = Canvas::new(270, 80).map_err(quasar_frame::error)?;
+            panel.rect(Rect::new(0., 0., 270., 80.), [7, 15, 25, 210]);
+            panel.outline_rect(Rect::new(0., 0., 270., 80.), 1., [135, 215, 220, 255]);
+            panel.text([12., 12.], "ONE GAL / 3D + 2D", 2., [235, 245, 250, 255]);
+            panel.text([12., 36.], "SHARED GPU TEXTURE", 1., [135, 215, 220, 255]);
+            panel.sprite(Sprite::new(self.shared_id, Rect::new(220., 36., 32., 32.)));
+            canvas
+                .append_canvas(&panel, [12., 12.], [1., 1.], None, |id| id)
+                .map_err(quasar_frame::error)?;
             canvas.rect(
                 Rect::new(
                     target.width as f32 / 2. - 8.,

@@ -1,7 +1,7 @@
 //! Reusable typed configuration and common CLI arguments for Quasar games and
 //! standalone Rust applications.
 //!
-//! The crate owns no global configuration, does not write user files, and does
+//! The crate owns no global configuration, never writes files during loading, and does
 //! not require a particular project format. Typical precedence is:
 //!
 //! `defaults < JSON file < environment < CLI --set < programmatic`.
@@ -808,6 +808,44 @@ pub fn load_str_typed<T: serde::de::DeserializeOwned>(
             "requested configuration format support is disabled",
         )),
     }
+}
+
+/// Explicitly serialize and atomically replace a typed TOML or JSON file.
+/// This does not save the merged `Config` or preserve comments and formatting.
+/// Callers are responsible for protecting malformed or newer existing files.
+#[cfg(all(feature = "storage", any(feature = "toml", feature = "json")))]
+pub fn save_file_typed<T: serde::Serialize>(
+    path: impl AsRef<Path>,
+    value: &T,
+) -> Result<(), ConfigError> {
+    let path = path.as_ref();
+    let format = FileFormat::from_path(path).ok_or_else(|| {
+        ConfigError::new(
+            ConfigErrorKind::Io,
+            "configuration format must be .toml or .json",
+        )
+    })?;
+    let text = match format {
+        #[cfg(feature = "toml")]
+        FileFormat::Toml => toml::to_string_pretty(value)
+            .map_err(|e| ConfigError::new(ConfigErrorKind::Json, e.to_string()))?,
+        #[cfg(feature = "json")]
+        FileFormat::Json => serde_json::to_string_pretty(value)
+            .map_err(|e| ConfigError::new(ConfigErrorKind::Json, e.to_string()))?,
+        #[allow(unreachable_patterns)]
+        _ => {
+            return Err(ConfigError::new(
+                ConfigErrorKind::Io,
+                "requested configuration format support is disabled",
+            ));
+        }
+    };
+    let mut bytes = text.into_bytes();
+    if !bytes.ends_with(b"\n") {
+        bytes.push(b'\n');
+    }
+    quasar_storage::write_atomic(path, &bytes)
+        .map_err(|e| ConfigError::new(ConfigErrorKind::Io, format!("{}: {e}", path.display())))
 }
 
 /// Strongly typed settings loaded through the precedence-aware [`Config`] map.

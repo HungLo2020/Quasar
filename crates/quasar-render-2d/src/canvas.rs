@@ -110,6 +110,152 @@ impl Canvas {
             .iter()
             .any(|q| q.pixels.read_mask != 0 || q.pixels.write_mask != 0)
     }
+    /// Append a recorded canvas in screen coordinates. Scale must be finite and
+    /// nonnegative. Source clear color is not drawn; camera and current drawing
+    /// state are unchanged. Pixel mask bits share the destination mask buffer.
+    /// Both image and palette IDs are passed to `resolve`.
+    pub fn append_canvas(
+        &mut self,
+        source: &Canvas,
+        origin: [f32; 2],
+        scale: [f32; 2],
+        clip: Option<Rect>,
+        mut resolve: impl FnMut(TextureId) -> TextureId,
+    ) -> Result<()> {
+        if origin.iter().chain(&scale).any(|v| !v.is_finite())
+            || scale.iter().any(|v| *v < 0.0)
+            || clip.is_some_and(|r| !r.valid())
+        {
+            return Err(invalid("invalid composition transform or clip"));
+        }
+        if self.quads.len().saturating_add(source.quads.len()) > 65536 {
+            return Err(invalid("a canvas supports at most 65536 quads"));
+        }
+        let bounds = Rect::new(0.0, 0.0, self.width as f32, self.height as f32);
+        let bounds = clip.map_or(bounds, |c| c.intersection(bounds));
+        let mut appended = Vec::with_capacity(source.quads.len());
+        for q in &source.quads {
+            let mut q = q.clone();
+            q.origin = [
+                origin[0] + q.origin[0] * scale[0],
+                origin[1] + q.origin[1] * scale[1],
+            ];
+            q.x = [q.x[0] * scale[0], q.x[1] * scale[1]];
+            q.y = [q.y[0] * scale[0], q.y[1] * scale[1]];
+            q.clip = Rect::new(
+                origin[0] + q.clip.x * scale[0],
+                origin[1] + q.clip.y * scale[1],
+                q.clip.width * scale[0],
+                q.clip.height * scale[1],
+            );
+            if q.origin
+                .iter()
+                .chain(&q.x)
+                .chain(&q.y)
+                .any(|v| !v.is_finite())
+                || !q.clip.valid()
+            {
+                return Err(invalid("composition produces invalid geometry"));
+            }
+            q.clip = q.clip.intersection(bounds);
+            q.texture = resolve(q.texture);
+            if let Some(ref mut palette) = q.palette {
+                palette.texture = resolve(palette.texture);
+            }
+            appended.push(q);
+        }
+        self.quads.extend(appended);
+        Ok(())
+    }
+
+    /// Draw a centered, butt-ended line. Invalid or degenerate lines are ignored.
+    pub fn line(&mut self, a: [f32; 2], b: [f32; 2], width: f32, color: impl Into<Color>) {
+        let dx = b[0] - a[0];
+        let dy = b[1] - a[1];
+        let length = dx.hypot(dy);
+        if !length.is_finite() || length <= 0.0 || !width.is_finite() || width <= 0.0 {
+            return;
+        }
+        let previous = self.transform;
+        self.transform = Transform2D::rotation(dy.atan2(dx))
+            .then(Transform2D::translation(
+                a[0] * 0.5 + b[0] * 0.5,
+                a[1] * 0.5 + b[1] * 0.5,
+            ))
+            .then(previous);
+        self.rect(Rect::new(-length * 0.5, -width * 0.5, length, width), color);
+        self.transform = previous;
+    }
+    /// Draw connected butt-ended segments. Joins may overlap.
+    pub fn polyline(&mut self, points: &[[f32; 2]], width: f32, color: impl Into<Color>) {
+        let color = color.into();
+        for pair in points.windows(2) {
+            self.line(pair[0], pair[1], width, color);
+        }
+    }
+    /// Draw an inside rectangle outline; corners do not overlap.
+    pub fn outline_rect(&mut self, rect: Rect, width: f32, color: impl Into<Color>) {
+        if !rect.valid() || !width.is_finite() || width <= 0.0 {
+            return;
+        }
+        let color = color.into();
+        let w = width.min(rect.width * 0.5).min(rect.height * 0.5);
+        self.rect(Rect::new(rect.x, rect.y, rect.width, w), color);
+        self.rect(
+            Rect::new(rect.x, rect.y + rect.height - w, rect.width, w),
+            color,
+        );
+        self.rect(
+            Rect::new(rect.x, rect.y + w, w, rect.height - 2.0 * w),
+            color,
+        );
+        self.rect(
+            Rect::new(
+                rect.x + rect.width - w,
+                rect.y + w,
+                w,
+                rect.height - 2.0 * w,
+            ),
+            color,
+        );
+    }
+    /// Draw an approximated circle outline with an explicit segment count.
+    pub fn circle_outline(
+        &mut self,
+        center: [f32; 2],
+        radius: f32,
+        segments: usize,
+        width: f32,
+        color: impl Into<Color>,
+    ) {
+        if center.iter().any(|v| !v.is_finite())
+            || !radius.is_finite()
+            || radius <= 0.0
+            || !(3..=4096).contains(&segments)
+        {
+            return;
+        }
+        let color = color.into();
+        let point = |i: usize| {
+            let angle = i as f32 * std::f32::consts::TAU / segments as f32;
+            [
+                center[0] + radius * angle.cos(),
+                center[1] + radius * angle.sin(),
+            ]
+        };
+        for i in 0..segments {
+            self.line(point(i), point((i + 1) % segments), width, color);
+        }
+    }
+    /// Width of the built-in 5x7 font's visible cells, including spaces.
+    pub fn bitmap_text_width(text: &str, scale: f32) -> f32 {
+        let count = text.chars().count();
+        if count == 0 {
+            0.0
+        } else {
+            (count as f32 * 6.0 - 1.0) * scale
+        }
+    }
     pub fn rect(&mut self, rect: Rect, color: impl Into<Color>) {
         self.sprite(Sprite {
             texture: TextureId::WHITE,

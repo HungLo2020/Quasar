@@ -107,3 +107,8 @@ GAL still allocate, with roughly 105 whole-process allocations per measured
 frame including instrumentation. The benchmark does not reserve the machine or
 GPU, and desktop/OS activity affects timing tails. Physical display latency and
 MattMC gameplay parity were not measured.
+
+The HUD is recorded in a separate `Canvas` and appended to the target canvas
+with `append_canvas`. Its border uses `outline_rect`; texture IDs resolve through
+the shared texture store. This demonstrates draw-list composition alongside the
+example's existing shared-GPU 3D/2D composition.

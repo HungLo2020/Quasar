@@ -29,6 +29,16 @@ canvas clear color. Order 3D, raw native passes and 2D buffers on the same queue
 wgpu derives transitions and lifetimes. The 2D renderer leaves caller depth
 unchanged. [Composition](../../examples/composition/README.md) exercises this.
 
+`Canvas::append_canvas` appends recorded quads in order with a translation and
+nonnegative axis-aligned scale, a destination clip and texture-ID resolver. It
+remaps image and palette IDs, retains pixel states and leaves destination drawing
+state intact. It does not draw the source clear color or transfer texture data.
+Pixel mask bits remain shared with the destination. Rotation is intentionally
+excluded because captured clips are axis-aligned. The composition example embeds
+a separate HUD canvas. `line`, `polyline`, `outline_rect`, `circle_outline` and
+`bitmap_text_width` offer simple quad-based drawing; line joins may overlap and
+circle quality is selected by segment count.
+
 Insert immutable RGBA8 `Image`s in `Textures`, then draw their `TextureId` with
 `Sprite`. Source rectangles use texture pixels, destinations world coordinates.
 Transforms, camera and captured per-quad clips preserve draw order. Adjacent

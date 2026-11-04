@@ -396,3 +396,32 @@ fn typed_config_uses_precedence_resolved_values() {
         Some(Source::File)
     );
 }
+
+#[cfg(all(feature = "storage", feature = "toml", feature = "json"))]
+#[test]
+fn explicit_atomic_typed_saves_round_trip_and_preserve_on_error() {
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct Settings {
+        width: u32,
+        names: Vec<String>,
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let value = Settings {
+        width: 1280,
+        names: vec!["one".into(), "two".into()],
+    };
+    for extension in ["toml", "json"] {
+        let path = dir.path().join(format!("settings.{extension}"));
+        save_file_typed(&path, &value).unwrap();
+        assert_eq!(load_file_typed::<Settings>(&path).unwrap(), value);
+        struct Bad;
+        impl serde::Serialize for Bad {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("failed"))
+            }
+        }
+        let old = std::fs::read(&path).unwrap();
+        assert!(save_file_typed(&path, &Bad).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), old);
+    }
+}
