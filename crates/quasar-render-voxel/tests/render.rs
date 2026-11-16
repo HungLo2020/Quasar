@@ -745,6 +745,7 @@ fn chunks_at_unaligned_arena_offsets_render_in_place() {
 }
 
 #[test]
+#[ignore = "requires Vulkan"]
 fn model_quads_at_later_arena_offsets_render_in_place() {
     // Model quads are four 20-byte vertices; a range after another chunk's
     // must be addressed in whole quads, for GPU-culled (opaque, off-lattice)
