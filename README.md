@@ -19,29 +19,30 @@ Losing focus releases held input and pauses an active human-controlled match.
 
 | Crate | Responsibility | Depends on other Quasar crates |
 |---|---|---|
-| `quasar-input` | Portable keyboard/mouse/gamepad state, player routing, hotplug, deadzones/calibration, named actions, axes, chords, serializable bindings | None |
+| `quasar-input` | Portable keyboard/mouse/gamepad state, player routing, hotplug, deadzones/calibration, named actions, axes (keys or gamepad button pairs), chords, serializable bindings, active-device tracking and per-family prompt names | None |
 | `quasar-window` | Native windows, desktop identity, fullscreen, DPI, cursor capture, native input adapter | quasar-input |
-| `quasar-core` | Fixed-step timing and shared viewport/scaling math | None |
+| `quasar-core` | Fixed-step timing, shared viewport/scaling math and a seeded, splittable deterministic `Rng` | None |
+| `quasar-math` | Shared glam re-export (Vec/Quat/Mat4) with documented right-handed, Y-up, `[0,1]`-depth conventions plus look-at, projection, project/unproject/picking-ray and angle helpers | None |
 | `quasar-config` | Typed TOML/JSON settings, env/CLI precedence, validation, migrations and common arguments | Optional quasar-storage |
 | `quasar-storage` | Basalt v1 paths and atomic JSON persistence | None |
-| `quasar-assets` | Validated virtual paths, mounts, typed loaders, dependency graphs, schema checks, bounded cache, async worker and hot reload | Optional quasar-storage (Basalt mounts), diagnostics and notify |
+| `quasar-assets` | Validated virtual paths, mounts, typed loaders, dependency graphs, schema checks, bounded cache, async worker, hot reload and glTF models with an opt-in node hierarchy, skins and animation channels | Optional quasar-storage (Basalt mounts), diagnostics and notify |
 | `quasar-diagnostics` | Explicit structured logs, spans, counters, bounded failure diagnostics and optional CPU frame timing | None |
 | `quasar-app` | Optional Cargo-native winit/headless lifecycle runner with explicit frame/fixed-tick/input/render phases and suspend/resume hooks | quasar-core, quasar-input, optional quasar-window |
 | `quasar-jobs` | Optional bounded worker pool with cancellation, dependencies, priorities, manual deterministic mode and metrics | None |
 | `quasar-profile` | Bounded CPU/GPU frame, upload, resource, synchronization and renderer profiling with p99 summaries | Optional quasar-frame |
 | `quasar-spatial` | Dependency-free 2D/3D AABB/ray/plane/frustum geometry and a deterministic spatial-hash index | None |
 | `quasar-physics` | Optional Rapier 0.36 integration: collision-only worlds, bounded fixed-step dynamics, filters, events and optional spatial indexes | Optional quasar-spatial |
-| `quasar-animation` | Renderer-neutral clips/tracks/interpolation, playback, blending, events and layered state machines; optional sprite/serde adapters | Optional quasar-render-2d |
-| `quasar-nav` | Generic A*/Dijkstra, 2D/3D grids, dynamic costs/blocking, smoothing, optional tilemap/spatial/jobs/navmesh adapters | Optional quasar-tilemap, spatial, jobs, navmesh |
+| `quasar-animation` | Renderer-neutral clips/tracks/interpolation, playback, blending, events and layered state machines; optional sprite/serde adapters and a `model` adapter for glTF clips, skeletons and joint palettes | Optional quasar-render-2d |
+| `quasar-nav` | Generic A*/Dijkstra, 2D/3D grids, dynamic costs/blocking, smoothing, many-to-goal distance/flow fields with incremental repair, optional tilemap/spatial/jobs/navmesh adapters | Optional quasar-tilemap, spatial, jobs, navmesh |
 | `quasar-text` | Caller-owned TTF/OTF fonts, Harfrust shaping via cosmic-text, bidi/wrapping/alignment, caret/selection, glyph rasterization and cache-friendly CPU atlases | None |
-| `quasar-ui` | Retained in-game menus/HUD: widget tree, stack/grid/absolute layout, DPI/safe areas, focus/modal scopes, text editing, rebinding, themes and consumed-input reporting; optional input/render2d/config/text adapters | Optional quasar-input, quasar-render-2d, quasar-config, quasar-text |
+| `quasar-ui` | Retained in-game menus/HUD: widget tree, stack/grid/absolute layout, DPI/safe areas, focus/modal scopes, text editing, word-wrapped labels, per-node styles, anchors, rebinding, themes and consumed-input reporting; optional input/render2d/config/text adapters | Optional quasar-input, quasar-render-2d, quasar-config, quasar-text |
 | `quasar-sim` | Optional fixed-step coordination, deterministic journals, snapshots, replay verification and divergence reports | quasar-core, optional quasar-jobs |
-| `quasar-audio` | WAV/Ogg decode, deterministic mixing, buses, spatial audio, scheduling, streaming Ogg, offline WAV and CPAL output | Optional quasar-storage (settings) |
+| `quasar-audio` | WAV/Ogg decode, deterministic mixing, buses, spatial audio, scheduling, streaming Ogg, offline WAV, deterministic per-play pitch/gain variation and CPAL output | Optional quasar-storage (settings) |
 | `vulkanic-gal` | Minimal re-export of unmodified upstream wgpu | None |
 | `quasar-render-2d` | Ordered instanced quads, sprites/atlases, bitmap text, optional shaped glyph-atlas pages, camera/transforms, clipping, GPU readback, persistent software-framebuffer presentation | VulkanicGAL, quasar-core, quasar-frame; optional quasar-text |
 | `quasar-tilemap` | Versioned/Tiled maps, indexed tile/object queries, PNG atlases, animation, culled draw lists and CLI | Optional quasar-render-2d |
-| `quasar-render-3d` | Indexed meshes, transforms, legacy and opt-in per-pixel directional/point/spot lighting, classic/unlit and normal-mapped materials, directional/spot shadows, optional instancing/frustum culling, model uploads and shared-GAL passes | VulkanicGAL |
-| `quasar-frame` | Optional recording transactions, target caching, acquire/present/cancel and completion polling | VulkanicGAL |
+| `quasar-render-3d` | Indexed meshes, transforms, legacy and opt-in per-pixel directional/point/spot lighting, classic/unlit and normal-mapped materials, directional/spot shadows, CPU mesh primitives, picking/projection helpers, linear HDR scene targets, sorted alpha/additive transparency, a bloom/tonemap/grade/vignette post chain, compute skinning, optional instancing/frustum culling, model uploads and shared-GAL passes | VulkanicGAL |
+| `quasar-frame` | Optional recording transactions, target caching, acquire/present/cancel, completion polling and one-call offscreen renders with optional PNG output | VulkanicGAL |
 | `examples/tilequest` | Scrolling top-down quest, layered maps, collision, replays and headless/native verification | Selected crates |
 | `examples/framebuffer` | CPU-rendered RGBA8 framebuffer presented through `quasar-render-2d`, with headless screenshots, window exercises and benchmarks | quasar-render-2d |
 | `examples/audio` | Music, overlapping/spatial effects, buses, voice groups, procedural audio, offline WAV output and audio benchmarks | quasar-audio |
@@ -119,7 +120,7 @@ future additions. Audio is provided by `quasar-audio`; see
 
 Git tag `2.1` introduced caller-owned render state, shared targets and GPU textures,
 bounded prepared-command lifetimes, and optional frame helpers. The current
-release is `v0.2.21`, with workspace package versions set to `0.2.21`.
+release is `v0.2.22`, with workspace package versions set to `0.2.22`.
 The published `v0.2.0` tag remains unchanged. Existing `Renderer2D` callers retain
 their API and synchronous retirement by default; native targets are cached and
 completion polling can be enabled with `set_frame_overlap(true)`.

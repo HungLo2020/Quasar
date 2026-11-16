@@ -182,6 +182,34 @@ impl TextMeasure for ShapedTextMeasure {
                 |layout| layout.next_boundary(index),
             )
     }
+
+    fn measure_wrapped(&self, text: &str, style: TextStyle, size: f32, max_width: f32) -> Vec2 {
+        if !max_width.is_finite() || max_width <= 0.0 {
+            return self.measure_style(text, style, size);
+        }
+        match self.wrapped_layout(text, style, size, max_width) {
+            Some(layout) => Vec2::new(layout.width(), layout.height()),
+            None => self.measure_style(text, style, size),
+        }
+    }
+}
+
+impl ShapedTextMeasure {
+    /// Shaped layout with word wrapping at `max_width` physical units.
+    pub fn wrapped_layout(
+        &self,
+        text: &str,
+        style: TextStyle,
+        size: f32,
+        max_width: f32,
+    ) -> Option<SharedLayout> {
+        let mut format = self.styles.format(style, size);
+        format.wrap = quasar_text::TextWrap::Word;
+        self.engine
+            .borrow_mut()
+            .layout(text, &format, Some(max_width))
+            .ok()
+    }
 }
 
 #[cfg(feature = "text-render2d")]
@@ -289,9 +317,20 @@ mod gpu {
             let font = theme.font_size * scale;
             let small = theme.small_size * scale;
             match &node.widget {
-                Widget::Label { text, style } => {
+                Widget::Label {
+                    text, style, wrap, ..
+                } => {
                     let size = theme.size(*style) * scale;
-                    let Some(layout) = self.layout(ui.resolve_text(text), *style, size) else {
+                    let layout = match wrap {
+                        crate::TextWrap::None => self.layout(ui.resolve_text(text), *style, size),
+                        crate::TextWrap::Word => self.measure.wrapped_layout(
+                            ui.resolve_text(text),
+                            *style,
+                            size,
+                            rect.width + 0.5,
+                        ),
+                    };
+                    let Some(layout) = layout else {
                         return true;
                     };
                     let y = rect.y + (rect.height - layout.height()).max(0.0) * 0.5;
@@ -678,7 +717,7 @@ mod gpu {
             let font = theme.font_size * scale;
             let small = theme.small_size * scale;
             match &node.widget {
-                Widget::Label { text, style } => vec![(
+                Widget::Label { text, style, .. } => vec![(
                     ui.resolve_text(text).to_owned(),
                     *style,
                     theme.size(*style) * scale,

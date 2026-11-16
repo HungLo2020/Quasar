@@ -40,6 +40,7 @@
 //! Deterministic guarantees are limited to the state/input/hash the game
 //! supplies. Cross-CPU floating-point bitwise parity is not claimed.
 
+pub use quasar_core::Rng;
 use quasar_core::{FixedStep, FixedStepConfig};
 use std::{error::Error, fmt, time::Duration};
 
@@ -118,6 +119,18 @@ impl SimulationConfig {
             timeline: timeline.into(),
         }
     }
+
+    /// The deterministic generator for this timeline's seed. Store it in the
+    /// game state, include it in snapshots and hash it with
+    /// [`StateHasher::write_rng`] so replays verify random draws too.
+    pub fn rng(&self) -> Rng {
+        Rng::seed_from_u64(self.seed)
+    }
+
+    /// A named, independent stream derived from this timeline's seed.
+    pub fn rng_for(&self, label: &str) -> Rng {
+        Rng::seed_from_label(self.seed, label)
+    }
 }
 
 /// Stable state fingerprint. The included [`StateHasher`] is FNV-1a based; a
@@ -174,6 +187,13 @@ impl StateHasher {
     pub fn write_f64_bits(&mut self, value: f64) {
         self.write_u64(value.to_bits());
     }
+    /// Hashes a generator's full state so replay divergence reports catch a
+    /// stream that advanced differently.
+    pub fn write_rng(&mut self, rng: &Rng) {
+        for word in rng.state() {
+            self.write_u64(word);
+        }
+    }
     pub fn finish(self) -> StateHash {
         StateHash(self.0)
     }
@@ -196,7 +216,8 @@ pub trait Simulation {
     type Error: Error + Send + Sync + 'static;
 
     /// Applies exactly one input at `tick`. The game owns all state and may use
-    /// its own RNG, seeded externally from [`SimulationConfig::seed`].
+    /// its own RNG, seeded externally from [`SimulationConfig::seed`]; the
+    /// re-exported [`Rng`] is the stable default ([`SimulationConfig::rng`]).
     fn update(&mut self, tick: Tick, input: &Self::Input) -> Result<(), Self::Error>;
     /// Stable fingerprint after the last applied tick.
     fn state_hash(&self) -> StateHash;

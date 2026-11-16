@@ -144,6 +144,7 @@ impl SurfaceRenderState3D {
                 lit: Some(&d.material.lit),
                 normal: d.material.normal_map.as_ref(),
                 receives_shadows: d.material.receives_shadows,
+                blend: None,
             })
             .collect();
         self.lit.core.prepare(

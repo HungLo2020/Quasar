@@ -118,3 +118,28 @@ fn timestamps_remain_frame_correlated_without_polling_waits() {
         [0, 0, 255, 255].repeat(256)
     );
 }
+
+#[test]
+#[ignore = "native GPU offscreen render helper"]
+fn render_offscreen_returns_packed_pixels_of_the_recorded_frame() {
+    let gpu = Gpu::headless().unwrap();
+    let image = render_offscreen(&gpu, 7, 3, |gpu, target| {
+        Ok(vec![clear(
+            gpu,
+            &target.color,
+            Color {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
+        )])
+    })
+    .unwrap();
+    assert_eq!((image.width, image.height), (7, 3));
+    assert_eq!(image.rgba.len(), 7 * 3 * 4);
+    assert_eq!(image.pixel(6, 2), Some([255, 0, 0, 255]));
+    assert_eq!(image.pixel(7, 0), None);
+    let failed = render_offscreen(&gpu, 4, 4, |_, _| Err(error("recording failed")));
+    assert!(failed.is_err());
+}

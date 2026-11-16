@@ -68,8 +68,13 @@ time, bounded memory).
   `Skeleton::sample(pose)` reads `bone.<name>.translation|rotation|scale`.
   Missing properties use the rest transform. `SkeletonPose::blend` lerps
   translation/scale and slerps rotations.
-- GPU skinning/inverse bind matrices are renderer concerns. Quasar's current 3D
-  renderer has no skeletal pipeline; the adapter is ready for a future one.
+- GPU skinning stays renderer-owned. With the `model` feature,
+  `quasar_animation::model` converts `quasar-assets` glTF clips (imported with
+  `GltfLoader::animated()`) into `Clip`s named `bone.<node>.*`, builds a
+  `Skeleton` plus `SkinBinding` for a skin, and produces the joint palette that
+  `quasar_render_3d::SkinningPass` uploads. `node_local_matrices` drives
+  rigid-part rigs through `Model3D::world_transforms`. Markers passed to
+  `clip_from_model_with_markers` fire as ordinary playback events.
 
 ## Determinism and cost
 

@@ -51,8 +51,10 @@ pub use math::{Edges, Rect, Vec2};
 pub use theme::{Color, TextStyle, Theme};
 pub use ui::{Ui, UiError, UiNode, UiResult};
 pub use widget::{
-    ActionId, Align, Layer, LayoutEntry, LayoutItem, Length, MonospaceMeasure, NodeId, PanelLayout,
-    StackDirection, TextMeasure, UiEvent, UiFrame, UiInput, UiText, UiValue, Widget, WidgetState,
+    ActionId, Align, Anchor, Border, Layer, LayoutEntry, LayoutItem, Length, MonospaceMeasure,
+    NodeId, NodeStyle, PanelLayout, StackDirection, TextMeasure, TextWrap, UiEvent, UiFrame,
+    UiInput, UiText, UiValue, Widget, WidgetState, rounded_border_spans, rounded_rect_spans,
+    wrap_greedy,
 };
 
 #[cfg(feature = "input")]

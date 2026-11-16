@@ -64,6 +64,19 @@ impl<const N: usize> Grid<N> {
         })
     }
 
+    pub(crate) fn diagonal_enabled(&self) -> bool {
+        self.diagonal
+    }
+    pub(crate) fn corner_cutting_enabled(&self) -> bool {
+        self.corner_cutting
+    }
+    pub(crate) fn blocked_at(&self, index: usize) -> bool {
+        self.blocked[index]
+    }
+    pub(crate) fn cost_at(&self, index: usize) -> f32 {
+        self.costs[index]
+    }
+
     pub fn dimensions(&self) -> [u32; N] {
         self.dimensions
     }
@@ -166,7 +179,7 @@ impl<const N: usize> Grid<N> {
     pub fn neighbors_into(&self, cell: GridCell<N>, output: &mut Vec<Neighbor<GridCell<N>>>) {
         output.clear();
         let offsets = 3usize.pow(N as u32);
-        for linear in 1..offsets {
+        for linear in 0..offsets {
             let mut digits = linear;
             let mut offset = [0i32; N];
             let mut nonzero = 0usize;

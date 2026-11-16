@@ -42,10 +42,10 @@ fn main() {
                     action: Some(ActionId::new(index + 1)),
                 }
             } else {
-                Widget::Label {
-                    text: UiText::literal(format!("Label {index}")),
-                    style: quasar_ui::TextStyle::Body,
-                }
+                Widget::label(
+                    UiText::literal(format!("Label {index}")),
+                    quasar_ui::TextStyle::Body,
+                )
             },
             LayoutItem::size(Length::Fill, Length::fixed(22.0)),
         )

@@ -1,5 +1,5 @@
 //! Native event adapter; state and action mapping belong to quasar-input.
-use quasar_input::{InputState, Key, MouseButton};
+use quasar_input::{InputDevice, InputState, Key, MouseButton};
 use winit::{
     event::{DeviceEvent, ElementState, Ime, MouseScrollDelta, WindowEvent},
     keyboard::{KeyCode, PhysicalKey},
@@ -37,19 +37,28 @@ pub fn process_window_event(input: &mut InputState, event: &WindowEvent) {
             });
         }
         WindowEvent::CursorMoved { position, .. } => {
-            input.cursor_physical = Some((position.x, position.y))
+            let position = Some((position.x, position.y));
+            // Only real movement counts as keyboard/mouse activity, so a
+            // synthetic event at the same spot does not flip prompts.
+            if input.cursor_physical.is_some() && input.cursor_physical != position {
+                input.note_device(InputDevice::KeyboardMouse);
+            }
+            input.cursor_physical = position;
         }
         WindowEvent::CursorLeft { .. } => input.cursor_physical = None,
-        WindowEvent::MouseWheel { delta, .. } => match delta {
-            MouseScrollDelta::LineDelta(x, y) => {
-                input.scroll_lines.0 += f64::from(*x);
-                input.scroll_lines.1 += f64::from(*y);
+        WindowEvent::MouseWheel { delta, .. } => {
+            input.note_device(InputDevice::KeyboardMouse);
+            match delta {
+                MouseScrollDelta::LineDelta(x, y) => {
+                    input.scroll_lines.0 += f64::from(*x);
+                    input.scroll_lines.1 += f64::from(*y);
+                }
+                MouseScrollDelta::PixelDelta(p) => {
+                    input.scroll_pixels.0 += p.x;
+                    input.scroll_pixels.1 += p.y;
+                }
             }
-            MouseScrollDelta::PixelDelta(p) => {
-                input.scroll_pixels.0 += p.x;
-                input.scroll_pixels.1 += p.y;
-            }
-        },
+        }
         WindowEvent::Focused(false) => input.release_all(),
         _ => {}
     }
@@ -85,6 +94,9 @@ pub fn process_key_event(
 /// Relative device motion is accepted only for the focused window.
 pub fn process_device_event(input: &mut InputState, event: &DeviceEvent, focused: bool) {
     if focused && let DeviceEvent::MouseMotion { delta } = event {
+        if delta.0 != 0.0 || delta.1 != 0.0 {
+            input.note_device(InputDevice::KeyboardMouse);
+        }
         input.relative_motion.0 += delta.0;
         input.relative_motion.1 += delta.1;
     }
@@ -374,6 +386,37 @@ mod tests {
         assert!(input.preedit.is_empty());
         assert_eq!(input.preedit_cursor, 0);
         assert_eq!(input.text, "仮名");
+    }
+
+    #[test]
+    fn pointer_activity_marks_keyboard_mouse_as_the_active_device() {
+        let mut input = InputState::default();
+        input.gamepad_button(quasar_input::GamepadButton::South, true);
+        let moved = |x: f64| WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(x, 10.0),
+        };
+        // The first position report (window entry) and a repeat of the same
+        // spot are not deliberate mouse use.
+        process_window_event(&mut input, &moved(5.0));
+        process_window_event(&mut input, &moved(5.0));
+        assert_eq!(input.last_active_device(), Some(InputDevice::Gamepad));
+        process_window_event(&mut input, &moved(9.0));
+        assert_eq!(input.last_active_device(), Some(InputDevice::KeyboardMouse));
+        input.gamepad_button(quasar_input::GamepadButton::South, false);
+        input.gamepad_button(quasar_input::GamepadButton::East, true);
+        process_device_event(
+            &mut input,
+            &DeviceEvent::MouseMotion { delta: (0.0, 0.0) },
+            true,
+        );
+        assert_eq!(input.last_active_device(), Some(InputDevice::Gamepad));
+        process_device_event(
+            &mut input,
+            &DeviceEvent::MouseMotion { delta: (1.0, 0.0) },
+            true,
+        );
+        assert_eq!(input.last_active_device(), Some(InputDevice::KeyboardMouse));
     }
 
     #[test]

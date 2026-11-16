@@ -8,6 +8,22 @@ pub struct GltfLoader {
     pub scene: Option<usize>,
     /// Explicitly import authored default transforms while leaving animation clips unevaluated.
     pub allow_animation_default_pose: bool,
+    /// Import skins (joints, inverse bind matrices, per-vertex `JOINTS_0` /
+    /// `WEIGHTS_0`) and animation channels into [`Model3D::skins`] and
+    /// [`Model3D::animations`] instead of rejecting them. Off by default so
+    /// the static loader keeps rejecting files it would otherwise draw in
+    /// their bind pose without warning.
+    pub import_animation: bool,
+}
+
+impl GltfLoader {
+    /// A loader that imports skins and animation clips.
+    pub fn animated() -> Self {
+        Self {
+            import_animation: true,
+            ..Self::default()
+        }
+    }
 }
 fn error(message: impl Into<String>) -> AssetError {
     AssetError::new(AssetErrorKind::Loader, message)
@@ -52,11 +68,12 @@ impl GltfLoader {
         {
             return Err(budget("model node/material/image budget exceeded"));
         }
-        if file.skins().len() != 0
-            || (file.animations().len() != 0 && !self.allow_animation_default_pose)
+        if !self.import_animation
+            && (file.skins().len() != 0
+                || (file.animations().len() != 0 && !self.allow_animation_default_pose))
         {
             return Err(error(
-                "this static-model loader does not support skins or animation clips",
+                "this static-model loader does not support skins or animation clips; set import_animation",
             ));
         }
         let mut parents = vec![0usize; file.nodes().len()];
@@ -152,7 +169,7 @@ impl GltfLoader {
             }
         }
         let mut model = Model3D::default();
-        if file.animations().len() != 0 {
+        if file.animations().len() != 0 && !self.import_animation {
             model.warnings.push(format!(
                 "{} animation clips not evaluated: default-pose import explicitly enabled",
                 file.animations().len()
@@ -313,7 +330,9 @@ impl GltfLoader {
                 if primitive.mode() != gltf::mesh::Mode::Triangles
                     || primitive.morph_targets().next().is_some()
                 {
-                    return Err(error("only static triangle primitives are supported"));
+                    return Err(error(
+                        "only triangle primitives without morph targets are supported",
+                    ));
                 }
                 if primitive.get(&gltf::Semantic::Colors(0)).is_some() {
                     return Err(error("vertex colors require an unsupported vertex layout"));
@@ -390,6 +409,11 @@ impl GltfLoader {
                 {
                     return Err(error("invalid normals/UVs"));
                 }
+                let skin_weights = if self.import_animation {
+                    read_skin_weights(&reader, &primitive, count)?
+                } else {
+                    None
+                };
                 let material = primitive.material().index().unwrap_or(default_material);
                 if uv.is_none()
                     && (model.materials[material].base_texture.is_some()
@@ -405,6 +429,7 @@ impl GltfLoader {
                 if final_count > l.max_vertices.saturating_sub(vertices) {
                     return Err(budget("decoded vertex budget exceeded"));
                 }
+                let mut skin_out = skin_weights.clone();
                 let (verts, inds) = if let Some(normals) = normals {
                     (
                         positions
@@ -447,6 +472,12 @@ impl GltfLoader {
                             });
                         }
                     }
+                    if let Some(skin) = &skin_weights {
+                        skin_out = Some(ModelSkinWeights {
+                            joints: inds.iter().map(|i| skin.joints[*i as usize]).collect(),
+                            weights: inds.iter().map(|i| skin.weights[*i as usize]).collect(),
+                        });
+                    }
                     (verts, (0..final_count as u32).collect())
                 };
                 vertices += final_count;
@@ -457,6 +488,7 @@ impl GltfLoader {
                     vertices: verts,
                     indices: inds,
                     material,
+                    skin: skin_out,
                 });
             }
             meshes.push(mesh_parts);
@@ -500,6 +532,7 @@ impl GltfLoader {
                             name: node.name().unwrap_or("node").into(),
                             primitive: *primitive,
                             transform,
+                            skin: node.skin().map(|skin| skin.index()),
                         });
                     }
                 }
@@ -513,6 +546,11 @@ impl GltfLoader {
         if model.primitives.is_empty() {
             return Err(error("model has no triangle geometry"));
         }
+        self.import_nodes(&file, &meshes, &mut model)?;
+        if self.import_animation {
+            self.import_skins(&file, &buffers, &mut model)?;
+            self.import_animations(&file, &buffers, &mut model)?;
+        }
         model.dependencies = c.read_dependencies();
         model.warnings.push(
             "PBR data is retained; classic rendering requires an explicit approximation policy"
@@ -521,6 +559,246 @@ impl GltfLoader {
         Ok(model)
     }
 }
+impl GltfLoader {
+    fn import_nodes(
+        &self,
+        file: &gltf::Gltf,
+        meshes: &[Vec<usize>],
+        model: &mut Model3D,
+    ) -> Result<(), AssetError> {
+        let count = file.nodes().len();
+        let mut parents = vec![None; count];
+        for node in file.nodes() {
+            for child in node.children() {
+                parents[child.index()] = Some(node.index());
+            }
+        }
+        for node in file.nodes() {
+            let (translation, rotation, scale) = node.transform().decomposed();
+            if !translation
+                .iter()
+                .chain(&rotation)
+                .chain(&scale)
+                .all(|v| v.is_finite())
+            {
+                return Err(error("invalid node transform"));
+            }
+            model.nodes.push(ModelNode {
+                name: node
+                    .name()
+                    .map_or_else(|| format!("node{}", node.index()), str::to_owned),
+                parent: parents[node.index()],
+                children: node.children().map(|child| child.index()).collect(),
+                translation,
+                rotation,
+                scale,
+                world: IDENTITY_MATRIX,
+                primitives: node
+                    .mesh()
+                    .map(|mesh| meshes[mesh.index()].clone())
+                    .unwrap_or_default(),
+                skin: node.skin().map(|skin| skin.index()),
+            });
+        }
+        let world = model.world_transforms(|_| None);
+        for (node, world) in model.nodes.iter_mut().zip(world) {
+            node.world = world;
+        }
+        Ok(())
+    }
+
+    fn import_skins(
+        &self,
+        file: &gltf::Gltf,
+        buffers: &[Vec<u8>],
+        model: &mut Model3D,
+    ) -> Result<(), AssetError> {
+        for skin in file.skins() {
+            let joints: Vec<usize> = skin.joints().map(|joint| joint.index()).collect();
+            if joints.is_empty() || joints.len() > self.limits.max_joints {
+                return Err(budget("skin joint count is empty or exceeds budget"));
+            }
+            let reader = skin.reader(|b| Some(buffers[b.index()].as_slice()));
+            let inverse: Vec<[[f32; 4]; 4]> = match reader.read_inverse_bind_matrices() {
+                Some(matrices) => matrices.collect(),
+                None => vec![IDENTITY_MATRIX; joints.len()],
+            };
+            if inverse.len() != joints.len()
+                || inverse.iter().flatten().flatten().any(|v| !v.is_finite())
+            {
+                return Err(error(
+                    "inverse bind matrices must match joints and be finite",
+                ));
+            }
+            model.skins.push(ModelSkin {
+                name: skin
+                    .name()
+                    .map_or_else(|| format!("skin{}", skin.index()), str::to_owned),
+                joints,
+                inverse_bind_matrices: inverse,
+                skeleton: skin.skeleton().map(|node| node.index()),
+            });
+        }
+        for instance in &model.instances {
+            let (Some(skin), Some(weights)) = (
+                instance.skin,
+                model.primitives[instance.primitive].skin.as_ref(),
+            ) else {
+                continue;
+            };
+            let joints = model.skins[skin].joints.len();
+            if weights
+                .joints
+                .iter()
+                .flatten()
+                .any(|joint| usize::from(*joint) >= joints)
+            {
+                return Err(error("vertex joint index exceeds its skin's joints"));
+            }
+        }
+        Ok(())
+    }
+
+    fn import_animations(
+        &self,
+        file: &gltf::Gltf,
+        buffers: &[Vec<u8>],
+        model: &mut Model3D,
+    ) -> Result<(), AssetError> {
+        use gltf::animation::{Interpolation, Property, util::ReadOutputs};
+        let mut keys = 0usize;
+        let mut skipped_morph = 0usize;
+        for animation in file.animations() {
+            let mut channels = Vec::new();
+            let mut duration = 0f32;
+            for channel in animation.channels() {
+                let target = match channel.target().property() {
+                    Property::Translation => ModelChannelTarget::Translation,
+                    Property::Rotation => ModelChannelTarget::Rotation,
+                    Property::Scale => ModelChannelTarget::Scale,
+                    Property::MorphTargetWeights => {
+                        skipped_morph += 1;
+                        continue;
+                    }
+                };
+                let interpolation = match channel.sampler().interpolation() {
+                    Interpolation::Step => ModelInterpolation::Step,
+                    Interpolation::Linear => ModelInterpolation::Linear,
+                    Interpolation::CubicSpline => ModelInterpolation::CubicSpline,
+                };
+                let reader = channel.reader(|b| Some(buffers[b.index()].as_slice()));
+                let times: Vec<f32> = reader
+                    .read_inputs()
+                    .ok_or_else(|| error("animation sampler has no input times"))?
+                    .collect();
+                let values: Vec<[f32; 4]> = match reader
+                    .read_outputs()
+                    .ok_or_else(|| error("animation sampler has no output values"))?
+                {
+                    ReadOutputs::Translations(values) | ReadOutputs::Scales(values) => {
+                        values.map(|[x, y, z]| [x, y, z, 0.]).collect()
+                    }
+                    ReadOutputs::Rotations(values) => values.into_f32().collect(),
+                    ReadOutputs::MorphTargetWeights(_) => continue,
+                };
+                let per_key = if interpolation == ModelInterpolation::CubicSpline {
+                    3
+                } else {
+                    1
+                };
+                keys = keys.saturating_add(times.len());
+                if keys > self.limits.max_keyframes {
+                    return Err(budget("animation keyframe budget exceeded"));
+                }
+                if times.is_empty()
+                    || values.len() != times.len() * per_key
+                    || times.iter().any(|t| !t.is_finite() || *t < 0.)
+                    || times.windows(2).any(|w| w[1] < w[0])
+                    || values.iter().flatten().any(|v| !v.is_finite())
+                {
+                    return Err(error(
+                        "animation channel times must be finite, non-negative and ordered with matching values",
+                    ));
+                }
+                duration = duration.max(*times.last().unwrap());
+                channels.push(ModelChannel {
+                    node: channel.target().node().index(),
+                    target,
+                    interpolation,
+                    times,
+                    values,
+                });
+            }
+            model.animations.push(ModelAnimation {
+                name: animation
+                    .name()
+                    .map_or_else(|| format!("animation{}", animation.index()), str::to_owned),
+                channels,
+                duration,
+            });
+        }
+        if skipped_morph > 0 {
+            model.warnings.push(format!(
+                "{skipped_morph} morph-target weight channels skipped: morph targets are unsupported"
+            ));
+        }
+        Ok(())
+    }
+}
+
+const IDENTITY_MATRIX: [[f32; 4]; 4] = [
+    [1., 0., 0., 0.],
+    [0., 1., 0., 0.],
+    [0., 0., 1., 0.],
+    [0., 0., 0., 1.],
+];
+
+fn read_skin_weights<'a, 's, F>(
+    reader: &gltf::mesh::Reader<'a, 's, F>,
+    primitive: &gltf::Primitive<'_>,
+    count: usize,
+) -> Result<Option<ModelSkinWeights>, AssetError>
+where
+    F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>,
+{
+    let has_joints = primitive.get(&gltf::Semantic::Joints(0)).is_some();
+    let has_weights = primitive.get(&gltf::Semantic::Weights(0)).is_some();
+    if !has_joints && !has_weights {
+        return Ok(None);
+    }
+    if primitive.get(&gltf::Semantic::Joints(1)).is_some() {
+        return Err(error(
+            "more than four joint influences per vertex are unsupported",
+        ));
+    }
+    let joints: Vec<[u16; 4]> = reader
+        .read_joints(0)
+        .ok_or_else(|| error("skinned primitive needs JOINTS_0 and WEIGHTS_0"))?
+        .into_u16()
+        .collect();
+    let mut weights: Vec<[f32; 4]> = reader
+        .read_weights(0)
+        .ok_or_else(|| error("skinned primitive needs JOINTS_0 and WEIGHTS_0"))?
+        .into_f32()
+        .collect();
+    if joints.len() != count || weights.len() != count {
+        return Err(error("JOINTS_0/WEIGHTS_0 must match POSITION count"));
+    }
+    for weight in &mut weights {
+        if weight.iter().any(|w| !w.is_finite() || *w < 0.) {
+            return Err(error("skin weights must be finite and non-negative"));
+        }
+        let sum: f32 = weight.iter().sum();
+        if sum <= f32::EPSILON {
+            return Err(error("every skinned vertex needs a positive weight"));
+        }
+        for w in weight.iter_mut() {
+            *w /= sum;
+        }
+    }
+    Ok(Some(ModelSkinWeights { joints, weights }))
+}
+
 fn read_uri(c: &LoadContext<'_>, uri: &str, max: usize) -> Result<Vec<u8>, AssetError> {
     if let Some(data) = uri.strip_prefix("data:") {
         let (kind, encoded) = data

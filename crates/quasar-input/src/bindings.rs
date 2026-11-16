@@ -42,6 +42,17 @@ impl Binding {
             button: Button::Gamepad(button),
         }
     }
+    /// Two gamepad buttons as one axis, e.g. D-pad left/right for movement.
+    pub fn gamepad_button_axis(negative: GamepadButton, positive: GamepadButton) -> Self {
+        Self::Axis {
+            negative: Button::Gamepad(negative),
+            positive: Button::Gamepad(positive),
+        }
+    }
+    /// Two arbitrary buttons (keys, mouse or gamepad) as one axis.
+    pub fn button_axis(negative: Button, positive: Button) -> Self {
+        Self::Axis { negative, positive }
+    }
     pub fn gamepad_axis(axis: GamepadAxis) -> Self {
         Self::GamepadAxis { axis, scale: 1.0 }
     }

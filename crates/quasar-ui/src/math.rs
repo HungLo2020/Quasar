@@ -158,3 +158,46 @@ impl Edges {
         }
     }
 }
+
+/// Optional conversions to the shared `quasar-math` (glam) types. The UI keeps
+/// its own small serialisable `Vec2`/`Rect` so it needs no math dependency by
+/// default; enable the `math` feature to pass values to and from games.
+#[cfg(feature = "math")]
+mod glam_conversions {
+    use super::{Rect, Vec2};
+
+    impl From<quasar_math::Vec2> for Vec2 {
+        fn from(value: quasar_math::Vec2) -> Self {
+            Self::new(value.x, value.y)
+        }
+    }
+    impl From<Vec2> for quasar_math::Vec2 {
+        fn from(value: Vec2) -> Self {
+            Self::new(value.x, value.y)
+        }
+    }
+    impl Rect {
+        pub fn min(self) -> quasar_math::Vec2 {
+            quasar_math::Vec2::new(self.x, self.y)
+        }
+        pub fn max(self) -> quasar_math::Vec2 {
+            quasar_math::Vec2::new(self.right(), self.bottom())
+        }
+        pub fn from_min_max(min: quasar_math::Vec2, max: quasar_math::Vec2) -> Self {
+            Self::new(min.x, min.y, max.x - min.x, max.y - min.y)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn ui_vectors_and_rects_convert_losslessly() {
+            let v = quasar_math::Vec2::new(3.0, -4.5);
+            assert_eq!(quasar_math::Vec2::from(Vec2::from(v)), v);
+            let rect = Rect::new(1.0, 2.0, 3.0, 4.0);
+            assert_eq!(rect.max(), quasar_math::Vec2::new(4.0, 6.0));
+            assert_eq!(Rect::from_min_max(rect.min(), rect.max()), rect);
+        }
+    }
+}

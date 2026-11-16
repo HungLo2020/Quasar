@@ -4,7 +4,9 @@
 //! `FrameInput` snapshot is captured once per runner frame. Variable-rate UI
 //! and rendering can inspect it even when no fixed tick is due, while fixed
 //! simulation ticks see the same edges exactly once.
-use crate::{ActionState, Button, GamepadAxis, InputRead, InputState, Key, MouseButton};
+use crate::{
+    ActionState, Button, GamepadAxis, InputDevice, InputRead, InputState, Key, MouseButton,
+};
 use std::collections::{HashMap, HashSet};
 
 /// Consumption requests recorded by one or more input consumers.
@@ -56,6 +58,8 @@ pub struct FrameInput {
     preedit: String,
     preedit_cursor: usize,
     consumed: ConsumedInput,
+    last_device: Option<InputDevice>,
+    device_changed: bool,
 }
 
 impl InputRead for FrameInput {
@@ -123,6 +127,21 @@ impl FrameInput {
         self.preedit.clone_from(&state.preedit);
         self.preedit_cursor = state.preedit_cursor;
         self.consumed.clear();
+        let device = state.last_active_device();
+        self.device_changed = device != self.last_device;
+        self.last_device = device;
+    }
+
+    /// [`InputState::last_active_device`] when this frame was captured.
+    pub fn last_active_device(&self) -> Option<InputDevice> {
+        self.last_device
+    }
+
+    /// Whether the active device differs from the previous capture into
+    /// this snapshot (true on the first capture that sees a device). Use it
+    /// to rebuild prompts only when the player switches devices.
+    pub fn active_device_changed(&self) -> bool {
+        self.device_changed
     }
 
     pub fn frame(&self) -> u64 {

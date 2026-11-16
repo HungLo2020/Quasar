@@ -78,6 +78,9 @@ impl UiRenderer {
             }
             canvas.set_clip(Some(to_rect(entry.clip)));
             let rect = to_rect(entry.rect);
+            if let Some(style) = &node.style {
+                paint_style(canvas, entry.rect, style, scale);
+            }
             #[cfg(feature = "text-render2d")]
             if let Some(text) = &mut self.text
                 && text.draw_widget(canvas, ui, node, entry)
@@ -85,6 +88,11 @@ impl UiRenderer {
                 continue;
             }
             match &node.widget {
+                Widget::Panel { .. } if node.style.is_some() => {
+                    if node.modal {
+                        focus_border(canvas, rect, theme.focus, theme.focus_width * scale);
+                    }
+                }
                 Widget::Panel { .. } => {
                     let color = if node.modal {
                         theme.panel
@@ -96,20 +104,35 @@ impl UiRenderer {
                         focus_border(canvas, rect, theme.focus, theme.focus_width * scale);
                     }
                 }
-                Widget::Label { text, style } => {
+                Widget::Label {
+                    text, style, wrap, ..
+                } => {
                     let size = match style {
                         crate::TextStyle::Heading => heading,
                         crate::TextStyle::Body => font,
                         crate::TextStyle::Small | crate::TextStyle::Dim => small,
                     };
-                    draw_text(
-                        canvas,
-                        entry.rect.x,
-                        entry.rect.y + (entry.rect.height - size).max(0.0) * 0.5,
-                        ui.resolve_text(text),
-                        size,
-                        theme.color(*style),
-                    );
+                    let text = ui.resolve_text(text);
+                    let lines = match wrap {
+                        crate::TextWrap::None => text.split('\n').map(str::to_owned).collect(),
+                        crate::TextWrap::Word => {
+                            crate::wrap_greedy(text, entry.rect.width + 0.5, |part| {
+                                part.chars().count() as f32 * size * TEXT_ADVANCE
+                            })
+                        }
+                    };
+                    let total = size * lines.len() as f32;
+                    let top = entry.rect.y + (entry.rect.height - total).max(0.0) * 0.5;
+                    for (index, line) in lines.iter().enumerate() {
+                        draw_text(
+                            canvas,
+                            entry.rect.x,
+                            top + index as f32 * size,
+                            line,
+                            size,
+                            theme.color(*style),
+                        );
+                    }
                 }
                 Widget::Button { text, .. } => {
                     let fill = if node.state.pressed {
@@ -471,6 +494,25 @@ fn draw_centered_text(canvas: &mut Canvas, rect: Rect, text: &str, size: f32, co
         size,
         color,
     );
+}
+
+/// Paints a [`crate::NodeStyle`] background and border with rounded corners.
+pub(crate) fn paint_style(canvas: &mut Canvas, rect: UiRect, style: &crate::NodeStyle, scale: f32) {
+    let radius = style.radius * scale;
+    if let Some(color) = style.background
+        && color.a > 0
+    {
+        for span in crate::rounded_rect_spans(rect, radius) {
+            canvas.rect(to_rect(span), to_color(color));
+        }
+    }
+    if let Some(border) = style.border
+        && border.color.a > 0
+    {
+        for span in crate::rounded_border_spans(rect, radius, border.width * scale) {
+            canvas.rect(to_rect(span), to_color(border.color));
+        }
+    }
 }
 
 fn focus_border(canvas: &mut Canvas, rect: Rect, color: Color, width: f32) {

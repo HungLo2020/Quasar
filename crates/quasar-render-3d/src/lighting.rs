@@ -161,6 +161,33 @@ pub struct LitCamera3D {
     pub view_projection: Mat4,
     pub position: [f32; 3],
 }
+impl LitCamera3D {
+    /// See [`crate::Camera3D::project`].
+    pub fn project(&self, world: [f32; 3], viewport: quasar_math::Viewport) -> Option<[f32; 3]> {
+        self.view_projection.project(world, viewport)
+    }
+    /// See [`crate::Camera3D::unproject`].
+    pub fn unproject(&self, screen: [f32; 3], viewport: quasar_math::Viewport) -> Option<[f32; 3]> {
+        self.view_projection.unproject(screen, viewport)
+    }
+    /// See [`crate::Camera3D::pick_ray`].
+    pub fn pick_ray(
+        &self,
+        screen: [f32; 2],
+        viewport: quasar_math::Viewport,
+    ) -> Option<([f32; 3], [f32; 3])> {
+        self.view_projection.screen_ray(screen, viewport)
+    }
+    /// See [`crate::Camera3D::screen_ray`].
+    #[cfg(feature = "visibility")]
+    pub fn screen_ray(
+        &self,
+        screen: [f32; 2],
+        viewport: quasar_math::Viewport,
+    ) -> Option<quasar_spatial::Ray3> {
+        crate::screen_ray_spatial(self.view_projection, screen, viewport)
+    }
+}
 /// Borrowed per-pass light data; never tied to entities, nodes or a global world.
 #[derive(Clone, Copy, Debug)]
 pub struct Lighting<'a> {
@@ -418,6 +445,7 @@ impl LitRenderState3D {
                 lit: Some(&d.material),
                 normal: None,
                 receives_shadows: false,
+                blend: None,
             })
             .collect();
         self.core.prepare(

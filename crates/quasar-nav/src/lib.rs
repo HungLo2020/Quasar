@@ -1,7 +1,8 @@
 //! Reusable A*/Dijkstra pathfinding, grid navigation and optional adapters.
 //!
 //! `quasar-nav` owns no agents, steering, ECS, renderer or global world. Games
-//! own graphs/grids, decision-making and movement; this crate returns paths.
+//! own graphs/grids, decision-making and movement; this crate returns paths
+//! and, for hordes, [`DistanceField`] flow fields that many agents share.
 //!
 //! ```
 //! use quasar_nav::{Grid, GridCell, SearchOptions};
@@ -30,6 +31,7 @@
 //! cancellation flag. The synchronous search is the default; the optional
 //! `jobs` feature submits grid searches to `quasar-jobs`.
 mod error;
+mod field;
 mod graph;
 mod grid;
 #[cfg(feature = "jobs")]
@@ -42,6 +44,7 @@ pub mod physics3d;
 mod tilemap;
 
 pub use error::{NavError, NavResult};
+pub use field::{DistanceField, FieldOptions};
 pub use graph::{
     Graph, Neighbor, Path, SearchOptions, SearchOutcome, astar, dijkstra, smooth_path,
 };

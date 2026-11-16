@@ -19,6 +19,7 @@ fn model() -> Model3D {
             vertices,
             indices: vec![],
             material: 0,
+            skin: None,
         }],
         instances: vec![
             ModelInstance {
@@ -26,12 +27,14 @@ fn model() -> Model3D {
                 name: "body".into(),
                 primitive: 0,
                 transform: RigidPose3::translated([4., 0., 3.]).matrix().unwrap(),
+                skin: None,
             },
             ModelInstance {
                 node: 1,
                 name: "decoration".into(),
                 primitive: 0,
                 transform: RigidPose3::translated([20., 4., 0.]).matrix().unwrap(),
+                skin: None,
             },
         ],
         ..Default::default()

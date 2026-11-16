@@ -20,6 +20,7 @@ diagnostics = ["dep:quasar-diagnostics"]
 
 [dependencies]
 quasar-frame.workspace = true
+quasar-math.workspace = true
 quasar-assets = { workspace = true, optional = true, features = ["model"] }
 vulkanic-gal = { workspace = true }
 quasar-spatial = { workspace = true, optional = true }
@@ -29,3 +30,5 @@ quasar-diagnostics = { workspace = true, optional = true }
 [dev-dependencies]
 quasar-frame = { workspace = true, features = ["vulkan"] }
 quasar-render-2d = { workspace = true, features = ["gpu", "vulkan"] }
+quasar-animation = { workspace = true, features = ["model"] }
+quasar-assets = { workspace = true, features = ["gltf"] }

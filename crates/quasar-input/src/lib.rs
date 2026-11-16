@@ -12,10 +12,12 @@
 //! `GilrsGamepads` adapter; without it the core remains free of platform device
 //! libraries and accepts synthetic [`GamepadEvent`] values.
 mod bindings;
+mod device;
 mod frame;
 mod gamepad;
 mod key;
 pub use bindings::{Binding, BindingError, Bindings};
+pub use device::{DeviceFamily, InputDevice};
 pub use frame::{ConsumedInput, FrameInput};
 #[cfg(feature = "gilrs")]
 pub use gamepad::GilrsGamepads;
@@ -102,7 +104,14 @@ pub struct InputState {
     pub preedit: String,
     /// Cursor position within `preedit`, in character indices.
     pub preedit_cursor: usize,
+    last_device: Option<InputDevice>,
 }
+
+/// Processed stick/trigger magnitude that counts as deliberate gamepad use
+/// for [`InputState::last_active_device`]; smaller values are treated as
+/// drift that should not flip prompts away from the keyboard.
+pub const ACTIVE_AXIS_THRESHOLD: f32 = 0.5;
+
 impl InputRead for InputState {
     fn action(&self, name: &str) -> ActionState {
         InputState::action(self, name)
@@ -198,6 +207,18 @@ impl InputState {
     pub fn button_released(&self, button: Button) -> bool {
         self.released.contains(&button)
     }
+    /// The device that produced the latest press, deliberate stick/trigger
+    /// movement ([`ACTIVE_AXIS_THRESHOLD`]) or reported pointer activity
+    /// ([`Self::note_device`]). `None` until the first such input. Releases
+    /// do not change it, and focus loss keeps the last value.
+    pub fn last_active_device(&self) -> Option<InputDevice> {
+        self.last_device
+    }
+    /// Records activity that is not a button or axis, such as pointer motion
+    /// or scrolling. Native adapters call this; games may call it too.
+    pub fn note_device(&mut self, device: InputDevice) {
+        self.last_device = Some(device);
+    }
     pub fn key(&mut self, key: Key, down: bool) {
         self.button(Button::Key(key), down);
     }
@@ -227,6 +248,9 @@ impl InputState {
                 .is_none_or(|current| (*current - value).abs() > f32::EPSILON)
             {
                 changed = true;
+                if value.abs() >= ACTIVE_AXIS_THRESHOLD {
+                    self.last_device = Some(InputDevice::Gamepad);
+                }
                 if value == 0.0 {
                     self.gamepad_axes.remove(&axis);
                 } else {
@@ -264,6 +288,7 @@ impl InputState {
         let changed = if down {
             if self.held.insert(button) {
                 self.pressed.insert(button);
+                self.last_device = Some(button.device());
                 true
             } else {
                 false

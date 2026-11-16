@@ -33,6 +33,8 @@
 //! public results. [`SpatialGrid::iter`] is ordered by key.
 mod geometry;
 mod grid;
+#[cfg(feature = "math")]
+mod math;
 
 pub use geometry::{Aabb, ClipDepth, Frustum, Plane, Ray};
 pub use grid::{

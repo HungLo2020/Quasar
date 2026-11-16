@@ -38,6 +38,8 @@
 //! stream; `PingPong` playback caps segment expansion and sets `truncated`.
 mod clip;
 mod error;
+#[cfg(feature = "model")]
+pub mod model;
 mod pose;
 mod skeleton;
 #[cfg(feature = "sprite")]

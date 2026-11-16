@@ -10,12 +10,15 @@ publish.workspace = true
 default = []
 serde = ["dep:serde"]
 sprite = ["dep:quasar-render-2d"]
+model = ["dep:quasar-assets"]
 
 [dependencies]
 quasar-render-2d = { workspace = true, optional = true }
+quasar-assets = { workspace = true, optional = true, features = ["model"] }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]
+quasar-assets = { workspace = true, features = ["gltf"] }
 proptest = "1"
 serde_json.workspace = true
 

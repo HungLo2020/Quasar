@@ -28,10 +28,7 @@ fn ui_renders_into_a_shared_offscreen_frame_and_resources_balance() {
     );
     ui.add_child(
         root,
-        Widget::Label {
-            text: UiText::literal("Quasar UI"),
-            style: quasar_ui::TextStyle::Heading,
-        },
+        Widget::label(UiText::literal("Quasar UI"), quasar_ui::TextStyle::Heading),
         LayoutItem::auto(),
     )
     .unwrap();
@@ -140,10 +137,10 @@ fn shaped_text_renders_through_shared_gal_and_reuses_atlas_pages() {
     );
     ui.add_child(
         root,
-        Widget::Label {
-            text: UiText::literal("Shaped text: नमस्ते مرحبا"),
-            style: quasar_ui::TextStyle::Heading,
-        },
+        Widget::label(
+            UiText::literal("Shaped text: नमस्ते مرحبا"),
+            quasar_ui::TextStyle::Heading,
+        ),
         LayoutItem::auto(),
     )
     .unwrap();
@@ -290,10 +287,10 @@ fn shaped_text_clipping_and_resize_stay_inside_logical_bounds() {
         .unwrap();
     ui.add_child(
         clip,
-        Widget::Label {
-            text: UiText::literal("THIS LONG LABEL MUST BE CLIPPED AT THE PANEL BOUNDARY"),
-            style: quasar_ui::TextStyle::Heading,
-        },
+        Widget::label(
+            UiText::literal("THIS LONG LABEL MUST BE CLIPPED AT THE PANEL BOUNDARY"),
+            quasar_ui::TextStyle::Heading,
+        ),
         LayoutItem::auto(),
     )
     .unwrap();

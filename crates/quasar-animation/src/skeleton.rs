@@ -111,9 +111,9 @@ impl Bone {
     }
 }
 
-/// Renderer-independent skeleton definition. Skinning, inverse bind matrices
-/// and GPU buffers remain renderer-owned (Quasar's 3D renderer currently has no
-/// skeletal pipeline).
+/// Renderer-independent skeleton definition. GPU buffers remain
+/// renderer-owned; the optional `model` feature builds skeletons and joint
+/// palettes from glTF skins for `quasar-render-3d`'s `SkinningPass`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Skeleton {
     bones: Vec<Bone>,

@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "app-stress"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "quasar-app",
  "quasar-core",
@@ -187,7 +187,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audio-example"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "hound",
  "quasar-audio",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "falling-sand"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "png 0.17.16",
  "quasar-app",
@@ -911,7 +911,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "framebuffer"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "quasar-render-2d",
  "quasar-window",
@@ -1072,6 +1072,7 @@ checksum = "37bfe73dc8ec21f54d181e5a60554327ec3f1c600c455a75ccbfc65d2106a6c4"
 dependencies = [
  "approx 0.5.1",
  "libm",
+ "serde_core",
 ]
 
 [[package]]
@@ -1817,7 +1818,7 @@ dependencies = [
 
 [[package]]
 name = "nightwatch"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "quasar-app",
  "quasar-assets",
@@ -2522,7 +2523,7 @@ dependencies = [
 
 [[package]]
 name = "physics-playground"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "png 0.17.16",
  "quasar-animation",
@@ -2623,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "pong"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "png 0.17.16",
  "quasar-app",
@@ -2731,9 +2732,10 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "quasar-animation"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "proptest",
+ "quasar-assets",
  "quasar-render-2d",
  "serde",
  "serde_json",
@@ -2741,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-app"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "quasar-core",
  "quasar-input",
@@ -2750,7 +2752,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-assets"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "base64",
  "gltf",
@@ -2766,12 +2768,13 @@ dependencies = [
 
 [[package]]
 name = "quasar-audio"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "cpal",
  "crossbeam-channel",
  "hound",
  "lewton",
+ "quasar-core",
  "quasar-diagnostics",
  "quasar-storage",
  "serde",
@@ -2780,7 +2783,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-composition"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "png 0.17.16",
  "quasar-frame",
@@ -2794,7 +2797,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-config"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "quasar-storage",
  "serde",
@@ -2805,11 +2808,15 @@ dependencies = [
 
 [[package]]
 name = "quasar-core"
-version = "0.2.21"
+version = "0.2.22"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "quasar-diagnostics"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -2817,15 +2824,17 @@ dependencies = [
 
 [[package]]
 name = "quasar-frame"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
+ "png 0.17.16",
  "quasar-diagnostics",
+ "tempfile",
  "vulkanic-gal",
 ]
 
 [[package]]
 name = "quasar-input"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "gilrs",
  "quasar-diagnostics",
@@ -2835,15 +2844,23 @@ dependencies = [
 
 [[package]]
 name = "quasar-jobs"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "proptest",
  "quasar-diagnostics",
 ]
 
 [[package]]
+name = "quasar-math"
+version = "0.2.22"
+dependencies = [
+ "glam 0.33.12",
+ "serde_json",
+]
+
+[[package]]
 name = "quasar-nav"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "navmesh",
  "proptest",
@@ -2855,7 +2872,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-physics"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "proptest",
  "quasar-assets",
@@ -2866,7 +2883,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-profile"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "quasar-config",
  "quasar-diagnostics",
@@ -2879,7 +2896,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-render-2d"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "png 0.17.16",
  "quasar-assets",
@@ -2893,12 +2910,14 @@ dependencies = [
 
 [[package]]
 name = "quasar-render-3d"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
+ "quasar-animation",
  "quasar-assets",
  "quasar-config",
  "quasar-diagnostics",
  "quasar-frame",
+ "quasar-math",
  "quasar-render-2d",
  "quasar-spatial",
  "vulkanic-gal",
@@ -2906,7 +2925,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-sim"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "proptest",
  "quasar-core",
@@ -2917,14 +2936,15 @@ dependencies = [
 
 [[package]]
 name = "quasar-spatial"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "proptest",
+ "quasar-math",
 ]
 
 [[package]]
 name = "quasar-storage"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "serde",
  "serde_json",
@@ -2933,7 +2953,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-text"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "cosmic-text",
  "proptest",
@@ -2944,7 +2964,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-tilemap"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "png 0.17.16",
  "quasar-render-2d",
@@ -2955,12 +2975,13 @@ dependencies = [
 
 [[package]]
 name = "quasar-ui"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "proptest",
  "quasar-config",
  "quasar-frame",
  "quasar-input",
+ "quasar-math",
  "quasar-render-2d",
  "quasar-text",
  "serde",
@@ -2969,7 +2990,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-window"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "quasar-diagnostics",
  "quasar-input",
@@ -2980,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "quasar-workspace-checks"
-version = "0.2.21"
+version = "0.2.22"
 
 [[package]]
 name = "quick-error"
@@ -3700,7 +3721,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "starfall"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "png 0.17.16",
  "quasar-app",
@@ -3843,7 +3864,7 @@ dependencies = [
 
 [[package]]
 name = "tilequest"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "png 0.17.16",
  "quasar-app",
@@ -4081,7 +4102,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vulkanic-gal"
-version = "0.2.21"
+version = "0.2.22"
 dependencies = [
  "wgpu",
 ]

@@ -480,6 +480,91 @@ impl OffscreenTarget {
         })
     }
 }
+/// Tightly packed RGBA8 pixels read back from an offscreen render.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Image {
+    pub width: u32,
+    pub height: u32,
+    /// Row-major, top row first, 4 bytes per pixel.
+    pub rgba: Vec<u8>,
+}
+
+impl Image {
+    /// Wraps packed RGBA8 data, checking its length.
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> GraphicsResult<Self> {
+        if u64::from(width) * u64::from(height) * 4 != rgba.len() as u64 {
+            return Err(error("RGBA length does not match image dimensions"));
+        }
+        Ok(Self {
+            width,
+            height,
+            rgba,
+        })
+    }
+    /// The pixel at `(x, y)`, or `None` outside the image.
+    pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let start = (y as usize * self.width as usize + x as usize) * 4;
+        self.rgba
+            .get(start..start + 4)
+            .map(|p| [p[0], p[1], p[2], p[3]])
+    }
+    /// Encodes the image as a PNG.
+    #[cfg(feature = "png")]
+    pub fn encode_png(&self) -> GraphicsResult<Vec<u8>> {
+        if self.width == 0 || self.height == 0 {
+            return Err(error("PNG dimensions must be nonzero"));
+        }
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, self.width, self.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .and_then(|mut writer| writer.write_image_data(&self.rgba))
+            .map_err(|e| error(format!("PNG encode: {e}")))?;
+        Ok(bytes)
+    }
+    /// Writes the image as a PNG file.
+    #[cfg(feature = "png")]
+    pub fn write_png(&self, path: impl AsRef<std::path::Path>) -> GraphicsResult<()> {
+        let bytes = self.encode_png()?;
+        std::fs::write(path.as_ref(), bytes)
+            .map_err(|e| error(format!("{}: {e}", path.as_ref().display())))
+    }
+}
+
+/// Renders one frame into a temporary RGBA8 + depth target and reads it
+/// back: the screenshot/cover-render/golden-image boilerplate in one call.
+///
+/// `prepare` records command buffers against the target exactly as a live
+/// frame would (2D canvas passes, 3D passes, raw GAL work); they are
+/// submitted, waited on and read back before the target is released.
+///
+/// ```no_run
+/// # use quasar_frame::{Gpu, render_offscreen};
+/// let gpu = Gpu::headless()?;
+/// let image = render_offscreen(&gpu, 320, 180, |gpu, target| {
+///     // record passes that draw into `target` and return their buffers
+///     Ok(Vec::new())
+/// })?;
+/// assert_eq!(image.rgba.len(), 320 * 180 * 4);
+/// # Ok::<(), quasar_frame::GraphicsError>(())
+/// ```
+pub fn render_offscreen(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    prepare: impl FnOnce(&Gpu, &RenderTarget) -> GraphicsResult<Vec<CommandBuffer>>,
+) -> GraphicsResult<Image> {
+    let target = OffscreenTarget::new(gpu, width, height)?;
+    let report = target.render(gpu, prepare)?;
+    target.release(gpu)?;
+    Image::new(width, height, report.rgba)
+}
+
 /// Readback is explicit and padded for WebGPU copy alignment. Live rendering never calls this.
 pub fn read_rgba(gpu: &Gpu, texture: &Texture) -> GraphicsResult<Vec<u8>> {
     if !matches!(

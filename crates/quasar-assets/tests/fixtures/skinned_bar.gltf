@@ -1,0 +1,232 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "Quasar test fixture"
+ },
+ "buffers": [
+  {
+   "byteLength": 480,
+   "uri": "data:application/octet-stream;base64,AAAAvwAAAAAAAAAAAAAAPwAAAAAAAAAAAAAAvwAAgD8AAAAAAAAAPwAAgD8AAAAAAAAAvwAAAEAAAAAAAAAAPwAAAEAAAAAAAAABAAMAAAADAAIAAgADAAUAAgAFAAQAAAAAAAAAAAAAAQAAAAEAAAEAAAABAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAA/AAAAPwAAAAAAAAAAAACAPwAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIC/AAAAAAAAgD8AAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAPMENT/zBDU/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAEAAAABAAAAAAAAAAAAAAAAA"
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 72
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 72,
+   "byteLength": 24
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 96,
+   "byteLength": 24
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 120,
+   "byteLength": 96
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 216,
+   "byteLength": 128
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 344,
+   "byteLength": 8
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 352,
+   "byteLength": 32
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 384,
+   "byteLength": 24
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 408,
+   "byteLength": 72
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 6,
+   "type": "VEC3",
+   "min": [
+    -0.5,
+    0,
+    0
+   ],
+   "max": [
+    0.5,
+    2,
+    0
+   ]
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5123,
+   "count": 12,
+   "type": "SCALAR"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5121,
+   "count": 6,
+   "type": "VEC4"
+  },
+  {
+   "bufferView": 3,
+   "componentType": 5126,
+   "count": 6,
+   "type": "VEC4"
+  },
+  {
+   "bufferView": 4,
+   "componentType": 5126,
+   "count": 2,
+   "type": "MAT4"
+  },
+  {
+   "bufferView": 5,
+   "componentType": 5126,
+   "count": 2,
+   "type": "SCALAR",
+   "min": [
+    0
+   ],
+   "max": [
+    1
+   ]
+  },
+  {
+   "bufferView": 6,
+   "componentType": 5126,
+   "count": 2,
+   "type": "VEC4"
+  },
+  {
+   "bufferView": 7,
+   "componentType": 5126,
+   "count": 2,
+   "type": "VEC3"
+  },
+  {
+   "bufferView": 8,
+   "componentType": 5126,
+   "count": 6,
+   "type": "VEC3"
+  }
+ ],
+ "meshes": [
+  {
+   "name": "bar",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "JOINTS_0": 2,
+      "WEIGHTS_0": 3
+     },
+     "indices": 1
+    }
+   ]
+  }
+ ],
+ "skins": [
+  {
+   "name": "bar_rig",
+   "joints": [
+    0,
+    1
+   ],
+   "inverseBindMatrices": 4,
+   "skeleton": 0
+  }
+ ],
+ "nodes": [
+  {
+   "name": "root",
+   "children": [
+    1
+   ]
+  },
+  {
+   "name": "tip",
+   "translation": [
+    0,
+    1,
+    0
+   ]
+  },
+  {
+   "name": "bar",
+   "mesh": 0,
+   "skin": 0
+  }
+ ],
+ "animations": [
+  {
+   "name": "bend",
+   "samplers": [
+    {
+     "input": 5,
+     "output": 6,
+     "interpolation": "LINEAR"
+    },
+    {
+     "input": 5,
+     "output": 7,
+     "interpolation": "STEP"
+    },
+    {
+     "input": 5,
+     "output": 8,
+     "interpolation": "CUBICSPLINE"
+    }
+   ],
+   "channels": [
+    {
+     "sampler": 0,
+     "target": {
+      "node": 1,
+      "path": "rotation"
+     }
+    },
+    {
+     "sampler": 1,
+     "target": {
+      "node": 0,
+      "path": "translation"
+     }
+    },
+    {
+     "sampler": 2,
+     "target": {
+      "node": 0,
+      "path": "scale"
+     }
+    }
+   ]
+  }
+ ],
+ "scenes": [
+  {
+   "nodes": [
+    0,
+    2
+   ]
+  }
+ ],
+ "scene": 0
+}

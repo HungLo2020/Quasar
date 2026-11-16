@@ -283,10 +283,12 @@ measurable rather than anecdotal.
   by a supplied `TextMeasure` and drawn by the game or the bitmap font. Enable
   `text`/`text-render2d` for TTF/OTF shaping and glyph atlases (see
   [text](text.md)).
-- No rich text or inline images. The bitmap path is single-line and truncation
-  is the caller's responsibility; the shaped `quasar-text` path supports
-  wrapping, alignment and bidi, but current widget labels use natural single-line
-  layout unless they contain explicit `\n`.
+- No rich text or inline images. Labels are single-line by default;
+  `Widget::wrapped_label` / `TextWrap::Word` wraps at the available width (or
+  `max_width`) and layout grows the label's height, using greedy word wrapping
+  for bitmap/monospace measures and shaped wrapping with `quasar-text`.
+  Per-node `NodeStyle` backgrounds/borders/radii (including transparent) and
+  `Anchor` placement for roots and absolute children cover HUD layouts.
 - No animation beyond hover/press transitions and no tween/timeline
   integration.
 - No persistence/validation/translation loading. `config` only bridges values;

@@ -1,0 +1,18 @@
+[package]
+name = "quasar-math"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Shared vectors, quaternions and matrices (a glam re-export) with Quasar's documented conventions"
+
+[features]
+default = []
+serde = ["glam/serde"]
+
+[dependencies]
+glam = { version = "0.33.12", default-features = false, features = ["std", "f64", "i32", "u32"] }
+
+[dev-dependencies]
+serde_json.workspace = true

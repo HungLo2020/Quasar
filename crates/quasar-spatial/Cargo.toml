@@ -8,6 +8,10 @@ publish.workspace = true
 
 [features]
 default = []
+math = ["dep:quasar-math"]
+
+[dependencies]
+quasar-math = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = "1"

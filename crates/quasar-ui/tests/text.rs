@@ -273,3 +273,53 @@ fn ime_preedit_is_rendered_without_mutating_committed_text() {
         _ => unreachable!(),
     }
 }
+
+#[test]
+fn shaped_wrapped_labels_grow_with_line_count() {
+    let measure = measure();
+    let text = "Shaped labels wrap words at the available width during layout";
+    let single = measure.measure_style(text, TextStyle::Body, 18.0);
+    let wrapped = measure.measure_wrapped(text, TextStyle::Body, 18.0, 160.0);
+    assert!(wrapped.x <= 160.0 + 0.5, "{wrapped:?}");
+    assert!(wrapped.y >= single.y * 2.5, "{wrapped:?} vs {single:?}");
+
+    let mut ui = Ui::new(quasar_ui::Theme::retro());
+    let root = ui.add_root(
+        Widget::Panel {
+            layout: quasar_ui::PanelLayout::Stack {
+                direction: quasar_ui::StackDirection::Vertical,
+                gap: 0.0,
+            },
+            padding: Edges::ZERO,
+            clip: false,
+            scrollable: false,
+        },
+        LayoutItem::size(quasar_ui::Length::fixed(160.0), quasar_ui::Length::Fill),
+        Layer::Hud,
+        false,
+    );
+    let label = ui
+        .add_child(
+            root,
+            Widget::wrapped_label(UiText::literal(text), TextStyle::Body, None),
+            LayoutItem::auto(),
+        )
+        .unwrap();
+    ui.layout(
+        quasar_ui::Rect::new(0.0, 0.0, 640.0, 480.0),
+        1.0,
+        Edges::ZERO,
+        &measure,
+    );
+    let rect = ui
+        .layout_entries()
+        .iter()
+        .find(|entry| entry.id == label)
+        .unwrap()
+        .rect;
+    assert!(rect.width <= 160.0 + 0.5);
+    let font = quasar_ui::Theme::retro().font_size;
+    let expected = measure.measure_wrapped(text, TextStyle::Body, font, 160.0);
+    assert!((rect.height - expected.y).abs() < 0.01);
+    assert!(rect.height > font * 1.5);
+}

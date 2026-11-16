@@ -16,6 +16,7 @@ diagnostics = ["dep:quasar-diagnostics"]
 [dependencies]
 crossbeam-channel = "0.5"
 hound = "3.5"
+quasar-core.workspace = true
 lewton = "0.10"
 cpal = { version = "0.15.3", optional = true }
 serde = { workspace = true, optional = true }

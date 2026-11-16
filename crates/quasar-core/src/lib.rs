@@ -1,5 +1,9 @@
-//! Device-independent timing utilities. No window, renderer, or application loop required.
+//! Device-independent timing utilities and deterministic random numbers. No
+//! window, renderer, or application loop required.
+mod rng;
 mod viewport;
+
+pub use rng::{Rng, ZeroStateError, splitmix64};
 use std::time::Duration;
 pub use viewport::{DisplayOptions, Filter, Scaling, Viewport};
 

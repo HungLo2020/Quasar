@@ -42,8 +42,8 @@ pub use decode::{
 pub use error::{AudioError, AudioResult};
 pub use mixer::{
     BusConfig, BusId, Frame, LoopMode, LoopRegion, MAX_VOICE_GROUPS, Mixer, MixerConfig,
-    MixerDiagnostics, PlaybackConfig, ProceduralSource, SoundSource, VoiceGroup, VoiceHandle,
-    VoicePolicy, VoiceStatus,
+    MixerDiagnostics, PlaybackConfig, ProceduralSource, SoundSource, Variation, VoiceGroup,
+    VoiceHandle, VoicePolicy, VoiceStatus,
 };
 #[cfg(feature = "native")]
 pub use native::{AudioEngine, DeviceInfo, EngineConfig, EngineDiagnostics};

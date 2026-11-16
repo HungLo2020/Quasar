@@ -13,11 +13,13 @@ render2d = ["dep:quasar-render-2d"]
 input = ["dep:quasar-input"]
 config = ["dep:quasar-config"]
 text = ["dep:quasar-text"]
+math = ["dep:quasar-math"]
 text-render2d = ["text", "render2d", "quasar-render-2d/text", "quasar-render-2d/gpu"]
 
 [dependencies]
 quasar-config = { workspace = true, optional = true }
 quasar-input = { workspace = true, optional = true }
+quasar-math = { workspace = true, optional = true }
 quasar-render-2d = { workspace = true, optional = true }
 quasar-text = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }

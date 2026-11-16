@@ -3,7 +3,10 @@ mod lighting;
 mod math;
 #[cfg(feature = "model-assets")]
 mod model_assets;
+mod post;
+mod primitives;
 mod shadows;
+mod skinning;
 mod submission;
 mod surface;
 pub use lighting::{
@@ -13,11 +16,19 @@ pub use lighting::{
 pub use math::Mat4;
 #[cfg(feature = "model-assets")]
 pub use model_assets::{MaterialConversion, ModelUploadOptions, UploadedModel, UploadedTexture};
+pub use post::{
+    BlendMode, BloomSettings, ColorGrade, OutputEncoding, PostChain, PostSettings, SCENE_FORMAT,
+    SceneTarget, Tonemap, TransparentDraw3D, VignetteSettings, sort_back_to_front,
+};
+pub use primitives::MeshData;
 use quasar_frame::{Gpu, GraphicsResult, RenderTarget, error, texture_2d};
+/// Shared math types and conventions (re-exported for convenience).
+pub use quasar_math;
 pub use shadows::{
     PreparedShadows, ShadowBinding, ShadowCaster, ShadowConfig, ShadowFilter, ShadowRenderState3D,
     ShadowSettings, ShadowStats, ShadowTarget, ShadowView,
 };
+pub use skinning::{MAX_JOINTS, SkinInfluence, SkinnedMesh, SkinningPass, skin_vertices};
 use std::collections::{BTreeMap, HashMap};
 use submission::Visibility;
 pub use submission::{RenderWork, SubmissionConfig};
@@ -50,6 +61,16 @@ pub struct Mesh {
 }
 impl Mesh {
     pub fn upload(gpu: &Gpu, vertices: &[Vertex], indices: &[u32]) -> GraphicsResult<Self> {
+        Self::upload_with_usage(gpu, vertices, indices, BufferUsages::empty())
+    }
+    /// [`Self::upload`] with extra vertex-buffer usages (the buffer is always
+    /// `STORAGE`), e.g. `COPY_SRC` for readback or compute-written meshes.
+    pub(crate) fn upload_with_usage(
+        gpu: &Gpu,
+        vertices: &[Vertex],
+        indices: &[u32],
+        extra: BufferUsages,
+    ) -> GraphicsResult<Self> {
         if vertices.is_empty()
             || indices.is_empty()
             || !indices.len().is_multiple_of(3)
@@ -96,7 +117,7 @@ impl Mesh {
         let vertex = gpu.device.create_buffer_init(&util::BufferInitDescriptor {
             label: Some("mesh vertices"),
             contents: &encoded,
-            usage: BufferUsages::STORAGE,
+            usage: BufferUsages::STORAGE | extra,
         });
         let index = gpu.device.create_buffer_init(&util::BufferInitDescriptor {
             label: Some("mesh indices"),
@@ -168,6 +189,45 @@ pub struct Camera3D {
     pub view_projection: Mat4,
     pub light_direction: [f32; 3],
 }
+impl Camera3D {
+    /// World point to screen pixels (`x`, `y`, origin top-left) and `[0,1]`
+    /// depth; `None` behind the camera. Use it for off-screen markers and
+    /// world-anchored HUD labels.
+    pub fn project(&self, world: [f32; 3], viewport: quasar_math::Viewport) -> Option<[f32; 3]> {
+        self.view_projection.project(world, viewport)
+    }
+    /// Screen pixels plus `[0,1]` depth back to world space.
+    pub fn unproject(&self, screen: [f32; 3], viewport: quasar_math::Viewport) -> Option<[f32; 3]> {
+        self.view_projection.unproject(screen, viewport)
+    }
+    /// Picking ray `(origin, unit direction)` through a cursor position.
+    pub fn pick_ray(
+        &self,
+        screen: [f32; 2],
+        viewport: quasar_math::Viewport,
+    ) -> Option<([f32; 3], [f32; 3])> {
+        self.view_projection.screen_ray(screen, viewport)
+    }
+    /// Picking ray as a [`quasar_spatial::Ray3`] for spatial-index and voxel
+    /// queries.
+    #[cfg(feature = "visibility")]
+    pub fn screen_ray(
+        &self,
+        screen: [f32; 2],
+        viewport: quasar_math::Viewport,
+    ) -> Option<quasar_spatial::Ray3> {
+        screen_ray_spatial(self.view_projection, screen, viewport)
+    }
+}
+#[cfg(feature = "visibility")]
+pub(crate) fn screen_ray_spatial(
+    view_projection: Mat4,
+    screen: [f32; 2],
+    viewport: quasar_math::Viewport,
+) -> Option<quasar_spatial::Ray3> {
+    let (origin, direction) = view_projection.screen_ray(screen, viewport)?;
+    quasar_spatial::Ray3::new(origin.map(f64::from), direction.map(f64::from)).ok()
+}
 #[derive(Clone, Copy, Debug)]
 pub struct PassOptions {
     pub clear_color: Option<[f32; 4]>,
@@ -193,7 +253,7 @@ pub struct Prepared3D {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct PipelineKey {
     format: TextureFormat,
-    transparent: bool,
+    blend: Option<BlendMode>,
     depth_write: bool,
     cull: bool,
     mirrored: bool,
@@ -205,6 +265,9 @@ struct Input<'a> {
     lit: Option<&'a LitMaterial>,
     normal: Option<&'a NormalMap>,
     receives_shadows: bool,
+    /// Blend override from the transparent pass; `None` derives alpha
+    /// blending from `base.transparent`.
+    blend: Option<BlendMode>,
 }
 struct Batch<'a> {
     mesh: &'a Mesh,
@@ -490,7 +553,7 @@ impl Core3D {
                         compilation_options: Default::default(),
                         targets: &[Some(ColorTargetState {
                             format: key.format,
-                            blend: key.transparent.then_some(BlendState::ALPHA_BLENDING),
+                            blend: key.blend.map(BlendMode::state),
                             write_mask: ColorWrites::ALL,
                         })],
                     }),
@@ -555,7 +618,7 @@ impl Core3D {
                 }
                 let key = PipelineKey {
                     format: target.format,
-                    transparent: d.base.transparent,
+                    blend: d.blend.or(d.base.transparent.then_some(BlendMode::Alpha)),
                     depth_write: d.base.depth_write,
                     cull: d.mesh.face_policy == MeshFacePolicy::SingleSided,
                     mirrored: d.mesh.face_policy == MeshFacePolicy::SingleSided
@@ -612,6 +675,7 @@ impl Core3D {
                     .clone();
                 if self.submission.instancing
                     && !d.base.transparent
+                    && d.blend.is_none()
                     && let Some(b) = batches.last_mut()
                     && std::ptr::eq(b.mesh, d.mesh)
                     && b.image == d.base.texture_view
@@ -908,6 +972,7 @@ impl RenderState3D {
                 lit: None,
                 normal: None,
                 receives_shadows: false,
+                blend: None,
             })
             .collect();
         self.core

@@ -376,10 +376,7 @@ impl Menu {
 fn add_label(ui: &mut Ui, parent: quasar_ui::NodeId, text: &str, style: quasar_ui::TextStyle) {
     ui.add_child(
         parent,
-        Widget::Label {
-            text: UiText::literal(text),
-            style,
-        },
+        Widget::label(UiText::literal(text), style),
         LayoutItem::size(Length::Fill, Length::Auto),
     )
     .unwrap();

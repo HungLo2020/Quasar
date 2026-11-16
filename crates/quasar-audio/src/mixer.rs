@@ -193,6 +193,60 @@ impl Default for PlaybackConfig {
     }
 }
 
+/// Random per-play pitch and gain spread for one-shot effects, so repeated
+/// footsteps or gunshots do not sound identical.
+///
+/// Draws come from a caller-owned [`quasar_core::Rng`], so a seeded stream
+/// gives the same variations on replay. Spreads are fractions: `pitch: 0.05`
+/// multiplies pitch by a uniform factor in `[0.95, 1.05)`; `gain: 0.1` does
+/// the same for volume in `[0.9, 1.1)`. Results are clamped to the mixer's
+/// valid ranges (pitch `0.01..=16`, volume `0..=4`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Variation {
+    /// Fractional pitch spread (`0.05` = ±5%).
+    pub pitch: f32,
+    /// Fractional linear-gain spread (`0.1` = ±10%).
+    pub gain: f32,
+}
+
+impl Variation {
+    /// No variation.
+    pub const NONE: Self = Self {
+        pitch: 0.0,
+        gain: 0.0,
+    };
+    /// Pitch and gain spreads as fractions.
+    pub const fn new(pitch: f32, gain: f32) -> Self {
+        Self { pitch, gain }
+    }
+    fn factor(spread: f32, rng: &mut quasar_core::Rng) -> f32 {
+        // Always draw so call sites consume the same number of values
+        // whatever the spread, keeping other streams in lockstep.
+        let unit = rng.next_f32();
+        if !spread.is_finite() || spread <= 0.0 {
+            return 1.0;
+        }
+        let spread = spread.min(0.99);
+        1.0 - spread + 2.0 * spread * unit
+    }
+    /// Applies the spread to `config` in place.
+    pub fn apply(self, config: &mut PlaybackConfig, rng: &mut quasar_core::Rng) {
+        let pitch = Self::factor(self.pitch, rng);
+        let gain = Self::factor(self.gain, rng);
+        config.pitch = (config.pitch * pitch).clamp(0.01, 16.0);
+        config.volume = (config.volume * gain).clamp(0.0, 4.0);
+    }
+}
+
+impl PlaybackConfig {
+    /// Returns this configuration with a random pitch/gain spread applied.
+    /// See [`Variation`].
+    pub fn with_variation(mut self, pitch: f32, gain: f32, rng: &mut quasar_core::Rng) -> Self {
+        Variation::new(pitch, gain).apply(&mut self, rng);
+        self
+    }
+}
+
 /// Runtime voice status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

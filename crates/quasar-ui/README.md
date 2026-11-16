@@ -247,9 +247,9 @@ claim. Layout is O(nodes) per update and allocates only event/measure buffers.
   measured by a supplied `TextMeasure` and drawn by the game/renderer. `render2d`
   uses the existing bitmap font; `text`/`text-render2d` add shaped TTF/OTF text
   and glyph atlases.
-- No rich text or inline images. The bitmap path is single-line; the shaped path
-  supports wrapping/bidi, but current labels use natural single-line layout
-  unless they contain explicit `\n`. Long text is the caller's responsibility to
+- No rich text or inline images. Labels are single-line unless created with
+  `Widget::wrapped_label` (`TextWrap::Word`), which wraps in both the bitmap and
+  shaped paths and grows the label height during layout. Long text is the caller's responsibility to
   truncate or clip.
 - No animations beyond hover/press transitions and no tween/timeline
   integration.

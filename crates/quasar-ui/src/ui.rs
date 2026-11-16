@@ -39,6 +39,9 @@ pub struct UiNode {
     /// Latest IME preedit for a focused text field.
     pub preedit: String,
     pub preedit_cursor: usize,
+    /// Optional per-node background/border/radius override. `None` keeps the
+    /// theme's painting.
+    pub style: Option<NodeStyle>,
 }
 
 impl UiNode {
@@ -66,6 +69,7 @@ impl UiNode {
             text_scroll: 0.0,
             preedit: String::new(),
             preedit_cursor: 0,
+            style: None,
         }
     }
 }
@@ -191,6 +195,28 @@ impl Ui {
         let id = NodeId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
         id
+    }
+
+    /// Sets or clears a node's visual override. See [`NodeStyle`].
+    pub fn set_style(&mut self, id: NodeId, style: Option<NodeStyle>) -> UiResult<()> {
+        if let Some(style) = style {
+            let finite = style.radius.is_finite()
+                && style.radius >= 0.0
+                && style
+                    .border
+                    .is_none_or(|border| border.width.is_finite() && border.width >= 0.0);
+            if !finite {
+                return Err(UiError::InvalidValue);
+            }
+        }
+        self.nodes.get_mut(&id).ok_or(UiError::UnknownNode)?.style = style;
+        Ok(())
+    }
+
+    /// Replaces a node's layout item (size, margin, offset, alignment, anchor).
+    pub fn set_layout_item(&mut self, id: NodeId, item: LayoutItem) -> UiResult<()> {
+        self.nodes.get_mut(&id).ok_or(UiError::UnknownNode)?.item = item;
+        Ok(())
     }
 
     pub fn set_visible(&mut self, id: NodeId, visible: bool) -> UiResult<()> {
@@ -388,8 +414,7 @@ impl Ui {
                 } else {
                     continue;
                 }
-                let size = pass.resolve_root_size(root, root_area);
-                let rect = Rect::new(root_area.x, root_area.y, size.x, size.y);
+                let rect = pass.place_root(root, root_area);
                 pass.layout_node(root, rect, root_area, root_area);
             }
             (pass.entries, pass.content_sizes)
@@ -1378,12 +1403,22 @@ struct LayoutPass<'a> {
 }
 
 impl LayoutPass<'_> {
-    fn resolve_root_size(&self, id: NodeId, area: Rect) -> Vec2 {
+    /// Roots keep their historical top-left placement unless they set an
+    /// anchor, margin or offset, all of which are now honoured.
+    fn place_root(&self, id: NodeId, area: Rect) -> Rect {
         let node = &self.ui.nodes[&id];
-        let intrinsic = self.intrinsic(id, area.width, area.height);
-        let width = resolve(node.item.width, area.width, intrinsic.x, self.scale);
-        let height = resolve(node.item.height, area.height, intrinsic.y, self.scale);
-        Vec2::new(width, height)
+        let margin = node.item.margin.scaled(self.scale);
+        let inner = Rect::new(
+            area.x + margin.left,
+            area.y + margin.top,
+            (area.width - margin.left - margin.right).max(0.0),
+            (area.height - margin.top - margin.bottom).max(0.0),
+        );
+        let intrinsic = self.intrinsic(id, inner.width, inner.height);
+        let width = resolve(node.item.width, inner.width, intrinsic.x, self.scale);
+        let height = resolve(node.item.height, inner.height, intrinsic.y, self.scale);
+        let anchor = node.item.anchor.unwrap_or(Anchor::TopLeft);
+        anchored_rect(anchor, inner, width, height).translated(node.item.offset * self.scale)
     }
 
     fn layout_node(&mut self, id: NodeId, rect: Rect, clip: Rect, parent: Rect) {
@@ -1495,7 +1530,11 @@ impl LayoutPass<'_> {
                 } else {
                     margin.top + margin.bottom
                 });
-            let intrinsic = self.intrinsic(*id, cross_available, available_main);
+            let intrinsic = if vertical {
+                self.intrinsic(*id, cross_available, available_main)
+            } else {
+                self.intrinsic(*id, available_main, cross_available)
+            };
             let length = if vertical {
                 node.item.height
             } else {
@@ -1696,6 +1735,23 @@ impl LayoutPass<'_> {
             return;
         }
         let margin = node.item.margin.scaled(self.scale);
+        if let Some(anchor) = node.item.anchor {
+            let inner = Rect::new(
+                area.x + margin.left,
+                area.y + margin.top,
+                (area.width - margin.left - margin.right).max(0.0),
+                (area.height - margin.top - margin.bottom).max(0.0),
+            );
+            let intrinsic = self.intrinsic(id, inner.width, inner.height);
+            let width = resolve(node.item.width, inner.width, intrinsic.x, self.scale);
+            let height = resolve(node.item.height, inner.height, intrinsic.y, self.scale);
+            let rect = anchored_rect(anchor, inner, width, height)
+                .translated(offset + node.item.offset * self.scale);
+            content.x = content.x.max(rect.right() - area.x);
+            content.y = content.y.max(rect.bottom() - area.y);
+            self.layout_node(id, rect, clip, area);
+            return;
+        }
         let intrinsic = self.intrinsic(id, area.width, area.height);
         let width = resolve(node.item.width, area.width, intrinsic.x, self.scale);
         let height = resolve(node.item.height, area.height, intrinsic.y, self.scale);
@@ -1804,11 +1860,27 @@ impl LayoutPass<'_> {
                 size.y += padding.scaled(self.scale).top + padding.scaled(self.scale).bottom;
                 size
             }
-            Widget::Label { text, style } => self.measure.measure_style(
-                self.ui.resolve_text(text),
-                *style,
-                self.ui.theme.size(*style) * self.scale,
-            ),
+            Widget::Label {
+                text,
+                style,
+                wrap,
+                max_width,
+            } => {
+                let size = self.ui.theme.size(*style) * self.scale;
+                let text = self.ui.resolve_text(text);
+                match wrap {
+                    TextWrap::None => self.measure.measure_style(text, *style, size),
+                    TextWrap::Word => {
+                        let limit = label_wrap_limit(
+                            node.item.width,
+                            *max_width,
+                            available_width,
+                            self.scale,
+                        );
+                        self.measure.measure_wrapped(text, *style, size, limit)
+                    }
+                }
+            }
             Widget::Button { text, .. } => {
                 let text_size = self.measure.measure_style(
                     self.ui.resolve_text(text),
@@ -1927,6 +1999,45 @@ impl LayoutPass<'_> {
             Widget::Spacer => Vec2::ZERO,
         }
     }
+}
+
+/// Physical wrap width for a word-wrapped label: the narrowest of the
+/// available width, a fixed or percent item width and `max_width`.
+pub(crate) fn label_wrap_limit(
+    width: Length,
+    max_width: Option<f32>,
+    available: f32,
+    scale: f32,
+) -> f32 {
+    let mut limit = if available.is_finite() && available > 0.0 {
+        available
+    } else {
+        f32::INFINITY
+    };
+    match width {
+        Length::Fixed(value) => limit = limit.min(value * scale),
+        Length::Percent(value) if available.is_finite() => {
+            limit = limit.min(available * value.clamp(0.0, 1.0));
+        }
+        _ => {}
+    }
+    if let Some(max) = max_width.filter(|max| max.is_finite() && *max > 0.0) {
+        limit = limit.min(max * scale);
+    }
+    limit
+}
+
+fn anchored_rect(anchor: Anchor, area: Rect, width: f32, height: f32) -> Rect {
+    let (fx, fy) = anchor.factors();
+    let (x, width) = match fx {
+        Some(f) => (area.x + (area.width - width) * f, width),
+        None => (area.x, area.width),
+    };
+    let (y, height) = match fy {
+        Some(f) => (area.y + (area.height - height) * f, height),
+        None => (area.y, area.height),
+    };
+    Rect::new(x, y, width.max(0.0), height.max(0.0))
 }
 
 fn resolve(length: Length, available: f32, intrinsic: f32, scale: f32) -> f32 {

@@ -12,13 +12,150 @@ pub struct ModelPrimitive {
     pub vertices: Vec<ModelVertex>,
     pub indices: Vec<u32>,
     pub material: usize,
+    /// Per-vertex joint influences, parallel to `vertices`, when the
+    /// primitive is skinned and the loader imported skins.
+    pub skin: Option<ModelSkinWeights>,
+}
+/// Up to four joint influences per vertex. `joints` index the owning
+/// [`ModelSkin::joints`] list; `weights` sum to 1.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModelSkinWeights {
+    pub joints: Vec<[u16; 4]>,
+    pub weights: Vec<[f32; 4]>,
 }
 #[derive(Clone, Debug)]
 pub struct ModelInstance {
     pub node: usize,
     pub name: String,
     pub primitive: usize,
+    /// World transform of the node in the default pose. Skinned instances
+    /// ignore it at render time: joint matrices already place the mesh.
     pub transform: [[f32; 4]; 4],
+    /// Skin used by this instance's node, if any.
+    pub skin: Option<usize>,
+}
+/// One glTF node: the full authored hierarchy, including nodes without
+/// meshes (pivots, joints, attachment points).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelNode {
+    /// Authored name, or `node<index>` when unnamed.
+    pub name: String,
+    pub parent: Option<usize>,
+    pub children: Vec<usize>,
+    pub translation: [f32; 3],
+    /// Unit quaternion `[x, y, z, w]`.
+    pub rotation: [f32; 4],
+    pub scale: [f32; 3],
+    /// World transform in the default pose (column-major).
+    pub world: [[f32; 4]; 4],
+    /// Primitives drawn by this node's mesh.
+    pub primitives: Vec<usize>,
+    pub skin: Option<usize>,
+}
+impl ModelNode {
+    /// Local translation · rotation · scale matrix (column-major).
+    pub fn local_matrix(&self) -> [[f32; 4]; 4] {
+        trs_matrix(self.translation, self.rotation, self.scale)
+    }
+}
+/// Column-major `T * R * S` from a translation, unit `[x, y, z, w]`
+/// quaternion and scale.
+pub fn trs_matrix(t: [f32; 3], q: [f32; 4], s: [f32; 3]) -> [[f32; 4]; 4] {
+    let [x, y, z, w] = q;
+    let (x2, y2, z2) = (x + x, y + y, z + z);
+    let (xx, yy, zz) = (x * x2, y * y2, z * z2);
+    let (xy, xz, yz) = (x * y2, x * z2, y * z2);
+    let (wx, wy, wz) = (w * x2, w * y2, w * z2);
+    [
+        [
+            (1. - (yy + zz)) * s[0],
+            (xy + wz) * s[0],
+            (xz - wy) * s[0],
+            0.,
+        ],
+        [
+            (xy - wz) * s[1],
+            (1. - (xx + zz)) * s[1],
+            (yz + wx) * s[1],
+            0.,
+        ],
+        [
+            (xz + wy) * s[2],
+            (yz - wx) * s[2],
+            (1. - (xx + yy)) * s[2],
+            0.,
+        ],
+        [t[0], t[1], t[2], 1.],
+    ]
+}
+/// Column-major 4x4 product `a * b` (applies `b` first).
+pub fn multiply_matrices(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    std::array::from_fn(|c| std::array::from_fn(|r| (0..4).map(|i| a[i][r] * b[c][i]).sum()))
+}
+/// A glTF skin: joints and their inverse bind matrices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelSkin {
+    pub name: String,
+    /// Node indices; vertex joint indices refer to positions in this list.
+    pub joints: Vec<usize>,
+    /// One per joint; identity when the file omits them.
+    pub inverse_bind_matrices: Vec<[[f32; 4]; 4]>,
+    /// Optional common root node.
+    pub skeleton: Option<usize>,
+}
+impl ModelSkin {
+    /// Skinning palette `world(joint) * inverse_bind` from per-node world
+    /// matrices (as produced by [`Model3D::world_transforms`]). Missing nodes
+    /// use identity. Upload the result as the joint palette.
+    pub fn joint_matrices(&self, world: &[[[f32; 4]; 4]]) -> Vec<[[f32; 4]; 4]> {
+        self.joints
+            .iter()
+            .zip(&self.inverse_bind_matrices)
+            .map(|(joint, inverse)| {
+                multiply_matrices(world.get(*joint).copied().unwrap_or(IDENTITY), *inverse)
+            })
+            .collect()
+    }
+}
+pub(crate) const IDENTITY: [[f32; 4]; 4] = [
+    [1., 0., 0., 0.],
+    [0., 1., 0., 0.],
+    [0., 0., 1., 0.],
+    [0., 0., 0., 1.],
+];
+/// Animated node property.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelChannelTarget {
+    Translation,
+    Rotation,
+    Scale,
+}
+/// Keyframe interpolation as authored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelInterpolation {
+    Step,
+    Linear,
+    /// Values are `[in_tangent, value, out_tangent]` triples per key.
+    CubicSpline,
+}
+/// One animated property of one node. Vec3 values use the first three
+/// components; rotations are `[x, y, z, w]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelChannel {
+    pub node: usize,
+    pub target: ModelChannelTarget,
+    pub interpolation: ModelInterpolation,
+    /// Strictly non-decreasing key times in seconds.
+    pub times: Vec<f32>,
+    pub values: Vec<[f32; 4]>,
+}
+/// A named animation clip.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelAnimation {
+    pub name: String,
+    pub channels: Vec<ModelChannel>,
+    /// Latest key time across channels.
+    pub duration: f32,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextureFilter {
@@ -166,11 +303,55 @@ impl Default for ModelMaterial {
 pub struct Model3D {
     pub primitives: Vec<ModelPrimitive>,
     pub instances: Vec<ModelInstance>,
+    /// Full node hierarchy, indexed like the source file.
+    pub nodes: Vec<ModelNode>,
+    /// Imported skins (empty unless the loader imported animation data).
+    pub skins: Vec<ModelSkin>,
+    /// Imported animation clips (empty unless requested).
+    pub animations: Vec<ModelAnimation>,
     pub materials: Vec<ModelMaterial>,
     pub images: Vec<ModelImage>,
     pub textures: Vec<ModelTexture>,
     pub warnings: Vec<String>,
     pub dependencies: Vec<AssetPath>,
+}
+impl Model3D {
+    /// Node index by name.
+    pub fn node_index(&self, name: &str) -> Option<usize> {
+        self.nodes.iter().position(|node| node.name == name)
+    }
+    /// World matrices for every node from per-node local matrices, e.g. an
+    /// animated pose. `local(node)` returning `None` keeps the authored
+    /// local transform. Parents are resolved first, so rigid-part rigs can
+    /// rotate a node about its pivot and carry its children along.
+    pub fn world_transforms(
+        &self,
+        local: impl Fn(usize) -> Option<[[f32; 4]; 4]>,
+    ) -> Vec<[[f32; 4]; 4]> {
+        let mut world = vec![None; self.nodes.len()];
+        for index in 0..self.nodes.len() {
+            // Walk up to the first resolved ancestor, then resolve downwards.
+            let mut chain = vec![index];
+            while let Some(parent) = self.nodes[*chain.last().unwrap()].parent {
+                if world[parent].is_some() || chain.contains(&parent) {
+                    break;
+                }
+                chain.push(parent);
+            }
+            for &node in chain.iter().rev() {
+                if world[node].is_some() {
+                    continue;
+                }
+                let matrix = local(node).unwrap_or_else(|| self.nodes[node].local_matrix());
+                let parent = self.nodes[node]
+                    .parent
+                    .and_then(|parent| world[parent])
+                    .unwrap_or(IDENTITY);
+                world[node] = Some(multiply_matrices(parent, matrix));
+            }
+        }
+        world.into_iter().map(|m| m.unwrap_or(IDENTITY)).collect()
+    }
 }
 impl Asset for Model3D {
     fn dependencies(&self) -> Vec<AssetPath> {
@@ -188,6 +369,19 @@ impl Asset for Model3D {
                 })
                 .sum::<usize>()
             + self.instances.len() * std::mem::size_of::<ModelInstance>()
+            + self.nodes.len() * std::mem::size_of::<ModelNode>()
+            + self
+                .primitives
+                .iter()
+                .filter_map(|p| p.skin.as_ref())
+                .map(|s| s.joints.len() * 24)
+                .sum::<usize>()
+            + self
+                .animations
+                .iter()
+                .flat_map(|a| &a.channels)
+                .map(|c| c.times.len() * 4 + c.values.len() * 16)
+                .sum::<usize>()
             + self.materials.len() * std::mem::size_of::<ModelMaterial>()
     }
 }
@@ -205,6 +399,10 @@ pub struct ModelLimits {
     pub max_decoded_image_bytes: usize,
     pub max_nodes: usize,
     pub max_depth: usize,
+    /// Joints per skin.
+    pub max_joints: usize,
+    /// Total animation keyframes across all channels.
+    pub max_keyframes: usize,
 }
 impl Default for ModelLimits {
     fn default() -> Self {
@@ -221,6 +419,8 @@ impl Default for ModelLimits {
             max_decoded_image_bytes: 128 * 1024 * 1024,
             max_nodes: 4096,
             max_depth: 128,
+            max_joints: 256,
+            max_keyframes: 1_000_000,
         }
     }
 }

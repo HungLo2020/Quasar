@@ -275,3 +275,23 @@ fn repeated_multi_agent_requests_are_deterministic() {
         assert_eq!(first[index as usize], again);
     }
 }
+
+#[test]
+fn every_diagonal_direction_is_available_so_paths_are_symmetric() {
+    // Regression: the all-negative offset (-1, -1[, -1]) used to be skipped.
+    let grid = quasar_nav::Grid::<2>::new([3, 3]).unwrap();
+    let a = quasar_nav::GridCell::new2(0, 0);
+    let b = quasar_nav::GridCell::new2(2, 2);
+    let options = quasar_nav::SearchOptions::default;
+    let forward = grid.find_path(a, b, options()).path().unwrap();
+    let backward = grid.find_path(b, a, options()).path().unwrap();
+    assert!((forward.cost - backward.cost).abs() < 1e-6);
+    assert_eq!(backward.nodes.len(), 3);
+    let mut neighbors = Vec::new();
+    grid.neighbors_into(quasar_nav::GridCell::new2(1, 1), &mut neighbors);
+    assert_eq!(neighbors.len(), 8);
+    let grid3 = quasar_nav::Grid::<3>::new([3, 3, 3]).unwrap();
+    let mut neighbors3 = Vec::new();
+    grid3.neighbors_into(quasar_nav::GridCell::new3(1, 1, 1), &mut neighbors3);
+    assert_eq!(neighbors3.len(), 26);
+}

@@ -22,10 +22,7 @@ fn stack_layout_places_children_and_respects_dpi_and_safe_area() {
     let label = ui
         .add_child(
             root,
-            Widget::Label {
-                text: UiText::literal("Hello"),
-                style: quasar_ui::TextStyle::Body,
-            },
+            Widget::label(UiText::literal("Hello"), quasar_ui::TextStyle::Body),
             LayoutItem::auto(),
         )
         .unwrap();
@@ -136,10 +133,10 @@ fn scrollable_panels_clamp_offsets_and_clip_children() {
     for index in 0..20 {
         ui.add_child(
             root,
-            Widget::Label {
-                text: UiText::literal(format!("Row {index}")),
-                style: quasar_ui::TextStyle::Small,
-            },
+            Widget::label(
+                UiText::literal(format!("Row {index}")),
+                quasar_ui::TextStyle::Small,
+            ),
             LayoutItem::size(Length::Fill, Length::fixed(20.0)),
         )
         .unwrap();
