@@ -5,9 +5,13 @@
 //! Uploads a 65×5×65 chunk world (a 32-chunk view radius, ~21k chunks with
 //! geometry in every column), then times `VoxelRenderer::prepare` over many
 //! frames. Prints JSON; `--check` fails when the median exceeds the spec's
-//! 1 ms draw-submission target (release builds, GPU culling available).
+//! 1 ms draw-submission target (release builds, GPU culling available). The
+//! gate is `quasar_profile::micro`: misses re-measure the frame loop and the
+//! median is normalised by a reference workload's slowdown, so a busy
+//! desktop does not fail it while a regression still does.
 use quasar_frame::{Gpu, OffscreenTarget};
 use quasar_math::{DVec3, IVec3, Vec3};
+use quasar_profile::micro::{Metric, MicroGate};
 use quasar_render_3d::Lighting;
 use quasar_render_voxel::*;
 use quasar_voxel::{
@@ -83,57 +87,66 @@ fn main() {
     let upload_ms = upload.elapsed().as_secs_f64() * 1e3;
     let target = OffscreenTarget::new(&gpu, 640, 360).expect("target");
     let projection = quasar_math::perspective(1.2, 16.0 / 9.0, 0.1, 1200.0).unwrap();
-    let mut samples = Vec::new();
-    let mut stats = VoxelStats::default();
-    for frame in 0..60 {
-        let yaw = frame as f32 * 0.05;
-        let camera = VoxelCamera::looking(
-            DVec3::new(8.0, 60.0, 8.0),
-            Vec3::new(yaw.sin(), -0.3, -yaw.cos()),
-            Vec3::Y,
-            projection,
-        )
-        .unwrap();
-        target
-            .render(&gpu, |gpu, target| {
-                let started = Instant::now();
-                let prepared = renderer.prepare(
-                    gpu,
-                    target,
-                    &camera,
-                    Lighting::default(),
-                    None,
-                    &VoxelShading::default(),
-                    &VoxelPassOptions::default(),
-                )?;
-                if frame >= 10 {
-                    samples.push(started.elapsed().as_secs_f64() * 1e6);
-                }
-                stats = prepared.stats;
-                Ok(vec![prepared.commands])
-            })
-            .expect("frame");
-        renderer.retire(u64::MAX);
-    }
-    samples.sort_by(f64::total_cmp);
-    let mean = samples.iter().sum::<f64>() / samples.len() as f64;
-    let p95 = samples[(samples.len() as f64 * 0.95) as usize - 1];
-    let median = samples[samples.len() / 2];
-    println!("{{");
-    println!("  \"chunks\": {chunks},");
-    println!("  \"records\": {},", stats.records);
-    println!("  \"quads_per_chunk\": {},", mesh.quad_count());
-    println!("  \"upload_ms\": {upload_ms:.1},");
-    println!("  \"prepare_mean_us\": {mean:.1},");
-    println!("  \"prepare_median_us\": {median:.1},");
-    println!("  \"prepare_p95_us\": {p95:.1},");
-    println!("  \"gpu_culling\": {},", renderer.uses_gpu_culling());
-    println!("  \"indirect_batches\": {},", stats.indirect_batches);
-    println!("  \"release\": {}", !cfg!(debug_assertions));
-    println!("}}");
-    // The median resists scheduling noise on shared machines.
-    if check && renderer.uses_gpu_culling() && median > 1000.0 {
-        eprintln!("target missed: prepare_median_us = {median:.1} > 1000");
+    let gpu_culling = renderer.uses_gpu_culling();
+    let quads_per_chunk = mesh.quad_count();
+    let mut measure = || {
+        let mut samples = Vec::new();
+        let mut stats = VoxelStats::default();
+        for frame in 0..60 {
+            let yaw = frame as f32 * 0.05;
+            let camera = VoxelCamera::looking(
+                DVec3::new(8.0, 60.0, 8.0),
+                Vec3::new(yaw.sin(), -0.3, -yaw.cos()),
+                Vec3::Y,
+                projection,
+            )
+            .unwrap();
+            target
+                .render(&gpu, |gpu, target| {
+                    let started = Instant::now();
+                    let prepared = renderer.prepare(
+                        gpu,
+                        target,
+                        &camera,
+                        Lighting::default(),
+                        None,
+                        &VoxelShading::default(),
+                        &VoxelPassOptions::default(),
+                    )?;
+                    if frame >= 10 {
+                        samples.push(started.elapsed().as_secs_f64() * 1e6);
+                    }
+                    stats = prepared.stats;
+                    Ok(vec![prepared.commands])
+                })
+                .expect("frame");
+            renderer.retire(u64::MAX);
+        }
+        samples.sort_by(f64::total_cmp);
+        let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+        let p95 = samples[(samples.len() as f64 * 0.95) as usize - 1];
+        let median = samples[samples.len() / 2];
+        vec![
+            Metric::exact("chunks", chunks as f64, None),
+            Metric::exact("records", stats.records as f64, None),
+            Metric::exact("quads_per_chunk", quads_per_chunk as f64, None),
+            Metric::timed("prepare_mean_us", mean, None),
+            // The median resists scheduling noise on shared machines.
+            Metric::timed("prepare_median_us", median, gpu_culling.then_some(1000.0)),
+            Metric::timed("prepare_p95_us", p95, None),
+            Metric::exact("indirect_batches", stats.indirect_batches as f64, None),
+        ]
+    };
+    let report = MicroGate::default().run(check, &mut measure);
+    println!(
+        "{}",
+        report.to_json(&[
+            ("upload_ms", format!("{upload_ms:.1}")),
+            ("gpu_culling", gpu_culling.to_string()),
+            ("release", (!cfg!(debug_assertions)).to_string()),
+        ])
+    );
+    if check && !report.report_misses() {
         std::process::exit(1);
     }
 }

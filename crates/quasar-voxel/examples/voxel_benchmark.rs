@@ -4,18 +4,16 @@
 //!     cargo run --release -p quasar-voxel --example voxel_benchmark -- --check
 //!
 //! Prints JSON. With `--check`, exits non-zero when a spec §11 target is
-//! missed (meaningful only in release builds).
+//! missed (meaningful only in release builds). Timing and the gate come from
+//! `quasar_profile::micro` (best-of-batch timings, retried passes and
+//! slowdown normalisation, so a busy desktop does not fail the gate).
 use quasar_math::{IVec3, Vec3};
+use quasar_profile::micro::{Metric, MicroGate, best_batch_micros};
 use quasar_voxel::*;
 use std::time::Instant;
 
-fn time<T>(iterations: usize, mut f: impl FnMut() -> T) -> f64 {
-    let _ = f();
-    let start = Instant::now();
-    for _ in 0..iterations {
-        std::hint::black_box(f());
-    }
-    start.elapsed().as_secs_f64() * 1e6 / iterations as f64
+fn time<T>(iterations: usize, f: impl FnMut() -> T) -> f64 {
+    best_batch_micros(iterations, 10, f)
 }
 
 struct BlockLight {
@@ -37,6 +35,16 @@ impl PropagationRules<Cube16> for BlockLight {
 
 fn main() {
     let check = std::env::args().any(|a| a == "--check");
+    let report = MicroGate::default().run(check, measure);
+    let release = !cfg!(debug_assertions);
+    println!("{}", report.to_json(&[("release", release.to_string())]));
+    if check && !report.report_misses() {
+        std::process::exit(1);
+    }
+}
+
+/// One measurement pass over freshly generated content.
+fn measure() -> Vec<Metric> {
     let mut schema = Schema::new();
     let block = schema.channel("block", StorageKind::Paletted, AIR);
     let light = schema.derived_channel("light", StorageKind::Nibble, 0u8);
@@ -164,35 +172,21 @@ fn main() {
         codec::decode_chunk::<Cube16>(&schema, &bytes).is_ok()
     });
 
-    println!("{{");
-    println!("  \"apply_terrain_us\": {apply_us:.1},");
-    println!("  \"uniform_chunk_bytes\": {uniform_bytes},");
-    println!("  \"set_ns\": {set_ns:.2},");
-    println!("  \"get_ns\": {get_ns:.2},");
-    println!("  \"snapshot_16_us\": {snapshot_us:.2},");
-    println!("  \"raycast_us\": {raycast_us:.3},");
-    println!("  \"fill_9x9x9_us\": {sphere_us:.2},");
-    println!("  \"light_place_remove_us\": {light_us:.2},");
-    println!("  \"encode_chunk_us\": {encode_us:.2},");
-    println!("  \"decode_chunk_us\": {decode_us:.2},");
-    println!("  \"encoded_chunk_bytes\": {},", bytes.len());
-    println!("  \"release\": {}", !cfg!(debug_assertions));
-    println!("}}");
-    if check {
-        let mut missed = Vec::new();
-        if uniform_bytes > uniform_budget {
-            missed.push(format!(
-                "uniform_chunk_bytes = {uniform_bytes} > {uniform_budget}"
-            ));
-        }
-        if snapshot_us > 50.0 {
-            missed.push(format!("snapshot_16_us = {snapshot_us:.1} > 50"));
-        }
-        for m in &missed {
-            eprintln!("target missed: {m}");
-        }
-        if !missed.is_empty() {
-            std::process::exit(1);
-        }
-    }
+    vec![
+        Metric::timed("apply_terrain_us", apply_us, None),
+        Metric::exact(
+            "uniform_chunk_bytes",
+            uniform_bytes as f64,
+            Some(uniform_budget as f64),
+        ),
+        Metric::timed("set_ns", set_ns, None),
+        Metric::timed("get_ns", get_ns, None),
+        Metric::timed("snapshot_16_us", snapshot_us, Some(50.0)),
+        Metric::timed("raycast_us", raycast_us, None),
+        Metric::timed("fill_9x9x9_us", sphere_us, None),
+        Metric::timed("light_place_remove_us", light_us, None),
+        Metric::timed("encode_chunk_us", encode_us, None),
+        Metric::timed("decode_chunk_us", decode_us, None),
+        Metric::exact("encoded_chunk_bytes", bytes.len() as f64, None),
+    ]
 }

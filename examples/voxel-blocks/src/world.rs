@@ -803,31 +803,42 @@ impl BlockWorld {
         Some(visible)
     }
 
-    /// Sky light recomputed from scratch over every loaded column (a
-    /// reference for tests of the incremental, column-by-column lighting).
+    /// Sky and block light recomputed from scratch over every loaded column
+    /// (a reference for tests of incremental lighting: column loads, edits).
     #[doc(hidden)]
-    pub fn reference_sky_light(&self) -> Volume<Cube16> {
+    pub fn reference_light(&self) -> Volume<Cube16> {
         let mut volume = self.volume.clone();
         for c in volume.chunk_coords() {
             if let Some(chunk) = volume.chunk_mut(c) {
                 chunk.fill(self.ch.sky_light, 0);
+                chunk.fill(self.ch.block_light, 0);
             }
         }
-        let seeds: Vec<(IVec3, u8)> = self
-            .columns
-            .iter()
-            .flat_map(|&(cx, cz)| {
-                (0..EDGE).flat_map(move |z| {
-                    (0..EDGE)
-                        .map(move |x| (IVec3::new(cx * EDGE + x, WORLD_TOP - 1, cz * EDGE + z), 15))
-                })
-            })
-            .collect();
-        Propagator::new(QueueDiscipline::BucketFifo).add(
+        let mut sky_seeds = Vec::new();
+        let mut block_seeds = Vec::new();
+        let mut cursor = Cursor::default();
+        for &(cx, cz) in &self.columns {
+            for z in cz * EDGE..(cz + 1) * EDGE {
+                for x in cx * EDGE..(cx + 1) * EDGE {
+                    sky_seeds.push((IVec3::new(x, WORLD_TOP - 1, z), 15));
+                    for y in 0..WORLD_TOP {
+                        let p = IVec3::new(x, y, z);
+                        let block = volume.get_with(&mut cursor, self.ch.block, p) as usize;
+                        let emitted = self.content.emission.get(block).copied().unwrap_or(0);
+                        if emitted > 0 {
+                            block_seeds.push((p, emitted));
+                        }
+                    }
+                }
+            }
+        }
+        let mut propagator = Propagator::new(QueueDiscipline::BucketFifo);
+        propagator.add(&mut volume, self.ch.sky_light, &sky_seeds, &self.sky_rules);
+        propagator.add(
             &mut volume,
-            self.ch.sky_light,
-            &seeds,
-            &self.sky_rules,
+            self.ch.block_light,
+            &block_seeds,
+            &self.block_rules,
         );
         volume
     }

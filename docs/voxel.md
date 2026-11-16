@@ -172,5 +172,6 @@ lit identically. `OverlayBox` draws selection outlines and ghost previews.
   (needs a GPU)
 
 The benchmarks print JSON. `--check` fails when a target from
-`voxel-spec.md` §11 is missed. The examples print settle, tick and prepare
+`voxel-spec.md` §11 is missed, after retries and normalisation for machine
+load (`quasar_profile::micro`; see §11). The examples print settle, tick and prepare
 timings and can write them as JSON (`--benchmark-file`).

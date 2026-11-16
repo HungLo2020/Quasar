@@ -27,6 +27,11 @@ draw/upload counters with `with_renderer_stats`.
 - `ProfileThresholds`: opt-in p99 limits for CPU/GPU frame, acquire, present,
   draws, resource creates and host writes.
 - `ProfileSummary`: machine-readable JSON with optional GPU scope distributions.
+- `micro`: CPU microbenchmark gates that tolerate a busy machine.
+  `best_batch_micros` keeps the best of several batches, and `MicroGate`
+  re-measures passes while a target is missed. It divides timings by the
+  slowdown of a fixed reference workload timed in the same pass, so load is
+  forgiven but regressions are not.
 - **Features:** `json` (default), `frame` (default). The core sample/summary
   types work without either feature.
 

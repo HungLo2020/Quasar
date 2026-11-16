@@ -22,6 +22,7 @@
 use quasar_frame::FrameReport;
 use std::collections::VecDeque;
 mod benchmark;
+pub mod micro;
 pub use benchmark::{BenchmarkConfig, BenchmarkError, BenchmarkSession};
 
 #[cfg(feature = "json")]

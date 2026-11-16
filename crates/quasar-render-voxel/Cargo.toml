@@ -27,6 +27,7 @@ vulkanic-gal = { workspace = true }
 
 [dev-dependencies]
 quasar-frame = { workspace = true, features = ["vulkan", "png"] }
+quasar-profile.workspace = true
 
 [[example]]
 name = "render_benchmark"

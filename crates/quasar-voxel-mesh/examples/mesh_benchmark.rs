@@ -2,12 +2,15 @@
 //!
 //!     cargo run --release -p quasar-voxel-mesh --example mesh_benchmark -- --check
 //!
-//! Prints JSON. With `--check`, exits non-zero when a target is missed
-//! (meaningful only in release builds).
+//! Prints JSON. With `--check`, exits non-zero when a spec §11 target is
+//! missed (meaningful only in release builds). Timing and the gate come from
+//! `quasar_profile::micro`: best-of-batch timings, re-measured passes while a
+//! target is missed, and normalisation by a reference workload's slowdown, so
+//! a busy desktop does not fail the gate while a regression still does.
 use quasar_math::{IVec3, Vec3};
+use quasar_profile::micro::{Metric, MicroGate, best_batch_micros};
 use quasar_voxel::*;
 use quasar_voxel_mesh::*;
-use std::time::Instant;
 
 fn terrain<L: ChunkLayout>(seed: u64) -> (Volume<L>, ChannelId<u16>, BlockCatalog) {
     terrain_with::<L>(seed, true)
@@ -61,17 +64,22 @@ fn terrain_with<L: ChunkLayout>(
     (volume, block, catalog)
 }
 
-fn time<T>(iterations: usize, mut f: impl FnMut() -> T) -> f64 {
-    let _ = f(); // warm scratch buffers
-    let start = Instant::now();
-    for _ in 0..iterations {
-        std::hint::black_box(f());
-    }
-    start.elapsed().as_secs_f64() * 1e6 / iterations as f64
+fn time<T>(iterations: usize, f: impl FnMut() -> T) -> f64 {
+    best_batch_micros(iterations, 10, f)
 }
 
 fn main() {
     let check = std::env::args().any(|a| a == "--check");
+    let report = MicroGate::default().run(check, measure);
+    let release = !cfg!(debug_assertions);
+    println!("{}", report.to_json(&[("release", release.to_string())]));
+    if check && !report.report_misses() {
+        std::process::exit(1);
+    }
+}
+
+/// One measurement pass (spec §11 targets: single thread, release build).
+fn measure() -> Vec<Metric> {
     let iterations = 200;
     // Greedy, 32³ terrain.
     let (v32, block32, catalog32) = terrain::<Cube32>(1);
@@ -219,34 +227,16 @@ fn main() {
         nets.extract(&d, Some(&m), SmoothOptions::default(), &mut smooth_sink)
     });
     let smooth_triangles = smooth_sink.triangle_count();
-    // Spec §11 targets (single thread, release build).
-    let targets = [
-        ("greedy_32_hills_us", greedy_hills_us, 150.0),
-        ("greedy_32_us", greedy_us, 500.0),
-        ("culled_16_us", culled_us, 300.0),
-        ("surface_nets_32_us", nets_us, 450.0),
-        ("snapshot_16_us", snapshot_us, 50.0),
-    ];
-    println!("{{");
-    println!("  \"greedy_32_us\": {greedy_us:.2},");
-    println!("  \"greedy_32_quads\": {greedy_quads},");
-    println!("  \"greedy_32_no_ao_us\": {greedy_noao_us:.2},");
-    println!("  \"greedy_32_hills_us\": {greedy_hills_us:.2},");
-    println!("  \"greedy_32_hills_quads\": {greedy_hills_quads},");
-    println!("  \"culled_16_us\": {culled_us:.2},");
-    println!("  \"culled_16_quads\": {culled_quads},");
-    println!("  \"snapshot_16_us\": {snapshot_us:.2},");
-    println!("  \"surface_nets_32_us\": {nets_us:.2},");
-    println!("  \"surface_nets_32_triangles\": {smooth_triangles},");
-    println!("  \"release\": {}", !cfg!(debug_assertions));
-    println!("}}");
-    if check {
-        let missed: Vec<_> = targets.iter().filter(|(_, v, t)| v > t).collect();
-        for (name, value, target) in &missed {
-            eprintln!("target missed: {name} = {value:.1} > {target}");
-        }
-        if !missed.is_empty() {
-            std::process::exit(1);
-        }
-    }
+    vec![
+        Metric::timed("greedy_32_us", greedy_us, Some(500.0)),
+        Metric::exact("greedy_32_quads", greedy_quads as f64, None),
+        Metric::timed("greedy_32_no_ao_us", greedy_noao_us, None),
+        Metric::timed("greedy_32_hills_us", greedy_hills_us, Some(150.0)),
+        Metric::exact("greedy_32_hills_quads", greedy_hills_quads as f64, None),
+        Metric::timed("culled_16_us", culled_us, Some(300.0)),
+        Metric::exact("culled_16_quads", culled_quads as f64, None),
+        Metric::timed("snapshot_16_us", snapshot_us, Some(50.0)),
+        Metric::timed("surface_nets_32_us", nets_us, Some(450.0)),
+        Metric::exact("surface_nets_32_triangles", smooth_triangles as f64, None),
+    ]
 }

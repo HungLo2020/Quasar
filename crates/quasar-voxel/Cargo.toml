@@ -20,6 +20,7 @@ serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = "1"
+quasar-profile.workspace = true
 
 [[example]]
 name = "voxel_benchmark"

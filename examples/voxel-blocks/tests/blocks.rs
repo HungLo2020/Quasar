@@ -188,7 +188,7 @@ fn incremental_column_lighting_matches_a_full_recompute() {
     let mut world = BlockWorld::new(21, 3, 2);
     world.sync_meshing = true;
     world.settle();
-    let reference = world.reference_sky_light();
+    let reference = world.reference_light();
     let mut checked = 0;
     for (cx, cz) in world.columns() {
         for y in 0..voxel_blocks::terrain::WORLD_TOP {
@@ -208,53 +208,104 @@ fn incremental_column_lighting_matches_a_full_recompute() {
     assert!(checked > 100_000);
 }
 
-#[test]
-fn breaking_sky_exposed_blocks_lets_sky_light_fall_in() {
-    use quasar_voxel::EditBatch;
-    let top = voxel_blocks::terrain::WORLD_TOP;
-    let mut world = BlockWorld::new(21, 2, 2);
-    world.sync_meshing = true;
-    world.settle();
-    // Dig two blocks down at several surface spots, one edit at a time.
-    let mut dug = Vec::new();
-    for (x, z) in [(3, 3), (4, 3), (9, 12), (-6, 5)] {
-        for _ in 0..2 {
-            let y = (0..top)
-                .rev()
-                .find(|&y| {
-                    world.volume.get(world.ch.block, IVec3::new(x, y, z)) != quasar_voxel::AIR
-                })
-                .unwrap();
-            let cell = IVec3::new(x, y, z);
-            let mut batch = EditBatch::new();
-            world
-                .content
-                .catalog
-                .remove(&mut batch, &world.volume, world.ch.blocks(), cell)
-                .unwrap();
-            world.apply(&batch);
-            dug.push(cell);
-        }
-    }
-    let reference = world.reference_sky_light();
-    for cell in &dug {
-        assert!(
-            world.volume.get(world.ch.sky_light, *cell) > 0,
-            "{cell} is lit"
-        );
-    }
+/// Asserts both light channels equal a from-scratch recompute everywhere.
+fn assert_light_is_exact(world: &BlockWorld, context: &str) {
+    let reference = world.reference_light();
     for (cx, cz) in world.columns() {
-        for y in 0..top {
+        for y in 0..voxel_blocks::terrain::WORLD_TOP {
             for z in 0..16 {
                 for x in 0..16 {
                     let p = IVec3::new(cx * 16 + x, y, cz * 16 + z);
-                    assert_eq!(
-                        world.volume.get(world.ch.sky_light, p),
-                        reference.get(world.ch.sky_light, p),
-                        "{p}"
-                    );
+                    for (name, channel) in
+                        [("sky", world.ch.sky_light), ("block", world.ch.block_light)]
+                    {
+                        assert_eq!(
+                            world.volume.get(channel, p),
+                            reference.get(channel, p),
+                            "{context}: {name} light at {p}"
+                        );
+                    }
                 }
             }
         }
     }
+}
+
+#[test]
+fn player_edit_sequences_keep_light_exact() {
+    // Seeded, player-like edits across chunk borders (x and z = 16): dig and
+    // tunnel, build with opaque, translucent, filtering, emitting and partial
+    // blocks, seal pockets and reopen them. Both light channels must equal a
+    // full recompute at every checkpoint.
+    use quasar_voxel::{AIR, EditBatch, Orientation};
+    let top = voxel_blocks::terrain::WORLD_TOP;
+    let mut world = BlockWorld::new(5, 1, 1);
+    world.sync_meshing = true;
+    world.settle();
+    let b = world.content.blocks;
+    let palette = [b.stone, b.glass, b.leaves, b.lamp, b.slab, b.planks, b.lamp];
+    let surface = |world: &BlockWorld, x: i32, z: i32| {
+        (0..top)
+            .rev()
+            .find(|&y| world.volume.get(world.ch.block, IVec3::new(x, y, z)) != AIR)
+            .unwrap_or(0)
+    };
+    let mut rng = quasar_core::Rng::seed_from_u64(9);
+    let mut dug: Vec<IVec3> = Vec::new();
+    let (mut removed, mut placed) = (0, 0);
+    for step in 0..96 {
+        let x = rng.range_i32(10..22);
+        let z = rng.range_i32(10..22);
+        let s = surface(&world, x, z);
+        let mut batch = EditBatch::new();
+        let catalog = &world.content.catalog;
+        let ch = world.ch.blocks();
+        let edit = match rng.range_u32(0..6) {
+            // Dig down, or tunnel sideways under the surface.
+            0 | 1 => Some((IVec3::new(x, s, z), None)),
+            2 => Some((IVec3::new(x, (s - 2).max(1), z), None)),
+            // Build on the surface.
+            3 | 4 => Some((
+                IVec3::new(x, s + 1, z),
+                Some(palette[rng.range_u32(0..palette.len() as u32) as usize]),
+            )),
+            // Seal or refill an earlier hole (lamps light sealed pockets).
+            _ => dug.pop().map(|p| (p, Some(palette[step % palette.len()]))),
+        };
+        let Some((cell, block)) = edit else {
+            continue;
+        };
+        let applied = match block {
+            None => catalog
+                .remove(&mut batch, &world.volume, ch, cell)
+                .is_some(),
+            Some(id) => catalog
+                .place(
+                    &mut batch,
+                    &world.volume,
+                    ch,
+                    id,
+                    Orientation::IDENTITY,
+                    cell,
+                )
+                .is_ok(),
+        };
+        if applied {
+            world.apply(&batch);
+            match block {
+                None => {
+                    dug.push(cell);
+                    removed += 1;
+                }
+                Some(_) => placed += 1,
+            }
+        }
+        if step % 32 == 31 {
+            assert_light_is_exact(&world, &format!("after step {step}"));
+        }
+    }
+    assert!(
+        removed > 20 && placed > 20,
+        "removed={removed} placed={placed}"
+    );
 }

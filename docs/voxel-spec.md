@@ -393,18 +393,39 @@ Throughput scales with cores through `RemeshQueue`.
 
 | Measure | Target | Measured |
 |---|---|---|
-| Greedy extraction, 32³ rolling terrain with AO (typical) | < 150 µs per chunk | 125 µs |
-| Greedy extraction, 32³ rough terrain with glass and caves (worst case) | < 500 µs per chunk | 395 µs |
-| Culled-model extraction, 16³ rough mixed blocks with AO | < 300 µs per chunk | 232 µs |
-| Surface Nets, 32³ node, 7.5k triangles | < 450 µs per node | 353 µs |
+| Greedy extraction, 32³ rolling terrain with AO (typical) | < 150 µs per chunk | 139 µs |
+| Greedy extraction, 32³ rough terrain with glass and caves (worst case) | < 500 µs per chunk | 470–490 µs |
+| Culled-model extraction, 16³ rough mixed blocks with AO | < 300 µs per chunk | 255 µs |
+| Surface Nets, 32³ node, 7.5k triangles | < 450 µs per node | 365–395 µs |
 | Snapshot, 16³ with 1-voxel border | < 50 µs | 12 µs |
 | Edit to visible remesh (edited chunk + neighbours) | next frame | `voxel-blocks`: relight and remesh requests in the edit tick, uploaded the next frame |
 | Uniform chunk overhead | ≤ 32 B header + 32 B per channel (64 B for one channel) | 32 + 32 per channel |
 | CPU draw submission, 32-chunk radius cubic world | < 1 ms with indirect draws | 0.6–0.8 ms for 21k chunks (`render_benchmark`, median); 0.83 ms in `voxel-blocks` at radius 32 with connectivity culling |
 | Steady-state allocations in extract/upload/draw | zero | Extraction and upload: none after warm-up. Draw preparation: a fixed handful of small per-frame buffers (uniform staging, layer lists), none per chunk or record |
 
+Measured values are idle, best-of-batch timings on the development machine
+in its balanced power profile (2026-11-16). Earlier measurements (125, 395,
+232 and 353 µs) were taken in a faster machine state; the code is unchanged
+between them.
+
 Benchmarks ship as headless examples with JSON output (like existing Quasar
-benchmarks) and guard regressions in `tools/full_checks.py`.
+benchmarks) and guard regressions in `tools/full_checks.py` through
+`quasar_profile::micro`, so a busy desktop neither fails nor hides them:
+
+- **Best of batches:** each timing is the best per-iteration mean of ten
+  batches, discarding batches another process preempted.
+- **Retries:** a missed target re-measures the whole pass (up to three
+  passes), keeping each metric's best.
+- **Calibration:** each pass also times a fixed reference workload. Its
+  slowdown against the idle reference machine (never below 1) divides gated
+  timings, cancelling sustained load such as a busy sibling hyper-thread. A
+  regression slows the benchmark but not the reference, so it still fails:
+  a 25% greedy slowdown fails both idle and with three cores busy.
+- **Too busy:** when every pass ran more than 1.5× slow, a miss is reported
+  as "machine too busy to judge"; rerun when idle.
+
+The JSON reports raw timings, `<name>_normalized` for gated ones, `passes`
+and per-pass `slowdowns`.
 
 ## 12. Phases
 

@@ -680,153 +680,251 @@ fn visibility_filters_skip_occluded_chunks() {
     assert_eq!(pixel(&rgba, 32, 32), [255, 0, 0, 255]);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Stream {
+    Packed,
+    Model,
+    Smooth,
+}
+
+/// The wall slab of `wall_blocks` re-expressed in one geometry stream and
+/// layer: lattice quads pack, quads nudged off the lattice need the model
+/// stream, and smooth geometry uses the same faces as indexed triangles.
+fn wall_in(b: &Blocks, stream: Stream, layer: Layer) -> MeshBuffers {
+    let wall = greedy_mesh(b, IVec3::ZERO);
+    let quads: Vec<_> = wall
+        .layers
+        .iter()
+        .flat_map(|(_, l)| l.quads.clone())
+        .collect();
+    let mut buffers = quasar_voxel_mesh::LayerBuffers::default();
+    match stream {
+        Stream::Packed => buffers.quads = quads,
+        Stream::Model => {
+            buffers.quads = quads;
+            for quad in &mut buffers.quads {
+                for p in &mut quad.positions {
+                    p.z -= 0.25;
+                }
+            }
+        }
+        Stream::Smooth => {
+            for quad in &quads {
+                let base = buffers.vertices.len() as u32;
+                for p in quad.positions {
+                    buffers.vertices.push(SmoothVertex {
+                        position: p,
+                        normal: quad.normal,
+                        materials: [0, 0],
+                        blend: 0,
+                    });
+                }
+                buffers
+                    .indices
+                    .extend(quad.triangles().iter().map(|&i| base + i as u32));
+            }
+        }
+    }
+    MeshBuffers {
+        layers: vec![(layer, buffers)],
+    }
+}
+
+/// `mesh` repeated until it holds about `bytes` of GPU geometry (a filler
+/// that shifts later uploads and, three at a time, spills into a new page).
+fn padded(mesh: &MeshBuffers, stream: Stream, bytes: usize) -> MeshBuffers {
+    let (layer, one) = &mesh.layers[0];
+    let per_quad = match stream {
+        Stream::Packed => 12,
+        Stream::Model => 80,
+        Stream::Smooth => 4 * 16 + 6 * 4,
+    };
+    let quads = one.quads.len().max(one.indices.len() / 6);
+    let mut out = quasar_voxel_mesh::LayerBuffers::default();
+    for _ in 0..(bytes / (per_quad * quads)).max(1) {
+        out.quads.extend_from_slice(&one.quads);
+        let base = out.vertices.len() as u32;
+        out.vertices.extend_from_slice(&one.vertices);
+        out.indices.extend(one.indices.iter().map(|i| base + i));
+    }
+    MeshBuffers {
+        layers: vec![(*layer, out)],
+    }
+}
+
+/// Writes depth with [`VoxelRenderer::prepare_depth`], then draws the colour
+/// pass over it without clearing depth: geometry the depth pass drew hides
+/// whatever the colour pass draws behind it.
+fn render_over_depth(gpu: &Gpu, renderer: &mut VoxelRenderer, cam: &VoxelCamera) -> Vec<u8> {
+    let depth = quasar_frame::texture_2d(
+        &gpu.device,
+        "test depth",
+        SIZE,
+        SIZE,
+        vulkanic_gal::TextureFormat::Depth32Float,
+        vulkanic_gal::TextureUsages::RENDER_ATTACHMENT,
+    )
+    .unwrap();
+    let depth = depth.create_view(&Default::default());
+    let target = OffscreenTarget::new(gpu, SIZE, SIZE).unwrap();
+    let image = target
+        .render(gpu, |gpu, target| {
+            let mut target = target.clone();
+            target.depth = Some(depth.clone());
+            let vp = cam.projection.as_dmat4() * cam.view;
+            let first = renderer.prepare_depth(gpu, &depth, vp, cam.position, true)?;
+            let second = renderer.prepare(
+                gpu,
+                &target,
+                cam,
+                Lighting {
+                    ambient: [1.0; 3],
+                    ..Lighting::default()
+                },
+                None,
+                &unlit(),
+                &VoxelPassOptions {
+                    clear_depth: false,
+                    ..VoxelPassOptions::default()
+                },
+            )?;
+            Ok(vec![first.commands, second.commands])
+        })
+        .unwrap();
+    renderer.wait_and_retire(gpu).unwrap();
+    image.rgba
+}
+
 #[test]
 #[ignore = "requires Vulkan"]
-fn chunks_at_unaligned_arena_offsets_render_in_place() {
-    // Element-indexed ranges: a 1-quad chunk first leaves the next chunk at
-    // byte 12 of the packed page; 16-byte alignment would misread it.
+fn every_stream_layer_and_cull_path_draws_at_any_arena_offset() {
+    // The renderer's address arithmetic differs per stream, its draw path per
+    // layer and cull mode, and both depend on where geometry lands in the
+    // paged arenas: check every combination at fresh, shifted, later-page and
+    // replaced-in-place offsets, then that removal clears it. Minimum-size
+    // pages hold two ~24 KB fillers, so a third spills into a new page.
     let gpu = Gpu::headless().unwrap();
     let mut b = blocks();
-    b.volume.set(b.block, IVec3::new(4, 4, -100), 3);
     for x in 4..8 {
         for y in 4..8 {
             b.volume.set(b.block, IVec3::new(x, y, 6), 1);
         }
     }
+    // A small green backdrop behind the wall, in the next chunk.
+    for x in 5..7 {
+        for y in 5..7 {
+            b.volume.set(b.block, IVec3::new(x, y, 22), 3);
+        }
+    }
+    let backdrop = ChunkKey::new(GRID, IVec3::new(0, 0, 1));
+    let backdrop_mesh = greedy_mesh(&b, backdrop.chunk);
+    let cam = camera(DVec3::new(6.0, 6.0, -10.0), DVec3::new(6.0, 6.0, 6.0));
+    let target = ChunkKey::new(GRID, IVec3::ZERO);
+    let mut combinations = 0;
     for cull in [CullMode::Auto, CullMode::Cpu] {
         let mut renderer = VoxelRenderer::new(
             &gpu,
             materials(&gpu),
             VoxelRendererConfig {
                 cull,
+                page_bytes: 64 << 10,
                 ..Default::default()
             },
         )
         .unwrap();
         renderer.set_grid(GRID, GridTransform::default(), 1.0);
-        let far = IVec3::new(0, 0, -7);
-        // One face only: the far chunk's single block, seen from nowhere.
-        let mut one = greedy_mesh(&b, far);
-        for (_, layer) in &mut one.layers {
-            layer.quads.truncate(1);
-        }
-        renderer
-            .upload(
-                &gpu,
-                ChunkKey::new(GRID, far),
-                ChunkPlacement::new(far * 16),
-                &one,
-            )
-            .unwrap();
-        renderer
-            .upload(
-                &gpu,
-                ChunkKey::new(GRID, IVec3::ZERO),
-                ChunkPlacement::new(IVec3::ZERO),
-                &greedy_mesh(&b, IVec3::ZERO),
-            )
-            .unwrap();
-        let cam = camera(DVec3::new(6.0, 6.0, -10.0), DVec3::new(6.0, 6.0, 6.0));
-        let (rgba, _) = render(
-            &gpu,
-            &mut renderer,
-            &cam,
-            &unlit(),
-            &VoxelPassOptions::default(),
-            &[],
-        );
-        assert_eq!(
-            pixel(&rgba, 32, 32),
-            [255, 0, 0, 255],
-            "{cull:?}: the wall is where it was meshed"
-        );
-        assert_eq!(pixel(&rgba, 2, 2), [0, 0, 0, 255], "{cull:?}");
-    }
-}
-
-#[test]
-#[ignore = "requires Vulkan"]
-fn model_quads_at_later_arena_offsets_render_in_place() {
-    // Model quads are four 20-byte vertices; a range after another chunk's
-    // must be addressed in whole quads, for GPU-culled (opaque, off-lattice)
-    // and CPU-sorted (translucent) draws alike.
-    let gpu = Gpu::headless().unwrap();
-    let mut b = blocks();
-    b.volume.set(b.block, IVec3::new(4, 4, -100), 3);
-    for x in 4..8 {
-        for y in 4..8 {
-            b.volume.set(b.block, IVec3::new(x, y, 6), 1);
-        }
-    }
-    let as_model = |mesh: &mut MeshBuffers, translucent: bool| {
-        for (layer, buffers) in &mut mesh.layers {
-            if translucent {
-                *layer = Layer::Translucent;
-            } else {
-                for quad in &mut buffers.quads {
-                    for p in &mut quad.positions {
-                        p.z += 0.25;
+        for stream in [Stream::Packed, Stream::Model, Stream::Smooth] {
+            for layer in [Layer::Opaque, Layer::Cutout, Layer::Translucent] {
+                let mesh = wall_in(&b, stream, layer);
+                // Translucent quads always take the sortable model stream.
+                let used = match stream {
+                    Stream::Packed if layer == Layer::Translucent => Stream::Model,
+                    s => s,
+                };
+                let filler = padded(&mesh, used, 24 << 10);
+                let indirect = renderer.uses_gpu_culling()
+                    && layer != Layer::Translucent
+                    && used != Stream::Smooth;
+                for (fillers, replace) in [(0, false), (1, false), (3, true)] {
+                    let case = format!(
+                        "{cull:?} {stream:?} {layer:?} fillers={fillers} replace={replace}"
+                    );
+                    // Off-screen chunks of the same kind shift the wall's offset.
+                    let filler_keys: Vec<ChunkKey> = (0..fillers)
+                        .map(|i| ChunkKey::new(GRID, IVec3::new(i, 0, -7)))
+                        .collect();
+                    for key in &filler_keys {
+                        renderer
+                            .upload(&gpu, *key, ChunkPlacement::new(key.chunk * 16), &filler)
+                            .unwrap();
                     }
-                }
-            }
-        }
-    };
-    for translucent in [false, true] {
-        for cull in [CullMode::Auto, CullMode::Cpu] {
-            let mut renderer = VoxelRenderer::new(
-                &gpu,
-                materials(&gpu),
-                VoxelRendererConfig {
-                    cull,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            renderer.set_grid(GRID, GridTransform::default(), 1.0);
-            let far = IVec3::new(0, 0, -7);
-            // Several chunks ahead of the wall in the same model page.
-            for i in 0..3 {
-                let chunk = far + IVec3::new(i, 0, 0);
-                let mut mesh = greedy_mesh(&b, far);
-                for (_, layer) in &mut mesh.layers {
-                    layer.quads.truncate(1 + i as usize);
-                }
-                as_model(&mut mesh, translucent);
-                renderer
-                    .upload(
+                    for _ in 0..=usize::from(replace) {
+                        let stats = renderer
+                            .upload(&gpu, target, ChunkPlacement::new(IVec3::ZERO), &mesh)
+                            .unwrap();
+                        let streams = (
+                            stats.packed_quads > 0,
+                            stats.model_quads > 0,
+                            stats.smooth_triangles > 0,
+                        );
+                        let expected = (
+                            used == Stream::Packed,
+                            used == Stream::Model,
+                            used == Stream::Smooth,
+                        );
+                        assert_eq!(streams, expected, "{case}: stream used");
+                    }
+                    let (rgba, stats) = render(
                         &gpu,
-                        ChunkKey::new(GRID, chunk),
-                        ChunkPlacement::new(chunk * 16),
-                        &mesh,
-                    )
-                    .unwrap();
+                        &mut renderer,
+                        &cam,
+                        &unlit(),
+                        &VoxelPassOptions::default(),
+                        &[],
+                    );
+                    assert_eq!(pixel(&rgba, 32, 32), [255, 0, 0, 255], "{case}: wall");
+                    assert_eq!(pixel(&rgba, 2, 2), [0, 0, 0, 255], "{case}: background");
+                    assert_eq!(
+                        (stats.indirect_batches > 0, stats.direct_draws > 0),
+                        (indirect, !indirect),
+                        "{case}: draw path"
+                    );
+                    // Depth pass: the wall (unless translucent, which casts
+                    // no depth) must hide the backdrop the colour pass draws.
+                    renderer
+                        .upload(
+                            &gpu,
+                            backdrop,
+                            ChunkPlacement::new(backdrop.chunk * 16),
+                            &backdrop_mesh,
+                        )
+                        .unwrap();
+                    renderer.set_visible_chunks(GRID, Some(&[backdrop.chunk]));
+                    let rgba = render_over_depth(&gpu, &mut renderer, &cam);
+                    let expected = if layer == Layer::Translucent {
+                        [0, 255, 0, 255]
+                    } else {
+                        [0, 0, 0, 255]
+                    };
+                    assert_eq!(pixel(&rgba, 32, 32), expected, "{case}: depth pass");
+                    renderer.set_visible_chunks(GRID, None);
+                    for key in filler_keys.iter().chain([&target, &backdrop]) {
+                        assert!(renderer.remove(*key), "{case}");
+                    }
+                    let (rgba, _) = render(
+                        &gpu,
+                        &mut renderer,
+                        &cam,
+                        &unlit(),
+                        &VoxelPassOptions::default(),
+                        &[],
+                    );
+                    assert_eq!(pixel(&rgba, 32, 32), [0, 0, 0, 255], "{case}: removed");
+                    combinations += 1;
+                }
             }
-            let mut wall = greedy_mesh(&b, IVec3::ZERO);
-            as_model(&mut wall, translucent);
-            let stats = renderer
-                .upload(
-                    &gpu,
-                    ChunkKey::new(GRID, IVec3::ZERO),
-                    ChunkPlacement::new(IVec3::ZERO),
-                    &wall,
-                )
-                .unwrap();
-            assert!(stats.model_quads > 0 && stats.packed_quads == 0);
-            let cam = camera(DVec3::new(6.0, 6.0, -10.0), DVec3::new(6.0, 6.0, 6.0));
-            let (rgba, _) = render(
-                &gpu,
-                &mut renderer,
-                &cam,
-                &unlit(),
-                &VoxelPassOptions::default(),
-                &[],
-            );
-            assert_eq!(
-                pixel(&rgba, 32, 32),
-                [255, 0, 0, 255],
-                "translucent={translucent} {cull:?}: the wall is where it was meshed"
-            );
-            assert_eq!(pixel(&rgba, 2, 2), [0, 0, 0, 255], "{cull:?}");
         }
+        assert!(renderer.page_count() > 3, "later pages were exercised");
     }
+    assert_eq!(combinations, 54);
 }

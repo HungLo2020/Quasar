@@ -18,6 +18,7 @@ quasar-jobs = { workspace = true, optional = true }
 
 [dev-dependencies]
 quasar-core.workspace = true
+quasar-profile.workspace = true
 quasar-jobs.workspace = true
 
 [[example]]
