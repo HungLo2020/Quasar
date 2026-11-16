@@ -1,6 +1,6 @@
 //! Normal-mapped materials on the same native forward-lighting pipeline.
 use super::*;
-pub const DEFAULT_SURFACE_FRAGMENT_SHADER: &str = include_str!("surface.frag.wgsl");
+pub const DEFAULT_SURFACE_FRAGMENT_SHADER: &str = crate::DEFAULT_LIT_FRAGMENT_SHADER;
 #[derive(Clone, Debug)]
 pub struct NormalMap {
     pub texture_view: TextureView,

@@ -1,0 +1,25 @@
+[package]
+name = "quasar-voxel-mesh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Renderer-neutral voxel extraction: policy-driven culled block models, binary greedy meshing, Surface Nets, seam skirts, translucency sorting and compact GPU formats"
+
+[features]
+default = []
+jobs = ["dep:quasar-jobs"]
+
+[dependencies]
+quasar-voxel.workspace = true
+quasar-math.workspace = true
+quasar-jobs = { workspace = true, optional = true }
+
+[dev-dependencies]
+quasar-core.workspace = true
+quasar-jobs.workspace = true
+
+[[example]]
+name = "mesh_benchmark"
+path = "examples/mesh_benchmark.rs"

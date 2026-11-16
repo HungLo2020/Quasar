@@ -33,6 +33,7 @@ data is an optional integration behind `model-assets`.
 | `model-assets` | no | CPU bounds, structural selection and explicit cylinder fitting; enables dim3 |
 | `spatial` | no | `quasar-spatial` AABB conversion and collider index construction |
 | `enhanced-determinism` | no | Forward Rapier's cross-run determinism feature |
+| `voxel` | no | `voxel3`: merged-box and trimesh colliders for `quasar-voxel` chunks, static grids and dynamic grid bodies; enables dim3 |
 
 The default build compiles only Rapier 2D (`rapier2d`/`parry2d`); `rapier3d` is
 opt-in. Enable `dim3` to add 3D, and disable `dim2` explicitly for 3D-only
@@ -154,11 +155,19 @@ player/enemy/trigger layers. Tilemap-specific collision remains game-owned;
 
 ### Voxel world
 
-Insert chunk or voxel colliders as static Rapier colliders; use
-`ColliderBuilder::voxels`/trimesh or compound shapes for detailed terrain. Keep
-voxel simulation and meshing in the game; use Rapier queries for movement,
-raycasts and trigger volumes. The `CollisionWorld` path avoids a dynamics scene
-when only queries are needed.
+With the `voxel` feature, `voxel3::VoxelColliders` keeps one collider per
+`quasar-voxel` chunk:
+
+- `rebuild_cubic` merges solid cells into a compound of boxes.
+- `rebuild_smooth` builds a trimesh from a Surface Nets mesh.
+- `apply_dirty` rebuilds only the chunks an `EditResult` marked dirty.
+
+Static grids place colliders directly in the world. `dynamic_body` creates one
+Rapier body per moving grid (a ship), and `grid_pose` reads its pose back for
+rendering. `examples/voxel-drift` uses both. You can also insert chunk
+colliders yourself (`ColliderBuilder::voxels`, trimesh or compound shapes) and
+keep voxel simulation and meshing in the game. The `CollisionWorld` path avoids
+a dynamics scene when only queries are needed.
 
 ### 3D FPS character
 

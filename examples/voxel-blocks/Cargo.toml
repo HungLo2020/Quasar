@@ -1,0 +1,38 @@
+[package]
+name = "voxel-blocks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["desktop"]
+desktop = [
+  "dep:quasar-window",
+  "quasar-app/desktop",
+  "quasar-window/diagnostics",
+]
+
+[dependencies]
+quasar-app.workspace = true
+quasar-core.workspace = true
+quasar-diagnostics.workspace = true
+quasar-frame = { workspace = true, features = ["vulkan"] }
+quasar-input.workspace = true
+quasar-jobs.workspace = true
+quasar-math.workspace = true
+quasar-profile = { workspace = true, features = ["json", "frame"] }
+quasar-render-2d = { workspace = true, features = ["gpu", "vulkan"] }
+quasar-render-3d.workspace = true
+quasar-render-voxel = { workspace = true, features = ["vulkan"] }
+quasar-voxel = { workspace = true, features = ["jobs"] }
+quasar-voxel-mesh = { workspace = true, features = ["jobs"] }
+quasar-voxel-view.workspace = true
+quasar-window = { workspace = true, optional = true }
+png.workspace = true
+vulkanic-gal = { workspace = true, features = ["vulkan"] }
+
+[[bin]]
+name = "voxel-blocks"
+path = "src/main.rs"

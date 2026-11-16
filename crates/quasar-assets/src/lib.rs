@@ -43,6 +43,8 @@ mod hot_reload;
 mod loader;
 #[cfg(feature = "model")]
 pub mod model;
+#[cfg(feature = "voxel")]
+pub mod voxel;
 #[cfg(feature = "gltf")]
 pub use gltf_loader::GltfLoader;
 mod path;

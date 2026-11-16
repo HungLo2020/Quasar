@@ -42,6 +42,8 @@ pub mod navmesh_support;
 pub mod physics3d;
 #[cfg(feature = "tilemap")]
 mod tilemap;
+#[cfg(feature = "voxel")]
+pub mod voxel;
 
 pub use error::{NavError, NavResult};
 pub use field::{DistanceField, FieldOptions};

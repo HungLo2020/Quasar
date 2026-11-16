@@ -268,3 +268,58 @@ proptest! {
         }
     }
 }
+
+#[cfg(feature = "voxel")]
+#[test]
+fn voxel_walkable_grids_repair_flow_fields_after_mining() {
+    use quasar_math::IVec3 as V;
+    use quasar_nav::voxel::*;
+    use quasar_voxel::{Cube16, EditBatch, EditOptions, Schema, StorageKind, Volume};
+    let mut schema = Schema::new();
+    let block = schema.channel("block", StorageKind::Paletted, 0u16);
+    let mut volume = Volume::<Cube16>::new(schema);
+    let mut batch = EditBatch::new();
+    batch.fill(block, V::new(0, 0, 0), V::new(15, 0, 15), 1); // floor
+    batch.fill(block, V::new(8, 1, 0), V::new(8, 2, 15), 1); // wall
+    volume.apply(&batch, EditOptions::default());
+    let bounds = VoxelNavBounds {
+        min: V::new(0, 1, 0),
+        max: V::new(15, 2, 15),
+    };
+    let solid = |v: u16| v != 0;
+    let mut grid = walkable_grid(&volume, block, bounds, 2, solid).unwrap();
+    let goal = bounds.cell(V::new(14, 1, 7)).unwrap();
+    let mut field = grid
+        .distance_field(&[goal], &FieldOptions::default())
+        .unwrap();
+    let start = bounds.cell(V::new(1, 1, 7)).unwrap();
+    assert_eq!(field.distance(start), None, "the wall separates the halves");
+    // Mine a doorway through the wall.
+    let mut dig = EditBatch::new();
+    dig.fill(block, V::new(8, 1, 7), V::new(8, 2, 7), 0);
+    let result = volume.apply(&dig, EditOptions::default());
+    let dirty = sync_changes(&mut grid, &volume, block, bounds, 2, &result.changes, solid).unwrap();
+    assert!(!dirty.is_empty());
+    field.update_region(&grid, &dirty).unwrap();
+    let rebuilt = grid
+        .distance_field(&[goal], &FieldOptions::default())
+        .unwrap();
+    assert_fields_match::<3>(field.distances(), rebuilt.distances());
+    assert!(
+        field.distance(start).is_some(),
+        "reachable through the doorway"
+    );
+    let path = field.path_from(&grid, start);
+    assert!(path.iter().any(|c| bounds.voxel(*c) == V::new(8, 1, 7)));
+    let air = occupancy_grid(
+        &volume,
+        block,
+        VoxelNavBounds {
+            min: V::ZERO,
+            max: V::new(15, 3, 15),
+        },
+        solid,
+    )
+    .unwrap();
+    assert!(air.is_blocked(GridCell::new3(0, 0, 0)) && !air.is_blocked(GridCell::new3(0, 3, 0)));
+}

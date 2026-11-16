@@ -84,6 +84,12 @@ search to a caller-owned `quasar-jobs` pool. The optional cancellation flag in
 
 ### Navmesh
 
+The `voxel` feature extracts grids from `quasar-voxel` volumes.
+`walkable_grid` marks open cells above solid ground with enough headroom, and
+`occupancy_grid` marks solid cells as blocked. `sync_changes` applies an edit's
+change events incrementally, so voxel worlds keep their navigation grids
+current without rebuilding them.
+
 The `navmesh` feature wraps the established `navmesh` crate. Quasar does not
 implement Recast or navmesh generation. `mesh_from_triangles`, `find_path`, and
 `find_path_custom` adapt arrays and world points; use an external generated mesh

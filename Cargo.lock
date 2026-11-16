@@ -2760,7 +2760,9 @@ dependencies = [
  "notify",
  "percent-encoding",
  "quasar-diagnostics",
+ "quasar-math",
  "quasar-storage",
+ "quasar-voxel",
  "serde",
  "serde_json",
  "tempfile",
@@ -2865,9 +2867,11 @@ dependencies = [
  "navmesh",
  "proptest",
  "quasar-jobs",
+ "quasar-math",
  "quasar-physics",
  "quasar-spatial",
  "quasar-tilemap",
+ "quasar-voxel",
 ]
 
 [[package]]
@@ -2876,7 +2880,11 @@ version = "0.2.22"
 dependencies = [
  "proptest",
  "quasar-assets",
+ "quasar-core",
+ "quasar-math",
  "quasar-spatial",
+ "quasar-voxel",
+ "quasar-voxel-mesh",
  "rapier2d",
  "rapier3d",
 ]
@@ -2920,6 +2928,20 @@ dependencies = [
  "quasar-math",
  "quasar-render-2d",
  "quasar-spatial",
+ "vulkanic-gal",
+]
+
+[[package]]
+name = "quasar-render-voxel"
+version = "0.2.22"
+dependencies = [
+ "quasar-frame",
+ "quasar-math",
+ "quasar-render-3d",
+ "quasar-spatial",
+ "quasar-voxel",
+ "quasar-voxel-mesh",
+ "quasar-voxel-view",
  "vulkanic-gal",
 ]
 
@@ -2986,6 +3008,37 @@ dependencies = [
  "quasar-text",
  "serde",
  "vulkanic-gal",
+]
+
+[[package]]
+name = "quasar-voxel"
+version = "0.2.22"
+dependencies = [
+ "proptest",
+ "quasar-core",
+ "quasar-jobs",
+ "quasar-math",
+ "serde",
+]
+
+[[package]]
+name = "quasar-voxel-mesh"
+version = "0.2.22"
+dependencies = [
+ "quasar-core",
+ "quasar-jobs",
+ "quasar-math",
+ "quasar-voxel",
+]
+
+[[package]]
+name = "quasar-voxel-view"
+version = "0.2.22"
+dependencies = [
+ "quasar-core",
+ "quasar-math",
+ "quasar-spatial",
+ "quasar-voxel",
 ]
 
 [[package]]
@@ -4099,6 +4152,53 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "voxel-blocks"
+version = "0.2.22"
+dependencies = [
+ "png 0.17.16",
+ "quasar-app",
+ "quasar-core",
+ "quasar-diagnostics",
+ "quasar-frame",
+ "quasar-input",
+ "quasar-jobs",
+ "quasar-math",
+ "quasar-profile",
+ "quasar-render-2d",
+ "quasar-render-3d",
+ "quasar-render-voxel",
+ "quasar-voxel",
+ "quasar-voxel-mesh",
+ "quasar-voxel-view",
+ "quasar-window",
+ "vulkanic-gal",
+]
+
+[[package]]
+name = "voxel-drift"
+version = "0.2.22"
+dependencies = [
+ "png 0.17.16",
+ "quasar-app",
+ "quasar-core",
+ "quasar-diagnostics",
+ "quasar-frame",
+ "quasar-input",
+ "quasar-jobs",
+ "quasar-math",
+ "quasar-physics",
+ "quasar-profile",
+ "quasar-render-2d",
+ "quasar-render-3d",
+ "quasar-render-voxel",
+ "quasar-voxel",
+ "quasar-voxel-mesh",
+ "quasar-voxel-view",
+ "quasar-window",
+ "vulkanic-gal",
+]
 
 [[package]]
 name = "vulkanic-gal"

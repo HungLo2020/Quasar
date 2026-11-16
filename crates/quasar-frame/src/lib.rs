@@ -70,7 +70,12 @@ impl Gpu {
             &instance, surface,
         ))
         .map_err(error)?;
-        let optional = Features::TIMESTAMP_QUERY | Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        // Optional capabilities are requested only when the adapter has them;
+        // renderers check `device.features()` and fall back otherwise.
+        let optional = Features::TIMESTAMP_QUERY
+            | Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+            | Features::INDIRECT_FIRST_INSTANCE
+            | Features::MULTI_DRAW_INDIRECT_COUNT;
         let (device, queue) = block_on(adapter.request_device(&DeviceDescriptor {
             label: Some("Quasar shared device"),
             required_features: adapter.features() & optional,

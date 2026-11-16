@@ -43,6 +43,8 @@ pub mod dim2;
 pub mod dim3;
 #[cfg(feature = "dim3")]
 mod shapes3;
+#[cfg(feature = "voxel")]
+pub mod voxel3;
 
 #[cfg(feature = "dim2")]
 pub use rapier2d;

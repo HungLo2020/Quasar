@@ -1,0 +1,26 @@
+[package]
+name = "quasar-voxel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Renderer-neutral voxel volumes: channels, policy-driven storage, grids, block catalogs, edits, queries, propagation and connectivity"
+
+[features]
+default = []
+serde = ["dep:serde", "quasar-math/serde"]
+jobs = ["dep:quasar-jobs"]
+
+[dependencies]
+quasar-math.workspace = true
+quasar-core.workspace = true
+quasar-jobs = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = "1"
+
+[[example]]
+name = "voxel_benchmark"
+path = "examples/voxel_benchmark.rs"

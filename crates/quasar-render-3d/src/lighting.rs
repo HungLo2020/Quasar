@@ -2,7 +2,63 @@
 use super::*;
 
 /// Default lit fragment source, also a starting point for custom shader variants.
-pub const DEFAULT_LIT_FRAGMENT_SHADER: &str = include_str!("surface.frag.wgsl");
+pub const DEFAULT_LIT_FRAGMENT_SHADER: &str = concat!(
+    "diagnostic(off, derivative_uniformity);\n",
+    include_str!("lighting.wgsl"),
+    include_str!("surface_body.frag.wgsl")
+);
+
+/// Shared WGSL lighting module: `Light`/`Lights`/`Shadow`/`Shadows`
+/// records at their reserved group-0 bindings (3 lights, 5 shadow depth
+/// array, 6 shadow records, 21 comparison sampler), `shadow_visibility`,
+/// `lit_color`, `safe_normal`, sRGB helpers and `output_srgb`. Other
+/// renderers include it (after any `diagnostic` directive) and bind
+/// [`encode_lighting`] / [`ShadowBinding::records_bytes`] data so they light
+/// identically to render-3d meshes.
+pub const LIGHTING_WGSL: &str = include_str!("lighting.wgsl");
+/// Group-0 binding of the lights storage buffer in [`LIGHTING_WGSL`].
+pub const LIGHTS_BINDING: u32 = 3;
+/// Group-0 binding of the shadow depth array.
+pub const SHADOW_TEXTURE_BINDING: u32 = 5;
+/// Group-0 binding of the shadow record storage buffer.
+pub const SHADOW_RECORDS_BINDING: u32 = 6;
+/// Group-0 binding of the shadow comparison sampler.
+pub const SHADOW_SAMPLER_BINDING: u32 = 21;
+
+/// Encodes the lights storage buffer read by [`LIGHTING_WGSL`].
+pub fn encode_lighting(
+    camera: LitCamera3D,
+    lighting: Lighting<'_>,
+    max_lights: usize,
+) -> GraphicsResult<Vec<u8>> {
+    if !camera.position.iter().all(|x| x.is_finite())
+        || !positive_rgb(lighting.ambient)
+        || lighting.lights.len() > max_lights
+    {
+        return Err(error("invalid lighting/camera or light budget exceeded"));
+    }
+    let mut values = vec![
+        lighting.ambient[0],
+        lighting.ambient[1],
+        lighting.ambient[2],
+        0.,
+        camera.position[0],
+        camera.position[1],
+        camera.position[2],
+        0.,
+        lighting.lights.len() as f32,
+        f32::from(lighting.output_color_space == ColorSpace::Srgb),
+        0.,
+        0.,
+    ];
+    for light in lighting.lights {
+        values.extend(light.encoded()?);
+    }
+    if lighting.lights.is_empty() {
+        values.resize(28, 0.);
+    }
+    Ok(bytes(values))
+}
 
 /// Color textures are decoded explicitly; GAL UNORM targets do not perform sRGB conversion.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -388,33 +444,7 @@ impl LitRenderState3D {
         camera: LitCamera3D,
         lighting: Lighting<'_>,
     ) -> GraphicsResult<Vec<u8>> {
-        if !camera.position.iter().all(|x| x.is_finite())
-            || !positive_rgb(lighting.ambient)
-            || lighting.lights.len() > self.max_lights
-        {
-            return Err(error("invalid lighting/camera or light budget exceeded"));
-        }
-        let mut values = vec![
-            lighting.ambient[0],
-            lighting.ambient[1],
-            lighting.ambient[2],
-            0.,
-            camera.position[0],
-            camera.position[1],
-            camera.position[2],
-            0.,
-            lighting.lights.len() as f32,
-            f32::from(lighting.output_color_space == ColorSpace::Srgb),
-            0.,
-            0.,
-        ];
-        for light in lighting.lights {
-            values.extend(light.encoded()?);
-        }
-        if lighting.lights.is_empty() {
-            values.resize(28, 0.);
-        }
-        Ok(bytes(values))
+        encode_lighting(camera, lighting, self.max_lights)
     }
     pub fn prepare(
         &mut self,

@@ -15,8 +15,12 @@ storage = ["dep:quasar-storage"]
 diagnostics = ["dep:quasar-diagnostics"]
 async = []
 hot-reload = ["async", "dep:notify"]
+voxel = ["dep:quasar-voxel", "quasar-voxel/serde", "dep:quasar-math", "dep:serde_json"]
 
 [dependencies]
+quasar-voxel = { workspace = true, optional = true }
+quasar-math = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 gltf = { version = "1.4.1", default-features = false, features = ["utils", "names", "extensions", "KHR_materials_unlit", "KHR_texture_transform"], optional = true }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"], optional = true }
 base64 = { version = "0.22", optional = true }

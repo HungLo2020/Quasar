@@ -71,6 +71,17 @@ See [animation](animation.md).
 spatial, jobs and navmesh adapters. It has no agent steering, ECS or renderer;
 games own decision-making and movement. See [navigation](nav.md).
 
+The voxel stack is four layers that each depend only on the layers below.
+`quasar-voxel` holds data, edits, queries and propagation. `quasar-voxel-mesh`
+does renderer-neutral extraction. `quasar-voxel-view` handles visibility,
+streaming, LOD and GPU residency bookkeeping without wgpu types.
+`quasar-render-voxel` is the optional wgpu renderer. Rules that decide
+observable output (palettes, face culling, models, shading, visit orders,
+light rules) are injectable policies, so a game can reproduce a reference
+implementation exactly. Physics, navigation and asset adapters are features
+of the existing crates. See [voxels](voxel.md) and the
+[voxel spec](voxel-spec.md).
+
 `quasar-text` is an optional, renderer-independent text stack. Callers register
 their own TTF/OTF bytes; it shapes with cosmic-text/Harfrust, lays out wrapped
 and bidirectional text, exposes caret/hit/selection geometry, and rasterizes

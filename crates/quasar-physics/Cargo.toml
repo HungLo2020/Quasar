@@ -14,6 +14,7 @@ dynamics = []
 events = []
 model-assets = ["dim3", "dep:quasar-assets", "quasar-assets/model"]
 spatial = ["dep:quasar-spatial"]
+voxel = ["dim3", "dep:quasar-voxel", "dep:quasar-voxel-mesh", "dep:quasar-math"]
 enhanced-determinism = [
   "rapier2d?/enhanced-determinism",
   "rapier3d?/enhanced-determinism",
@@ -22,11 +23,15 @@ enhanced-determinism = [
 [dependencies]
 quasar-assets = { workspace = true, optional = true }
 quasar-spatial = { workspace = true, optional = true }
+quasar-voxel = { workspace = true, optional = true }
+quasar-voxel-mesh = { workspace = true, optional = true }
+quasar-math = { workspace = true, optional = true }
 rapier2d = { version = "0.36.1", optional = true }
 rapier3d = { version = "0.36.1", optional = true }
 
 [dev-dependencies]
 proptest = "1"
+quasar-core.workspace = true
 
 [[example]]
 name = "physics_benchmark"

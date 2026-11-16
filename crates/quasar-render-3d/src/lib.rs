@@ -10,8 +10,10 @@ mod skinning;
 mod submission;
 mod surface;
 pub use lighting::{
-    Attenuation, ColorSpace, DEFAULT_LIT_FRAGMENT_SHADER, Light, Lighting, LitCamera3D, LitDraw3D,
-    LitMaterial, LitPassOptions, LitRenderState3D, ShadingModel,
+    Attenuation, ColorSpace, DEFAULT_LIT_FRAGMENT_SHADER, LIGHTING_WGSL, LIGHTS_BINDING, Light,
+    Lighting, LitCamera3D, LitDraw3D, LitMaterial, LitPassOptions, LitRenderState3D,
+    SHADOW_RECORDS_BINDING, SHADOW_SAMPLER_BINDING, SHADOW_TEXTURE_BINDING, ShadingModel,
+    encode_lighting,
 };
 pub use math::Mat4;
 #[cfg(feature = "model-assets")]

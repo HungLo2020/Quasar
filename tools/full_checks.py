@@ -391,6 +391,35 @@ SECTIONS: list[list] = [
                 "cargo run --locked -p audio-example -- --offline /tmp/audio-example.wav --benchmark /tmp/audio-benchmark.json"
             ]
         ]
+    ],
+    [
+        "voxel",
+        [
+            [
+                "Test voxel crates and adapters across features",
+                "cargo test --locked -p quasar-voxel\ncargo test --locked -p quasar-voxel --no-default-features\ncargo test --locked -p quasar-voxel --all-features\ncargo test --locked -p quasar-voxel-mesh\ncargo test --locked -p quasar-voxel-mesh --all-features\ncargo test --locked -p quasar-voxel-view\ncargo test --locked -p quasar-voxel-view --all-features\ncargo test --locked -p quasar-physics --features voxel\ncargo test --locked -p quasar-nav --features voxel\ncargo test --locked -p quasar-assets --features voxel\ncargo test --locked --release -p voxel-blocks\ncargo test --locked --release -p voxel-drift\ncargo clippy --locked -p quasar-voxel --all-targets --all-features -- -D warnings\ncargo clippy --locked -p quasar-voxel --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p quasar-voxel-mesh --all-targets --all-features -- -D warnings\ncargo clippy --locked -p quasar-voxel-view --all-targets --all-features -- -D warnings\ncargo clippy --locked -p quasar-physics --all-targets --features voxel -- -D warnings\ncargo clippy --locked -p quasar-nav --all-targets --features voxel -- -D warnings\ncargo clippy --locked -p quasar-assets --all-targets --features voxel -- -D warnings\ncargo clippy --locked -p voxel-blocks --all-targets --no-default-features -- -D warnings\ncargo clippy --locked -p voxel-drift --all-targets --no-default-features -- -D warnings"
+            ],
+            [
+                "Check voxel core layers have no graphics dependencies",
+                "for crate in quasar-voxel quasar-voxel-mesh quasar-voxel-view; do cargo tree --locked -p $crate --all-features -e normal | (! grep -Eq 'vulkanic-gal|wgpu|quasar-render|quasar-window|quasar-frame'); done"
+            ],
+            [
+                "Run voxel core and extraction benchmarks against the spec targets",
+                "cargo run --locked --release -p quasar-voxel --example voxel_benchmark -- --check\ncargo run --locked --release -p quasar-voxel-mesh --example mesh_benchmark -- --check"
+            ],
+            [
+                "Test the voxel renderer on native wgpu Vulkan",
+                "cargo test --locked -p quasar-render-voxel --test render -- --ignored --test-threads=1\ncargo run --locked --release -p quasar-render-voxel --example render_benchmark -- --check"
+            ],
+            [
+                "Exercise the voxel examples headless with screenshots",
+                "cargo run --locked --release -p voxel-blocks -- --headless --ticks 600 --autoplay --radius 6 --screenshot /tmp/voxel-blocks.png --benchmark-file /tmp/voxel-blocks.json\ncargo run --locked --release -p voxel-drift -- --headless --ticks 600 --autoplay --screenshot /tmp/voxel-drift.png --benchmark-file /tmp/voxel-drift.json"
+            ],
+            [
+                "Exercise the voxel example native benchmarks",
+                "xvfb-run -a cargo run --locked --release -p voxel-blocks -- --benchmark --benchmark-frames 30 --benchmark-file /tmp/voxel-blocks-profile.json\nxvfb-run -a cargo run --locked --release -p voxel-drift -- --benchmark --benchmark-frames 30 --benchmark-file /tmp/voxel-drift-profile.json"
+            ]
+        ]
     ]
 ]
 

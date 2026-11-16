@@ -13,16 +13,21 @@ jobs = ["dep:quasar-jobs"]
 spatial = ["dep:quasar-spatial"]
 tilemap = ["dep:quasar-tilemap"]
 navmesh = ["dep:navmesh"]
+voxel = ["dep:quasar-voxel", "dep:quasar-math"]
 
 [dependencies]
 quasar-physics = { workspace = true, optional = true }
 navmesh = { version = "0.12.1", optional = true }
 quasar-jobs = { workspace = true, optional = true }
 quasar-spatial = { workspace = true, optional = true }
+quasar-voxel = { workspace = true, optional = true }
+quasar-math = { workspace = true, optional = true }
 quasar-tilemap = { path = "../quasar-tilemap", optional = true, default-features = false }
 
 [dev-dependencies]
 proptest = "1"
+quasar-math.workspace = true
+quasar-voxel.workspace = true
 
 [[example]]
 name = "nav_benchmark"

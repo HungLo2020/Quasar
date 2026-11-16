@@ -100,6 +100,38 @@ impl ShadowBinding {
     pub fn texture_view(&self) -> &TextureView {
         &self.view
     }
+    /// [`Self::records_bytes`] for shaders whose positions are relative to
+    /// `origin` (camera-relative rendering): each map's matrix becomes
+    /// `view_projection · translate(origin)`, computed in `f64`.
+    pub fn records_bytes_rebased(&self, origin: [f64; 3]) -> Vec<u8> {
+        let mut values = vec![self.records.len() as f32, 0., 0., 0.];
+        for record in &self.records {
+            let m: [f64; 16] = std::array::from_fn(|i| f64::from(record[i]));
+            let mut rebased = *record;
+            // Column 3 += M · (origin, 0).
+            for row in 0..4 {
+                let shift: f64 = (0..3).map(|c| m[c * 4 + row] * origin[c]).sum();
+                rebased[12 + row] = (m[12 + row] + shift) as f32;
+            }
+            values.extend(rebased);
+        }
+        if values.len() == 4 {
+            values.resize(28, 0.);
+        }
+        values.into_iter().flat_map(f32::to_ne_bytes).collect()
+    }
+    /// The shadow records storage buffer read by [`crate::LIGHTING_WGSL`]
+    /// (header plus one record per map), for external pipelines.
+    pub fn records_bytes(&self) -> Vec<u8> {
+        let mut values = vec![self.records.len() as f32, 0., 0., 0.];
+        for record in &self.records {
+            values.extend(record);
+        }
+        if values.len() == 4 {
+            values.resize(28, 0.);
+        }
+        values.into_iter().flat_map(f32::to_ne_bytes).collect()
+    }
     pub fn map_count(&self) -> usize {
         self.records.len()
     }
@@ -122,6 +154,15 @@ pub struct ShadowTarget {
     layers: Vec<TextureView>,
 }
 impl ShadowTarget {
+    /// Depth view of map `index` (one array layer), for external casters
+    /// (e.g. voxel renderers) that draw into the same shadow maps after
+    /// [`ShadowRenderState3D::prepare_into`] with a load operation.
+    pub fn layer_view(&self, index: usize) -> Option<&TextureView> {
+        self.layers.get(index)
+    }
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
+    }
     pub fn new(gpu: &Gpu, config: ShadowConfig) -> GraphicsResult<Self> {
         config.validate(gpu)?;
         checked(gpu, || {

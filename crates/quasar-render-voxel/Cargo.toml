@@ -1,0 +1,33 @@
+[package]
+name = "quasar-render-voxel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "wgpu voxel renderer: paged geometry arenas, vertex pulling, GPU culling with multi-draw indirect, sorted translucency and render-3d lighting/shadows"
+
+[features]
+default = ["native"]
+vulkan = ["vulkanic-gal/vulkan", "quasar-render-3d/vulkan"]
+gles = ["vulkanic-gal/gles", "quasar-render-3d/gles"]
+metal = ["vulkanic-gal/metal", "quasar-render-3d/metal"]
+dx12 = ["vulkanic-gal/dx12", "quasar-render-3d/dx12"]
+native = ["vulkan", "metal", "dx12", "gles"]
+
+[dependencies]
+quasar-voxel.workspace = true
+quasar-voxel-mesh.workspace = true
+quasar-voxel-view.workspace = true
+quasar-math.workspace = true
+quasar-frame.workspace = true
+quasar-spatial.workspace = true
+quasar-render-3d.workspace = true
+vulkanic-gal = { workspace = true }
+
+[dev-dependencies]
+quasar-frame = { workspace = true, features = ["vulkan", "png"] }
+
+[[example]]
+name = "render_benchmark"
+path = "examples/render_benchmark.rs"

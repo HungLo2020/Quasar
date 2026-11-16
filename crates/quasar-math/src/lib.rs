@@ -32,8 +32,9 @@
 //! ```
 pub use glam;
 pub use glam::{
-    Affine2, Affine3A, BVec2, BVec3, BVec4, DVec2, DVec3, DVec4, EulerRot, IVec2, IVec3, IVec4,
-    Mat2, Mat3, Mat3A, Mat4, Quat, UVec2, UVec3, UVec4, Vec2, Vec3, Vec3A, Vec4,
+    Affine2, Affine3A, BVec2, BVec3, BVec4, DMat3, DMat4, DQuat, DVec2, DVec3, DVec4, EulerRot,
+    IVec2, IVec3, IVec4, Mat2, Mat3, Mat3A, Mat4, Quat, UVec2, UVec3, UVec4, Vec2, Vec3, Vec3A,
+    Vec4,
 };
 
 use std::f32::consts::{PI, TAU};

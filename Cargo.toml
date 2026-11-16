@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*", "examples/pong", "examples/composition", "examples/tilequest", "examples/framebuffer", "examples/audio", "examples/starfall", "examples/falling-sand", "examples/physics-playground", "examples/app-stress", "examples/nightwatch"]
+members = ["crates/*", "examples/pong", "examples/composition", "examples/tilequest", "examples/framebuffer", "examples/audio", "examples/starfall", "examples/falling-sand", "examples/physics-playground", "examples/app-stress", "examples/nightwatch", "examples/voxel-blocks", "examples/voxel-drift"]
 default-members = ["examples/pong"]
 resolver = "3"
 
@@ -32,6 +32,10 @@ quasar-config = { path = "crates/quasar-config", default-features = false }
 quasar-assets = { path = "crates/quasar-assets", default-features = false }
 quasar-core = { path = "crates/quasar-core" }
 quasar-math = { path = "crates/quasar-math" }
+quasar-voxel = { path = "crates/quasar-voxel", default-features = false }
+quasar-voxel-mesh = { path = "crates/quasar-voxel-mesh", default-features = false }
+quasar-voxel-view = { path = "crates/quasar-voxel-view", default-features = false }
+quasar-render-voxel = { path = "crates/quasar-render-voxel", default-features = false }
 quasar-diagnostics = { path = "crates/quasar-diagnostics", default-features = false }
 quasar-storage = { path = "crates/quasar-storage" }
 vulkanic-gal = { path = "crates/vulkanic-gal", default-features = false }

@@ -43,6 +43,10 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `quasar-tilemap` | Versioned/Tiled maps, indexed tile/object queries, PNG atlases, animation, culled draw lists and CLI | Optional quasar-render-2d |
 | `quasar-render-3d` | Indexed meshes, transforms, legacy and opt-in per-pixel directional/point/spot lighting, classic/unlit and normal-mapped materials, directional/spot shadows, CPU mesh primitives, picking/projection helpers, linear HDR scene targets, sorted alpha/additive transparency, a bloom/tonemap/grade/vignette post chain, compute skinning, optional instancing/frustum culling, model uploads and shared-GAL passes | VulkanicGAL |
 | `quasar-frame` | Optional recording transactions, target caching, acquire/present/cancel, completion polling and one-call offscreen renders with optional PNG output | VulkanicGAL |
+| `quasar-voxel` | Cubic voxel chunks (8³–64³) with runtime channel schemas, uniform/dense/paletted/nibble/sparse storage and exact palette policies, sourced volumes with edit deltas, `f64` grids and scenes, 24-orientation multi-cell block catalogs, density brushes, DDA raycasts and sweeps, light-like propagation, connectivity/splitting, deterministic codecs and a conformance harness | quasar-math, quasar-core; optional quasar-jobs |
+| `quasar-voxel-mesh` | Policy-driven culled-model, binary greedy and Surface Nets (with LOD seam skirts) extraction, 12/20/16-byte GPU formats with WGSL decoders, translucency sorters and a revision-aware remesh queue | quasar-voxel; optional quasar-jobs |
+| `quasar-voxel-view` | Chunk connectivity and visibility traversal, streaming planner, LOD selection and downsampling, GPU range/page allocation with deferred frees and wgpu-layout indirect draw lists (no wgpu types) | quasar-voxel, quasar-spatial |
+| `quasar-render-voxel` | wgpu voxel renderer: paged arenas, vertex pulling, GPU frustum culling into multi-draw indirect, connectivity filters, sorted translucency, texture-array/triplanar materials, render-3d lighting and shadow casting, outlines | quasar-voxel-mesh, quasar-voxel-view, quasar-render-3d, quasar-frame |
 | `examples/tilequest` | Scrolling top-down quest, layered maps, collision, replays and headless/native verification | Selected crates |
 | `examples/framebuffer` | CPU-rendered RGBA8 framebuffer presented through `quasar-render-2d`, with headless screenshots, window exercises and benchmarks | quasar-render-2d |
 | `examples/audio` | Music, overlapping/spatial effects, buses, voice groups, procedural audio, offline WAV output and audio benchmarks | quasar-audio |
@@ -51,6 +55,8 @@ Losing focus releases held input and pauses an active human-controlled match.
 | `examples/falling-sand` | Interactive cellular sand with Rapier 2D obstacles, dynamic ball, spatial queries and retro menus | quasar-app, input, physics, spatial, render-2d, ui, profile |
 | `examples/physics-playground` | First-person Rapier 3D playground with character control, blocks, balls, triggers, raycasts, animated AI agents and navigation | quasar-app, input, physics, spatial, animation, nav, render-2d/3d, profile |
 | `examples/nightwatch` | First-person zombie survival: directional/spotlight shadows, normal maps, per-pixel 3D lights/materials, animated weapons/enemies, obstacle navigation, shared GAL world/weapon/HUD passes and independent headless simulation | Selected rendering/input/nav/audio crates; optional app runner |
+| `examples/voxel-blocks` | Block world with MattMC-style defaults: streamed 16³ terrain, per-block models with AO, block and sky light, cutout/translucent layers, connectivity culling, first-person place/remove and a hotbar | voxel crates, quasar-app, input, jobs, render-2d |
+| `examples/voxel-drift` | Space Engineers-style scene: diggable smooth asteroid with LOD and seam skirts, ship grids of oriented/multi-cell/sloped blocks that split into drifting Rapier bodies | voxel crates, quasar-physics (`voxel`), quasar-app, input, jobs, render-2d |
 | `examples/app-stress` | Internal integration harness: frame/fixed phases, explicit input consumption, jobs/async assets, paused ticks, resize/fullscreen and deterministic headless hashes | quasar-app, input, jobs, render-2d, window |
 
 Controller support lives in `quasar-input`: pure gamepad types, hotplug/player
@@ -71,6 +77,7 @@ graphics measurements in [profiling](docs/profiling.md), spatial indexing in
 collision in [3D collision](docs/collision-3d.md),
 animation in [animation](docs/animation.md), navigation in [nav](docs/nav.md),
 in-game menus/HUDs in [UI](docs/ui.md), fonts and shaped text in [text](docs/text.md),
+voxel worlds, meshing and rendering in [voxels](docs/voxel.md) (design: [voxel spec](docs/voxel-spec.md)),
 and edge/focus behavior in [input hardening](docs/input-hardening.md). New
 human-editable configuration defaults to TOML with JSON compatibility; the
 [Starfall](examples/starfall/README.md) reference game demonstrates the combined
