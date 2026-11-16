@@ -743,3 +743,89 @@ fn chunks_at_unaligned_arena_offsets_render_in_place() {
         assert_eq!(pixel(&rgba, 2, 2), [0, 0, 0, 255], "{cull:?}");
     }
 }
+
+#[test]
+fn model_quads_at_later_arena_offsets_render_in_place() {
+    // Model quads are four 20-byte vertices; a range after another chunk's
+    // must be addressed in whole quads, for GPU-culled (opaque, off-lattice)
+    // and CPU-sorted (translucent) draws alike.
+    let gpu = Gpu::headless().unwrap();
+    let mut b = blocks();
+    b.volume.set(b.block, IVec3::new(4, 4, -100), 3);
+    for x in 4..8 {
+        for y in 4..8 {
+            b.volume.set(b.block, IVec3::new(x, y, 6), 1);
+        }
+    }
+    let as_model = |mesh: &mut MeshBuffers, translucent: bool| {
+        for (layer, buffers) in &mut mesh.layers {
+            if translucent {
+                *layer = Layer::Translucent;
+            } else {
+                for quad in &mut buffers.quads {
+                    for p in &mut quad.positions {
+                        p.z += 0.25;
+                    }
+                }
+            }
+        }
+    };
+    for translucent in [false, true] {
+        for cull in [CullMode::Auto, CullMode::Cpu] {
+            let mut renderer = VoxelRenderer::new(
+                &gpu,
+                materials(&gpu),
+                VoxelRendererConfig {
+                    cull,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            renderer.set_grid(GRID, GridTransform::default(), 1.0);
+            let far = IVec3::new(0, 0, -7);
+            // Several chunks ahead of the wall in the same model page.
+            for i in 0..3 {
+                let chunk = far + IVec3::new(i, 0, 0);
+                let mut mesh = greedy_mesh(&b, far);
+                for (_, layer) in &mut mesh.layers {
+                    layer.quads.truncate(1 + i as usize);
+                }
+                as_model(&mut mesh, translucent);
+                renderer
+                    .upload(
+                        &gpu,
+                        ChunkKey::new(GRID, chunk),
+                        ChunkPlacement::new(chunk * 16),
+                        &mesh,
+                    )
+                    .unwrap();
+            }
+            let mut wall = greedy_mesh(&b, IVec3::ZERO);
+            as_model(&mut wall, translucent);
+            let stats = renderer
+                .upload(
+                    &gpu,
+                    ChunkKey::new(GRID, IVec3::ZERO),
+                    ChunkPlacement::new(IVec3::ZERO),
+                    &wall,
+                )
+                .unwrap();
+            assert!(stats.model_quads > 0 && stats.packed_quads == 0);
+            let cam = camera(DVec3::new(6.0, 6.0, -10.0), DVec3::new(6.0, 6.0, 6.0));
+            let (rgba, _) = render(
+                &gpu,
+                &mut renderer,
+                &cam,
+                &unlit(),
+                &VoxelPassOptions::default(),
+                &[],
+            );
+            assert_eq!(
+                pixel(&rgba, 32, 32),
+                [255, 0, 0, 255],
+                "translucent={translucent} {cull:?}: the wall is where it was meshed"
+            );
+            assert_eq!(pixel(&rgba, 2, 2), [0, 0, 0, 255], "{cull:?}");
+        }
+    }
+}

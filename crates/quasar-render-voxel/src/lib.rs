@@ -39,7 +39,9 @@ use vulkanic_gal::*;
 const STREAM_PACKED: u8 = 0;
 const STREAM_MODEL: u8 = 1;
 const STREAM_SMOOTH: u8 = 2;
-const ELEMENT_BYTES: [u64; 3] = [12, 20, 16];
+/// Bytes per addressable element: a packed quad, a model quad (four
+/// 20-byte vertices) and a smooth vertex. Draw ranges index these elements.
+const ELEMENT_BYTES: [u64; 3] = [12, 80, 16];
 const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 /// `Frame` uniform: view-projection plus four `vec4`s.
 const FRAME_BYTES: u64 = 128;
@@ -726,7 +728,7 @@ impl VoxelRenderer {
         let (allocation, new_page) = s
             .arena
             // Ranges are addressed by element index, so they must start on an
-            // element boundary (12, 20 and 16 bytes are all 4-byte multiples,
+            // element boundary (12, 80 and 16 bytes are all 4-byte multiples,
             // as buffer writes require).
             .allocate(bytes.len() as u64, ELEMENT_BYTES[stream as usize])
             .ok_or_else(|| error("voxel geometry larger than a page"))?;
@@ -837,7 +839,7 @@ impl VoxelRenderer {
                 self.draws.insert(DrawRecord {
                     key: k,
                     page: allocation.page,
-                    first: (allocation.range.offset / 12) as u32,
+                    first: (allocation.range.offset / ELEMENT_BYTES[STREAM_PACKED as usize]) as u32,
                     count: packed as u32,
                     base_vertex: 0,
                     min: bounds.0,
@@ -868,7 +870,7 @@ impl VoxelRenderer {
                 self.draws.insert(DrawRecord {
                     key: k,
                     page: allocation.page,
-                    first: (allocation.range.offset / 20) as u32,
+                    first: (allocation.range.offset / ELEMENT_BYTES[STREAM_MODEL as usize]) as u32,
                     count: model as u32,
                     base_vertex: 0,
                     min: bounds.0,

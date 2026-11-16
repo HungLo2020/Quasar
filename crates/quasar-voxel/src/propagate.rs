@@ -206,13 +206,13 @@ impl Propagator {
         let mut stats = PropagationStats::default();
         let mut cursor = Cursor::default();
         let mut rules_cursor = Cursor::default();
-        let mut relight: Vec<(IVec3, u8)> = Vec::new();
+        let mut relight: Vec<IVec3> = Vec::new();
         for &cell in cells {
             let old = volume.get_with(&mut cursor, channel, cell);
             if old > 0 && self.write(volume, &mut cursor, channel, cell, 0, &mut stats) {
                 self.removal.push_back((cell, old));
             }
-            relight.push((cell, 0));
+            relight.push(cell);
         }
         while let Some((cell, old)) = self.removal.pop_front() {
             for face in Face::ALL {
@@ -230,20 +230,28 @@ impl Propagator {
                 if dependent {
                     self.write(volume, &mut cursor, channel, to, 0, &mut stats);
                     self.removal.push_back((to, level));
-                    relight.push((to, 0));
-                } else {
-                    relight.push((to, level));
+                }
+                relight.push(to);
+            }
+        }
+        // Neighbours of edited cells re-spread too: an opened cell had no
+        // light to remove, so its light comes from them.
+        for &cell in cells {
+            for face in Face::ALL {
+                let to = cell + face.normal();
+                if volume.contains(L::chunk_of(to)) {
+                    relight.push(to);
                 }
             }
         }
-        // Refill: surviving neighbours keep their level; every touched cell
-        // that emits re-seeds itself.
-        for (cell, level) in relight {
+        // Refill: every touched cell re-spreads its surviving level (read now,
+        // after all removals) or its own emission.
+        for cell in relight {
             let emitted = rules
                 .emission(volume, &mut rules_cursor, cell)
                 .min(rules.max_level());
             let current = volume.get_with(&mut cursor, channel, cell);
-            let seed = level.max(emitted).max(current);
+            let seed = emitted.max(current);
             if seed > 0 {
                 if seed > current {
                     self.write(volume, &mut cursor, channel, cell, seed, &mut stats);
@@ -397,12 +405,19 @@ mod tests {
             let rules = Light { block, sky: false };
             let mut rng = quasar_core::Rng::seed_from_u64(11);
             let mut engine = Propagator::new(discipline);
-            for step in 0..60 {
-                let p = IVec3::new(
-                    rng.range_i32(-12..28),
-                    rng.range_i32(-12..28),
-                    rng.range_i32(-12..28),
-                );
+            let mut edited: Vec<IVec3> = Vec::new();
+            for step in 0..120 {
+                // Every third edit revisits an earlier cell, so walls and
+                // lamps are opened and replaced, not only added.
+                let p = if step % 3 == 2 && !edited.is_empty() {
+                    edited[rng.range_u32(0..edited.len() as u32) as usize]
+                } else {
+                    IVec3::new(
+                        rng.range_i32(-12..28),
+                        rng.range_i32(-12..28),
+                        rng.range_i32(-12..28),
+                    )
+                };
                 let kind = if step % 4 == 0 {
                     2
                 } else {
@@ -410,6 +425,7 @@ mod tests {
                 };
                 volume.set(block, p, kind);
                 engine.update(&mut volume, light, &[p], &rules);
+                edited.push(p);
             }
             let expected = reference(&volume, &rules, light);
             for (p, level) in expected {
@@ -449,12 +465,51 @@ mod tests {
         for p in &roof {
             volume.set(block, *p, 0);
         }
-        let mut changed: Vec<IVec3> = roof.clone();
-        changed.extend(roof.iter().map(|p| *p + IVec3::Y));
-        let seeds: Vec<_> = roof.iter().map(|p| (*p, 0)).collect();
-        let _ = seeds;
-        engine.update(&mut volume, light, &changed, &rules);
+        // Only the edited cells: light must flow in from their neighbours.
+        engine.update(&mut volume, light, &roof, &rules);
         assert_eq!(volume.get(light, IVec3::new(0, 5, 0)), 15);
+    }
+
+    #[test]
+    fn opening_a_wall_lets_neighbouring_light_flow_in() {
+        for sky in [true, false] {
+            let (mut volume, block, light) = world();
+            // A sealed floor at y = 0 under open sky (or a lamp above it).
+            for x in -16..32 {
+                for z in -16..32 {
+                    volume.set(block, IVec3::new(x, 0, z), 1);
+                }
+            }
+            let rules = Light { block, sky };
+            let mut engine = Propagator::new(QueueDiscipline::BucketFifo);
+            let seeds = if rules.sky {
+                sky_seeds(&volume, -16..=31, -16..=31, 31, -16, 15, |v, p| {
+                    v.get(block, p) == 1
+                })
+            } else {
+                volume.set(block, IVec3::new(4, 3, 4), 2);
+                vec![(IVec3::new(4, 3, 4), 14)]
+            };
+            engine.add(&mut volume, light, &seeds, &rules);
+            let hole = IVec3::new(4, 0, 4);
+            assert_eq!(volume.get(light, hole), 0, "opaque cells stay dark");
+            volume.set(block, hole, 0);
+            engine.update(&mut volume, light, &[hole], &rules);
+            let expected = reference(&volume, &rules, light);
+            if rules.sky {
+                assert_eq!(volume.get(light, hole), 15, "sky falls into the hole");
+                assert_eq!(volume.get(light, hole - IVec3::Y), 15, "and below it");
+            } else {
+                for (p, level) in expected {
+                    assert_eq!(volume.get(light, p), level, "at {p}");
+                }
+                assert_eq!(volume.get(light, hole), 11);
+            }
+            // Closing it again restores the dark below.
+            volume.set(block, hole, 1);
+            engine.update(&mut volume, light, &[hole], &rules);
+            assert_eq!(volume.get(light, hole - IVec3::Y), 0);
+        }
     }
 
     #[test]

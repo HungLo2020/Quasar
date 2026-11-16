@@ -207,3 +207,54 @@ fn incremental_column_lighting_matches_a_full_recompute() {
     }
     assert!(checked > 100_000);
 }
+
+#[test]
+fn breaking_sky_exposed_blocks_lets_sky_light_fall_in() {
+    use quasar_voxel::EditBatch;
+    let top = voxel_blocks::terrain::WORLD_TOP;
+    let mut world = BlockWorld::new(21, 2, 2);
+    world.sync_meshing = true;
+    world.settle();
+    // Dig two blocks down at several surface spots, one edit at a time.
+    let mut dug = Vec::new();
+    for (x, z) in [(3, 3), (4, 3), (9, 12), (-6, 5)] {
+        for _ in 0..2 {
+            let y = (0..top)
+                .rev()
+                .find(|&y| {
+                    world.volume.get(world.ch.block, IVec3::new(x, y, z)) != quasar_voxel::AIR
+                })
+                .unwrap();
+            let cell = IVec3::new(x, y, z);
+            let mut batch = EditBatch::new();
+            world
+                .content
+                .catalog
+                .remove(&mut batch, &world.volume, world.ch.blocks(), cell)
+                .unwrap();
+            world.apply(&batch);
+            dug.push(cell);
+        }
+    }
+    let reference = world.reference_sky_light();
+    for cell in &dug {
+        assert!(
+            world.volume.get(world.ch.sky_light, *cell) > 0,
+            "{cell} is lit"
+        );
+    }
+    for (cx, cz) in world.columns() {
+        for y in 0..top {
+            for z in 0..16 {
+                for x in 0..16 {
+                    let p = IVec3::new(cx * 16 + x, y, cz * 16 + z);
+                    assert_eq!(
+                        world.volume.get(world.ch.sky_light, p),
+                        reference.get(world.ch.sky_light, p),
+                        "{p}"
+                    );
+                }
+            }
+        }
+    }
+}
