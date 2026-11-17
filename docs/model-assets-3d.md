@@ -194,3 +194,16 @@ selected structural instances and an explicitly requested containing Y-cylinder.
 primitive/compound. Nightwatch uses named assets and explicit collision profiles
 without requiring a scene graph. See [3D collision](collision-3d.md) for units,
 scale, reload ownership, approximation limits and alignment tests.
+
+## Loader configurations, vertex colours and facing
+
+- `AssetServer::register_named("animated", GltfLoader::animated())` adds a
+  second configuration of the same loader type next to the default one;
+  `load_named::<GltfLoader>("animated", path)` uses it, and each
+  configuration caches separately. Static props and skinned characters no
+  longer have to share the animated loader.
+- glTF `COLOR_0` imports as linear RGBA (`ModelPrimitive::colors`) and
+  uploads as mesh vertex colours.
+- glTF models face +Z; Quasar yaw 0 faces −Z. Rotate models with
+  `quasar_math::yaw_rotation_for(GLTF_FORWARD, yaw)` instead of
+  `yaw_rotation(yaw)` to avoid a π offset.

@@ -1,5 +1,8 @@
 // Linear-blend skinning into a regular Quasar mesh vertex buffer. The layout
-// matches `Mesh::upload`: position.xyz1, normal.xyz0, uv.xy00.
+// matches `Mesh::upload`: position.xyz1, normal.xyz0, uv.xy + packed colour.
+// One dispatch poses `instance_count` copies: instance i reads palette
+// entries [i * joint_count, (i + 1) * joint_count) and writes vertices
+// [i * vertex_count, (i + 1) * vertex_count).
 
 struct MeshVertex {
     position: vec4<f32>,
@@ -15,7 +18,7 @@ struct Influence {
 struct Params {
     vertex_count: u32,
     joint_count: u32,
-    _pad0: u32,
+    instance_count: u32,
     _pad1: u32,
 };
 
@@ -26,18 +29,21 @@ struct Params {
 @group(0) @binding(4) var<uniform> params: Params;
 
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-    let index = id.x;
-    if (index >= params.vertex_count) {
+fn main(@builtin(global_invocation_id) id: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let index = id.x + id.y * groups.x * 64u;
+    if (index >= params.vertex_count * params.instance_count) {
         return;
     }
-    let vertex = bind_pose[index];
-    let influence = influences[index];
+    let instance = index / params.vertex_count;
+    let source = index % params.vertex_count;
+    let vertex = bind_pose[source];
+    let influence = influences[source];
     let last = params.joint_count - 1u;
-    var skin = palette[min(influence.joints.x, last)] * influence.weights.x;
-    skin += palette[min(influence.joints.y, last)] * influence.weights.y;
-    skin += palette[min(influence.joints.z, last)] * influence.weights.z;
-    skin += palette[min(influence.joints.w, last)] * influence.weights.w;
+    let first = instance * params.joint_count;
+    var skin = palette[first + min(influence.joints.x, last)] * influence.weights.x;
+    skin += palette[first + min(influence.joints.y, last)] * influence.weights.y;
+    skin += palette[first + min(influence.joints.z, last)] * influence.weights.z;
+    skin += palette[first + min(influence.joints.w, last)] * influence.weights.w;
     let position = skin * vec4<f32>(vertex.position.xyz, 1.0);
     let normal = (skin * vec4<f32>(vertex.normal.xyz, 0.0)).xyz;
     let length_squared = dot(normal, normal);

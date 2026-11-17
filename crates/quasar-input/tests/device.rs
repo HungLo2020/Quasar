@@ -176,3 +176,40 @@ fn prompts_pick_the_binding_for_the_active_family() {
         Some("Space")
     );
 }
+
+#[test]
+fn the_most_recent_device_spans_the_window_state_and_the_gamepad_hub() {
+    use quasar_input::{GamepadEvent, GamepadHub, PlayerId, most_recent_device};
+    let mut window = InputState::default();
+    let mut hub = GamepadHub::new();
+    let player = PlayerId::new(0);
+    hub.add_player(player).unwrap();
+    let pad = hub.connect(GamepadFingerprint::new("pad"));
+    hub.assign(player, pad).unwrap();
+    let latest = |window: &InputState, hub: &GamepadHub| {
+        let mut frame = window.frame(0);
+        frame.capture(window, 1);
+        // FrameInput snapshots carry the same stamps as their source state.
+        assert_eq!(frame.last_activity(), window.last_activity());
+        most_recent_device([frame.last_activity(), hub.last_activity()])
+    };
+    assert_eq!(latest(&window, &hub), None);
+    window.key(Key::KeyW, true);
+    assert_eq!(latest(&window, &hub), Some(InputDevice::KeyboardMouse));
+    assert!(
+        hub.handle_event(&GamepadEvent::button(pad, GamepadButton::South, true))
+            .unwrap()
+    );
+    assert_eq!(latest(&window, &hub), Some(InputDevice::Gamepad));
+    assert_eq!(hub.last_active_player(), Some(player));
+    // Holding W (no new press) keeps the gamepad as the latest device.
+    window.key(Key::KeyW, true);
+    assert_eq!(latest(&window, &hub), Some(InputDevice::Gamepad));
+    window.note_device(InputDevice::KeyboardMouse);
+    assert_eq!(latest(&window, &hub), Some(InputDevice::KeyboardMouse));
+    assert!(
+        hub.handle_event(&GamepadEvent::axis(pad, GamepadAxis::LeftStickX, 0.95))
+            .unwrap()
+    );
+    assert_eq!(latest(&window, &hub), Some(InputDevice::Gamepad));
+}

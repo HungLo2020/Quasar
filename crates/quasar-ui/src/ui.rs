@@ -88,6 +88,8 @@ pub struct Ui {
     text_drag: Option<NodeId>,
     capturing: Option<(NodeId, String)>,
     strings: BTreeMap<String, String>,
+    locale_revision: u64,
+    language: Option<String>,
     theme: Theme,
     layout: Vec<LayoutEntry>,
     content_sizes: BTreeMap<NodeId, Vec2>,
@@ -111,6 +113,8 @@ impl Ui {
             text_drag: None,
             capturing: None,
             strings: BTreeMap::new(),
+            locale_revision: 0,
+            language: None,
             theme,
             layout: Vec::new(),
             content_sizes: BTreeMap::new(),
@@ -151,6 +155,56 @@ impl Ui {
     }
     pub fn set_localized(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.strings.insert(key.into(), value.into());
+        self.locale_revision += 1;
+    }
+    /// Replaces every localised string with `localization`'s merged chain
+    /// and bumps [`Self::locale_revision`]. Keyed texts re-resolve and
+    /// re-measure on the next layout.
+    pub fn set_localization(&mut self, localization: &crate::Localization) {
+        self.strings = localization.merged();
+        self.language = localization.language().map(str::to_owned);
+        self.locale_revision += 1;
+    }
+    /// Language tag of the installed localisation.
+    pub fn language(&self) -> Option<&str> {
+        self.language.as_deref()
+    }
+    /// Increments whenever localised strings change; compare it with a
+    /// stored value to re-format dynamic text (scores, counters).
+    pub fn locale_revision(&self) -> u64 {
+        self.locale_revision
+    }
+    /// Keys used by widgets in this tree that have no localised string
+    /// (they show their fallback). Sorted and deduplicated.
+    pub fn missing_keys(&self) -> Vec<String> {
+        let mut missing: Vec<String> = Vec::new();
+        let mut check = |text: &UiText| {
+            if let Some(key) = &text.key
+                && !self.strings.contains_key(key)
+            {
+                missing.push(key.clone());
+            }
+        };
+        for node in self.nodes.values() {
+            match &node.widget {
+                Widget::Label { text, .. } | Widget::Button { text, .. } => check(text),
+                Widget::Slider { label, .. }
+                | Widget::Checkbox { label, .. }
+                | Widget::Progress { label, .. }
+                | Widget::Binding { label, .. } => check(label),
+                Widget::Select { label, options, .. } => {
+                    check(label);
+                    options.iter().for_each(&mut check);
+                }
+                Widget::Tabs { tabs, .. } => tabs.iter().for_each(&mut check),
+                Widget::TextInput { placeholder, .. } => check(placeholder),
+                Widget::List { items, .. } => items.iter().for_each(&mut check),
+                Widget::Panel { .. } | Widget::Image { .. } | Widget::Spacer => {}
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        missing
     }
     pub fn resolve_text<'a>(&'a self, text: &'a UiText) -> &'a str {
         text.key
@@ -228,6 +282,14 @@ impl Ui {
     }
     pub fn set_enabled(&mut self, id: NodeId, enabled: bool) -> UiResult<()> {
         self.nodes.get_mut(&id).ok_or(UiError::UnknownNode)?.enabled = enabled;
+        Ok(())
+    }
+    /// Sets the displayed binding of a [`Widget::Binding`] row.
+    pub fn set_binding_value(&mut self, id: NodeId, value: impl Into<String>) -> UiResult<()> {
+        match &mut self.nodes.get_mut(&id).ok_or(UiError::UnknownNode)?.widget {
+            Widget::Binding { value: current, .. } => *current = value.into(),
+            _ => return Err(UiError::InvalidValue),
+        }
         Ok(())
     }
     pub fn set_text(&mut self, id: NodeId, text: UiText) -> UiResult<()> {
@@ -1785,12 +1847,17 @@ impl LayoutPass<'_> {
             Widget::Panel {
                 layout, padding, ..
             } => {
+                // Children measure against the panel's own box when it has a
+                // definite size, so a wrapped label in a fixed-width card wraps
+                // at the card's width instead of the screen's.
+                let own_width = definite(node.item.width, available_width, self.scale);
+                let own_height = definite(node.item.height, available_height, self.scale);
                 let inner = Vec2::new(
-                    (available_width
+                    (own_width
                         - padding.scaled(self.scale).left
                         - padding.scaled(self.scale).right)
                         .max(0.0),
-                    (available_height
+                    (own_height
                         - padding.scaled(self.scale).top
                         - padding.scaled(self.scale).bottom)
                         .max(0.0),
@@ -1869,8 +1936,8 @@ impl LayoutPass<'_> {
                 let size = self.ui.theme.size(*style) * self.scale;
                 let text = self.ui.resolve_text(text);
                 match wrap {
-                    TextWrap::None => self.measure.measure_style(text, *style, size),
-                    TextWrap::Word => {
+                    LabelWrap::None => self.measure.measure_style(text, *style, size),
+                    LabelWrap::Word => {
                         let limit = label_wrap_limit(
                             node.item.width,
                             *max_width,
@@ -2025,6 +2092,16 @@ pub(crate) fn label_wrap_limit(
         limit = limit.min(max * scale);
     }
     limit
+}
+
+/// The size a fixed or percent length resolves to before content is known;
+/// auto and fill lengths keep the available size.
+fn definite(length: Length, available: f32, scale: f32) -> f32 {
+    match length {
+        Length::Fixed(value) => value * scale,
+        Length::Percent(value) if available.is_finite() => available * value.clamp(0.0, 1.0),
+        _ => available,
+    }
 }
 
 fn anchored_rect(anchor: Anchor, area: Rect, width: f32, height: f32) -> Rect {

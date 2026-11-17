@@ -284,7 +284,7 @@ measurable rather than anecdotal.
   `text`/`text-render2d` for TTF/OTF shaping and glyph atlases (see
   [text](text.md)).
 - No rich text or inline images. Labels are single-line by default;
-  `Widget::wrapped_label` / `TextWrap::Word` wraps at the available width (or
+  `Widget::wrapped_label` / `LabelWrap::Word` wraps at the available width (or
   `max_width`) and layout grows the label's height, using greedy word wrapping
   for bitmap/monospace measures and shaped wrapping with `quasar-text`.
   Per-node `NodeStyle` backgrounds/borders/radii (including transparent) and
@@ -301,3 +301,50 @@ measurable rather than anecdotal.
 - One `Ui` targets one viewport; multi-window is not modelled.
 - Audits are read-only and cover MicroMages, Jackal, MissileCommand and MattMC.
   BlackOps was unavailable locally and was not inspected.
+
+## Localisation
+
+`UiText::keyed(key, fallback)` labels resolve through the strings installed
+on a `Ui`. `StringTable::parse` reads a dependency-free `key = value` format
+(with `\n`, `\{` escapes); `Localization::negotiate("fr-CA", &tables, "en")`
+builds a fallback chain (region, language, default) and
+`Ui::set_localization` installs it. Widgets re-measure on the next layout,
+so longer translations reflow. `Ui::locale_revision` tells a game when to
+re-format dynamic text, and `Localization::format` / `format_count` fill
+`{name}` placeholders and pick `.zero` / `.one` / `.other` plural variants.
+
+QA hooks: `Ui::missing_keys` lists keys without a translation in the
+current tree, `StringTable::missing_from` compares tables, and
+`StringTable::pseudo` builds an accented, ~40% longer pseudo-locale that
+exposes clipping. Starfall's menu ships English and Spanish tables.
+
+## Controls screen
+
+With the `input` feature, `ControlsScreen` lists named actions as
+`Widget::Binding` rows for the keyboard/mouse or gamepad column. Activating a
+row starts a capture; `ControlsScreen::capture` takes this frame's pressed
+buttons (`InputState::pressed_buttons` / `FrameInput::pressed_buttons`).
+Axis bindings take two presses, buttons of the other device are ignored, and
+Escape or Select cancels. Buttons bound to two listed actions are reported by
+`conflicts()`, marked with the theme's danger border and listed in a notice;
+the reset button restores defaults. With `controls-file`, `save_bindings`
+and `load_bindings` persist TOML or JSON, merging saved files over the
+current defaults so actions added by an update get their default binding.
+Desktop apps install changed bindings through
+`DesktopApplication::take_bindings`. Starfall's options screen uses it.
+
+## Fixes in 0.2.25
+
+- Auto-height panels with a fixed or percent width measure children at
+  that width, so wrapped labels in a fixed-width card wrap at the card's
+  width.
+- `TextRenderer::prepare` warms the wrapped layout of wrapped labels, so
+  every line draws on the first frame (offscreen renders no longer need a
+  warm-up pass).
+- Styled modal panels no longer get the theme focus outline; unstyled ones
+  follow `Theme::modal_outline`.
+- Slider contents sit inside `Theme::control_inset`, clear of the focus
+  outline.
+- `quasar_ui::TextWrap` is now `LabelWrap` (the old name is a deprecated
+  alias) so it no longer collides with `quasar_text::TextWrap`; `From`
+  converts between them.

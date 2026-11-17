@@ -129,6 +129,8 @@ pub struct CacheStats {
 struct AssetKey {
     path: AssetPath,
     type_id: TypeId,
+    /// Named loader configuration ("" for the default registration).
+    variant: &'static str,
 }
 
 struct CacheEntry {
@@ -159,7 +161,7 @@ struct Mount {
 /// threads, or require an editor/build tool.
 pub struct AssetServer {
     mounts: Vec<Mount>,
-    loaders: HashMap<TypeId, Arc<dyn ErasedLoader>>,
+    loaders: HashMap<(TypeId, &'static str), Arc<dyn ErasedLoader>>,
     cache: HashMap<AssetKey, CacheEntry>,
     next_id: u64,
     clock: u64,
@@ -218,10 +220,18 @@ impl AssetServer {
         self.revision
     }
     /// Registers the loader used by [`Self::load`]. A second registration
-    /// for the same Rust type replaces the previous instance; use distinct
-    /// loader types when two configurations of the same format are needed.
+    /// for the same Rust type replaces the previous instance. Register other
+    /// configurations of the same loader type with [`Self::register_named`].
     pub fn register<L: AssetLoader>(&mut self, loader: L) -> &mut Self {
-        self.loaders.insert(TypeId::of::<L>(), Arc::new(loader));
+        self.register_named("", loader)
+    }
+    /// Registers a named configuration of a loader type, used by
+    /// [`Self::load_named`]. Several configurations of one type coexist, for
+    /// example a static and an animated [`crate::GltfLoader`]; each caches
+    /// its own decoded values. The empty name is the [`Self::register`] slot.
+    pub fn register_named<L: AssetLoader>(&mut self, name: &'static str, loader: L) -> &mut Self {
+        self.loaders
+            .insert((TypeId::of::<L>(), name), Arc::new(loader));
         self
     }
     /// Mounts a source at a prefix. An empty prefix is the root mount. Longer
@@ -351,8 +361,17 @@ impl AssetServer {
         &mut self,
         path: impl AsRef<str>,
     ) -> Result<Handle<L::Asset>, AssetError> {
+        self.load_named::<L>("", path)
+    }
+    /// Loads through the configuration registered with
+    /// [`Self::register_named`] under `name`.
+    pub fn load_named<L: AssetLoader>(
+        &mut self,
+        name: &'static str,
+        path: impl AsRef<str>,
+    ) -> Result<Handle<L::Asset>, AssetError> {
         let path = AssetPath::parse(path)?;
-        let result = self.load_inner::<L>(&path);
+        let result = self.load_inner::<L>(name, &path);
         #[cfg(feature = "diagnostics")]
         if let Some(diagnostics) = &self.diagnostics {
             match &result {
@@ -382,23 +401,30 @@ impl AssetServer {
     }
     fn load_inner<L: AssetLoader>(
         &mut self,
+        variant: &'static str,
         path: &AssetPath,
     ) -> Result<Handle<L::Asset>, AssetError> {
         let path = path.clone();
         let loader = self
             .loaders
-            .get(&TypeId::of::<L>())
+            .get(&(TypeId::of::<L>(), variant))
             .cloned()
             .ok_or_else(|| {
+                let name = if variant.is_empty() {
+                    type_name::<L>().to_owned()
+                } else {
+                    format!("{} \"{variant}\"", type_name::<L>())
+                };
                 AssetError::at(
                     AssetErrorKind::Configuration,
                     &path,
-                    format!("loader {} is not registered", type_name::<L>()),
+                    format!("loader {name} is not registered"),
                 )
             })?;
         let key = AssetKey {
             path: path.clone(),
             type_id: TypeId::of::<L>(),
+            variant,
         };
         self.clock = self.clock.wrapping_add(1);
         if self

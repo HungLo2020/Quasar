@@ -65,6 +65,61 @@ pub struct BlockDef {
     /// Light emitted (0..=15).
     pub emission: u8,
     pub collision: bool,
+    /// Occupied box of a single-cell block in local block space
+    /// (`min`, `max`, each `0..=1`). The unit box is a full cell; anything
+    /// smaller (slabs, cut-away walls) is meshed as that box by the default
+    /// model source and culls by its derived face shapes.
+    #[cfg_attr(feature = "serde", serde(default = "unit_bounds"))]
+    pub bounds: [[f32; 3]; 2],
+}
+
+/// The full cell, `[0, 0, 0]..[1, 1, 1]`.
+pub const UNIT_BOUNDS: [[f32; 3]; 2] = [[0.; 3], [1.; 3]];
+
+#[cfg(feature = "serde")]
+fn unit_bounds() -> [[f32; 3]; 2] {
+    UNIT_BOUNDS
+}
+
+/// Face shape of a box face: `Full` when it covers the whole cell face,
+/// `Shape(id)` for a partial face on the cell boundary (equal partial
+/// rectangles share an id, so two equal walls cull each other) and `None`
+/// for faces inside the cell, which never hide or get hidden.
+pub fn box_face_shape(min: [f32; 3], max: [f32; 3], face: Face) -> FaceShape {
+    let axis = face.axis();
+    let on_boundary = if face.is_positive() {
+        max[axis] >= 1.
+    } else {
+        min[axis] <= 0.
+    };
+    if !on_boundary {
+        return FaceShape::None;
+    }
+    // Side faces list the vertical extent first, so the X and Z sides of a
+    // wall share an id and rotated walls still cull each other.
+    let (u, v) = match axis {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (1, 0),
+    };
+    if min[u] <= 0. && min[v] <= 0. && max[u] >= 1. && max[v] >= 1. {
+        return FaceShape::Full;
+    }
+    // Quantise the rectangle to 1/64 so equal rectangles get equal ids.
+    let q = |x: f32| (x.clamp(0., 1.) * 64.).round() as u32;
+    let key = [
+        q(min[u]),
+        q(min[v]),
+        q(max[u]),
+        q(max[v]),
+        u32::from(axis == 1),
+    ];
+    let mut hash: u32 = 0x811c_9dc5;
+    for k in key {
+        hash = (hash ^ k).wrapping_mul(0x0100_0193);
+    }
+    // Keep ids away from 0..1024, which games use for hand-assigned shapes.
+    FaceShape::Shape(1024 + (hash % 64_000) as u16)
 }
 
 impl BlockDef {
@@ -82,7 +137,34 @@ impl BlockDef {
             materials: [material; 6],
             emission: 0,
             collision: true,
+            bounds: UNIT_BOUNDS,
         }
+    }
+    /// A solid box inside one cell (slab, cut-away wall, pedestal); see
+    /// [`Self::with_bounds`].
+    pub fn partial(name: &str, material: u32, min: [f32; 3], max: [f32; 3]) -> Self {
+        Self::cube(name, material).with_bounds(min, max)
+    }
+    /// A cell-wide block `height` tall (0..=1), for example a 0.6-high wall
+    /// a top-down camera sees over.
+    pub fn with_height(self, height: f32) -> Self {
+        self.with_bounds([0.; 3], [1., height, 1.])
+    }
+    /// Shrinks the block to the box `min..max` (local block space). Face
+    /// shapes are derived from the box ([`box_face_shape`]); a box smaller
+    /// than the cell is no longer a full cube and no longer opaque.
+    pub fn with_bounds(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
+        let min = min.map(|v| v.clamp(0., 1.));
+        let max: [f32; 3] = std::array::from_fn(|a| max[a].clamp(min[a], 1.));
+        self.bounds = [min, max];
+        self.faces = Face::ALL.map(|face| box_face_shape(min, max, face));
+        self.full_cube = self.bounds == UNIT_BOUNDS && self.footprint.len() == 1;
+        self.opaque &= self.full_cube;
+        self
+    }
+    /// Whether the block occupies less than its whole cell.
+    pub fn is_partial(&self) -> bool {
+        self.bounds != UNIT_BOUNDS
     }
     /// The empty block.
     pub fn air() -> Self {
@@ -98,6 +180,7 @@ impl BlockDef {
             materials: [0; 6],
             emission: 0,
             collision: false,
+            bounds: UNIT_BOUNDS,
         }
     }
     pub fn with_layer(mut self, layer: Layer) -> Self {

@@ -5,7 +5,8 @@
 //! and rendering can inspect it even when no fixed tick is due, while fixed
 //! simulation ticks see the same edges exactly once.
 use crate::{
-    ActionState, Button, GamepadAxis, InputDevice, InputRead, InputState, Key, MouseButton,
+    ActionState, Button, DeviceActivity, GamepadAxis, InputDevice, InputRead, InputState, Key,
+    MouseButton,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -58,7 +59,7 @@ pub struct FrameInput {
     preedit: String,
     preedit_cursor: usize,
     consumed: ConsumedInput,
-    last_device: Option<InputDevice>,
+    last_device: Option<DeviceActivity>,
     device_changed: bool,
 }
 
@@ -127,13 +128,18 @@ impl FrameInput {
         self.preedit.clone_from(&state.preedit);
         self.preedit_cursor = state.preedit_cursor;
         self.consumed.clear();
-        let device = state.last_active_device();
-        self.device_changed = device != self.last_device;
-        self.last_device = device;
+        let activity = state.last_activity();
+        self.device_changed = activity.map(|a| a.device) != self.last_device.map(|a| a.device);
+        self.last_device = activity;
     }
 
     /// [`InputState::last_active_device`] when this frame was captured.
     pub fn last_active_device(&self) -> Option<InputDevice> {
+        self.last_device.map(|a| a.device)
+    }
+
+    /// [`InputState::last_activity`] when this frame was captured.
+    pub fn last_activity(&self) -> Option<DeviceActivity> {
         self.last_device
     }
 
@@ -182,6 +188,12 @@ impl FrameInput {
 
     pub fn button_pressed(&self, button: Button) -> bool {
         self.pressed.contains(&button)
+    }
+    /// See [`InputState::pressed_buttons`].
+    pub fn pressed_buttons(&self) -> Vec<Button> {
+        let mut buttons: Vec<Button> = self.pressed.iter().copied().collect();
+        buttons.sort_by_key(|b| format!("{b:?}"));
+        buttons
     }
 
     pub fn button_released(&self, button: Button) -> bool {

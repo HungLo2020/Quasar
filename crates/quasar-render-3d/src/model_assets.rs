@@ -305,7 +305,10 @@ impl UploadedModel {
                         uv: m.base_uv.apply(v.uv),
                     })
                     .collect();
-                let mut mesh = Mesh::upload(gal, &vertices, &p.indices)?;
+                let mut mesh = match &p.colors {
+                    Some(colors) => Mesh::upload_colored(gal, &vertices, colors, &p.indices)?,
+                    None => Mesh::upload(gal, &vertices, &p.indices)?,
+                };
                 mesh.set_opaque_alpha(m.alpha == ModelAlpha::Opaque);
                 mesh.set_face_policy(if m.double_sided {
                     MeshFacePolicy::DoubleSided

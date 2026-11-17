@@ -1,28 +1,111 @@
-//! Voxel renderer (asteroid LOD nodes and ship grids) plus a 2D HUD.
+//! Voxels (asteroid LOD nodes and ship grids) and meshes on one HDR scene,
+//! composed in order by `quasar_render_voxel::HybridFrame`: opaque voxels,
+//! the drone mesh, scorch decals on dug rock, dust and spark particles,
+//! the drone's see-through outline, the post chain and the 2D HUD.
 use crate::GeometryUpdate;
 use crate::content::{TILE, mat, texture_layers};
-use crate::world::{DriftWorld, Target};
-use quasar_frame::{Gpu, GraphicsResult, RenderTarget};
+use crate::world::{DriftWorld, Effect, Target};
+use quasar_frame::{Gpu, GraphicsResult, RenderTarget, texture_2d};
 use quasar_math::Vec3;
 use quasar_profile::RendererStats;
 use quasar_render_2d::{Canvas, Color, DisplayOptions, LoadOp, Rect, RenderState2D, Textures};
-use quasar_render_3d::{ColorSpace, Light, Lighting, ShadingModel};
-use quasar_render_voxel::{
-    ChunkKey, ChunkPlacement, MaterialDef, MaterialFilter, OverlayBox, VoxelCamera, VoxelMaterials,
-    VoxelPassOptions, VoxelRenderer, VoxelRendererConfig, VoxelShading, VoxelStats,
+use quasar_render_3d::{
+    BlendMode, ColorSpace, Decal, DecalRenderer, Light, Lighting, LitCamera3D, LitMaterial, Mat4,
+    Mesh, MeshData, OutlineDraw, OutlineRenderer, OutlineStyle, ParticleBurst, ParticleCamera,
+    ParticleSettings, ParticleSystem, PostChain, PostSettings, SceneTarget, ShadingModel,
+    SurfaceDraw3D, SurfaceMaterial, SurfaceRenderState3D,
 };
-use vulkanic_gal::CommandBuffer;
+use quasar_render_voxel::{
+    ChunkKey, ChunkPlacement, HybridFrame, MaterialDef, MaterialFilter, OverlayBox, Stage,
+    VoxelCamera, VoxelMaterials, VoxelPassOptions, VoxelRenderer, VoxelRendererConfig,
+    VoxelShading, VoxelStats,
+};
+use vulkanic_gal::{CommandBuffer, Texture, TextureView};
 
 const SPACE: [f32; 3] = [0.004, 0.005, 0.012];
+/// Scorch marks kept on the asteroid (oldest replaced first).
+const MAX_DECALS: usize = 48;
 
 pub struct Graphics {
     voxels: VoxelRenderer,
+    surfaces: SurfaceRenderState3D,
+    particles: ParticleSystem,
+    decals: DecalRenderer,
+    outlines: OutlineRenderer,
+    post: PostChain,
+    scene: Option<SceneTarget>,
+    drone: Mesh,
+    _white: Texture,
+    white_view: TextureView,
+    _scorch: Texture,
+    scorch_view: TextureView,
+    scorches: Vec<Vec3>,
+    frame: u64,
     state_2d: RenderState2D,
     textures: Textures,
     stats: RendererStats,
     pub voxel_stats: VoxelStats,
-    pending_submission: Option<u64>,
+    pending_submissions: Vec<u64>,
     pub prepare_micros: f64,
+}
+
+fn rgba_texture(
+    gal: &Gpu,
+    label: &str,
+    size: u32,
+    pixels: &[u8],
+) -> GraphicsResult<(Texture, TextureView)> {
+    use vulkanic_gal::{TexelCopyBufferLayout, TextureFormat, TextureUsages};
+    let texture = texture_2d(
+        &gal.device,
+        label,
+        size,
+        size,
+        TextureFormat::Rgba8Unorm,
+        TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+    )?;
+    gal.queue.write_texture(
+        texture.as_image_copy(),
+        pixels,
+        TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(size * 4),
+            rows_per_image: Some(size),
+        },
+        texture.size(),
+    );
+    let view = texture.create_view(&Default::default());
+    Ok((texture, view))
+}
+
+/// A soft, slightly ragged dark ring: the burn left by the mining laser.
+fn scorch_pixels(size: u32) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let u = (x as f32 + 0.5) / size as f32 * 2.0 - 1.0;
+            let v = (y as f32 + 0.5) / size as f32 * 2.0 - 1.0;
+            let r = (u * u + v * v).sqrt();
+            let angle = v.atan2(u);
+            let ragged = 0.85 + 0.08 * (angle * 7.0).sin() + 0.05 * (angle * 13.0).cos();
+            let alpha = ((ragged - r) / 0.25).clamp(0.0, 1.0) * 0.85;
+            let glow = ((0.35 - r) / 0.35).clamp(0.0, 1.0);
+            pixels.extend([
+                (40.0 + 120.0 * glow) as u8,
+                (22.0 + 40.0 * glow) as u8,
+                12,
+                (alpha * 255.0) as u8,
+            ]);
+        }
+    }
+    pixels
+}
+
+/// Where the survey drone is at frame `frame`: a slow orbit that passes
+/// behind the asteroid, so its outline shows through the rock.
+pub fn drone_position(frame: u64) -> Vec3 {
+    let t = frame as f32 * 0.01;
+    Vec3::new(t.cos() * 46.0, 18.0 + (t * 1.7).sin() * 6.0, t.sin() * 46.0)
 }
 
 fn materials(gal: &Gpu) -> GraphicsResult<VoxelMaterials> {
@@ -40,26 +123,91 @@ fn materials(gal: &Gpu) -> GraphicsResult<VoxelMaterials> {
     VoxelMaterials::new(gal, TILE, &texture_layers(), &defs, MaterialFilter::Nearest)
 }
 
-fn encode_srgb(v: f32) -> f32 {
-    if v <= 0.003_130_8 {
-        v * 12.92
-    } else {
-        1.055 * v.powf(1.0 / 2.4) - 0.055
-    }
-}
-
 impl Graphics {
     pub fn new(gal: &Gpu) -> GraphicsResult<Self> {
         let voxels = VoxelRenderer::new(gal, materials(gal)?, VoxelRendererConfig::default())?;
+        let (white, white_view) = rgba_texture(gal, "drift white", 1, &[255; 4])?;
+        let (scorch, scorch_view) = rgba_texture(gal, "drift scorch", 64, &scorch_pixels(64))?;
+        let particles = ParticleSystem::new(
+            gal,
+            4096,
+            ParticleSettings {
+                gravity: [0.0; 3],
+                drag: 0.8,
+                blend: BlendMode::Additive,
+            },
+            0xd51f7,
+        )?;
+        let mut drone = MeshData::sphere(1.2, 10, 16);
+        drone.append(&MeshData::cuboid([2.2, 0.12, 0.5]));
         Ok(Self {
             voxels,
+            surfaces: SurfaceRenderState3D::new(gal, 4, 0)?,
+            particles,
+            decals: DecalRenderer::new(gal)?,
+            outlines: OutlineRenderer::new(gal)?,
+            post: PostChain::new(gal)?,
+            scene: None,
+            drone: drone.upload(gal)?,
+            _white: white,
+            white_view,
+            _scorch: scorch,
+            scorch_view,
+            scorches: Vec::new(),
+            frame: 0,
             state_2d: RenderState2D::new(gal)?,
             textures: Textures::default(),
             stats: RendererStats::default(),
             voxel_stats: VoxelStats::default(),
-            pending_submission: None,
+            pending_submissions: Vec::new(),
             prepare_micros: 0.0,
         })
+    }
+
+    /// Turns world events into particles and decals.
+    fn spawn_effects(&mut self, world: &mut DriftWorld) -> GraphicsResult<()> {
+        for effect in world.take_effects() {
+            match effect {
+                Effect::Dig { point, fill } => {
+                    let color = if fill {
+                        [0.5, 0.8, 1.0, 0.9]
+                    } else {
+                        [1.0, 0.7, 0.35, 0.9]
+                    };
+                    self.particles.emit(&ParticleBurst {
+                        position: point.to_array(),
+                        position_jitter: 2.5,
+                        count: 160,
+                        speed: [1.0, 6.0],
+                        life: [0.6, 1.6],
+                        size: [0.35, 0.08],
+                        color_start: color,
+                        color_end: [color[0] * 0.5, color[1] * 0.4, color[2] * 0.3, 0.0],
+                        ..ParticleBurst::default()
+                    })?;
+                    if !fill {
+                        if self.scorches.len() == MAX_DECALS {
+                            self.scorches.remove(0);
+                        }
+                        self.scorches.push(point);
+                    }
+                }
+                Effect::BlockRemoved { point } => {
+                    self.particles.emit(&ParticleBurst {
+                        position: point.to_array(),
+                        position_jitter: 0.4,
+                        count: 90,
+                        speed: [3.0, 9.0],
+                        life: [0.3, 0.8],
+                        size: [0.12, 0.02],
+                        color_start: [3.0, 2.2, 1.0, 1.0],
+                        color_end: [2.0, 0.3, 0.05, 0.0],
+                        ..ParticleBurst::default()
+                    })?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn last_stats(&self) -> RendererStats {
@@ -96,13 +244,12 @@ impl Graphics {
     }
 
     pub fn submitted(&mut self, gal: &Gpu) {
-        if let Some(submission) = self.pending_submission.take() {
-            self.voxels.submitted(gal, submission);
-        }
+        let pending = std::mem::take(&mut self.pending_submissions);
+        quasar_render_voxel::HybridCommands::submitted(&pending, gal, &mut self.voxels);
     }
 
     pub fn finish(&mut self, gal: &Gpu) -> GraphicsResult<()> {
-        self.pending_submission = None;
+        self.pending_submissions.clear();
         self.voxels.wait_and_retire(gal)
     }
 
@@ -125,11 +272,14 @@ impl Graphics {
             projection,
         )
         .ok_or_else(|| quasar_frame::error("invalid camera"))?;
-        let srgb_output = !target.format.is_srgb();
-        let clear = if srgb_output {
-            SPACE.map(encode_srgb)
-        } else {
-            SPACE
+        self.spawn_effects(world)?;
+        self.frame += 1;
+        let scene = match &mut self.scene {
+            Some(scene) => {
+                scene.resize(gal, target.width, target.height)?;
+                scene
+            }
+            none => none.insert(SceneTarget::new(gal, target.width, target.height)?),
         };
         let shading = VoxelShading {
             ao_strength: 0.55,
@@ -148,6 +298,11 @@ impl Graphics {
                 intensity: 0.18,
             },
         ];
+        let lighting = Lighting {
+            ambient: [0.07; 3],
+            lights: &lights,
+            output_color_space: ColorSpace::Linear,
+        };
         let mut overlays = Vec::new();
         if let Some(Target::Ship(hit)) = world.target {
             let grid = world.fleet.ships[hit.ship].grid.id;
@@ -159,31 +314,118 @@ impl Graphics {
                 color: [0.3, 0.9, 1.0, 1.0],
             });
         }
+        let mut frame = HybridFrame::new();
+        let clear = [SPACE[0], SPACE[1], SPACE[2], 1.0];
         let prepared = self.voxels.prepare(
             gal,
-            target,
+            scene.target(),
             &camera,
-            Lighting {
-                ambient: [0.07; 3],
-                lights: &lights,
-                output_color_space: if srgb_output {
-                    ColorSpace::Srgb
-                } else {
-                    ColorSpace::Linear
-                },
-            },
+            lighting,
             None,
             &shading,
             &VoxelPassOptions {
-                clear_color: Some([clear[0], clear[1], clear[2], 1.0]),
+                clear_color: Some(clear),
                 overlays,
                 ..VoxelPassOptions::default()
             },
         )?;
-        self.prepare_micros = started.elapsed().as_secs_f64() * 1e6;
         self.voxel_stats = prepared.stats;
-        self.pending_submission = Some(prepared.submission);
-        let mut commands = vec![prepared.commands];
+        frame.voxels(Stage::Opaque, prepared)?;
+        // The drone: an ordinary lit mesh sharing the voxels' depth.
+        let eye = world.camera.position.as_vec3();
+        let view = quasar_math::look_to(eye, world.camera.forward(), Vec3::Y)
+            .ok_or_else(|| quasar_frame::error("invalid view"))?;
+        let view_projection = Mat4::from_glam(projection * view);
+        let lit_camera = LitCamera3D {
+            view_projection,
+            position: eye.to_array(),
+        };
+        let drone_at = drone_position(world.tick());
+        let drone_model = Mat4::from_glam(
+            quasar_math::Mat4::from_translation(drone_at)
+                * quasar_math::Mat4::from_rotation_y(world.tick() as f32 * 0.02),
+        );
+        let mut drone_material = LitMaterial::textured(&self.white_view);
+        drone_material.base.tint = [0.9, 0.92, 1.0, 1.0];
+        drone_material.emissive = [0.05, 0.3, 0.6];
+        let drone_draw = SurfaceDraw3D {
+            mesh: &self.drone,
+            model: drone_model,
+            material: SurfaceMaterial::from(drone_material),
+        };
+        frame.meshes(
+            Stage::Opaque,
+            self.surfaces.prepare(
+                gal,
+                scene.target(),
+                lit_camera,
+                lighting,
+                std::slice::from_ref(&drone_draw),
+                None,
+                frame.mesh_pass_options(clear),
+            )?,
+        )?;
+        // Scorch marks projected onto whatever rock is inside each box.
+        let decals: Vec<Decal<'_>> = self
+            .scorches
+            .iter()
+            .map(|p| Decal {
+                tint: [1.0, 1.0, 1.0, 0.9],
+                fade: 0.5,
+                ..Decal::new(
+                    Mat4::from_glam(
+                        quasar_math::Mat4::from_translation(*p)
+                            * quasar_math::Mat4::from_scale(Vec3::splat(8.0)),
+                    ),
+                    &self.scorch_view,
+                )
+            })
+            .collect();
+        frame.push(
+            Stage::Decals,
+            self.decals
+                .prepare(gal, scene, view_projection, &decals, BlendMode::Alpha)?,
+        )?;
+        frame.push(
+            Stage::Effects,
+            self.particles.prepare(
+                gal,
+                scene.target(),
+                ParticleCamera::from_view(Mat4::from_glam(view), Mat4::from_glam(projection)),
+                1.0 / 60.0,
+            )?,
+        )?;
+        frame.push(
+            Stage::Effects,
+            self.outlines.prepare(
+                gal,
+                scene,
+                view_projection,
+                &[OutlineDraw {
+                    mesh: &self.drone,
+                    model: drone_model,
+                    style: 0,
+                }],
+                &[OutlineStyle {
+                    outline: [0.3, 0.9, 1.0, 1.0],
+                    occluded_outline: [0.3, 0.9, 1.0, 0.8],
+                    occluded_fill: [0.2, 0.6, 1.0, 0.25],
+                    width: 2.0,
+                }],
+            )?,
+        )?;
+        let post = PostSettings {
+            exposure: 1.0,
+            ..PostSettings::default()
+        };
+        frame.push(
+            Stage::Post,
+            self.post.prepare_scene(gal, scene, target, &post)?,
+        )?;
+        self.prepare_micros = started.elapsed().as_secs_f64() * 1e6;
+        let frame = frame.finish();
+        self.pending_submissions = frame.voxel_submissions;
+        let mut commands = frame.commands;
         let mut quads_2d = 0;
         if hud {
             let mut canvas = Canvas::new(target.width, target.height)
@@ -221,6 +463,12 @@ impl Graphics {
 
     pub fn release(&mut self, gal: &Gpu) -> GraphicsResult<()> {
         self.finish(gal)?;
+        self.particles.release(gal)?;
+        self.decals.release(gal)?;
+        self.outlines.release(gal)?;
+        self.surfaces.release(gal)?;
+        self.post.release(gal)?;
+        self.scene = None;
         self.state_2d.release(gal)
     }
 }

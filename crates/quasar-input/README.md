@@ -146,3 +146,10 @@ quasar-input = { git = "https://github.com/HungLo2020/Quasar", rev = "<commit-co
 Cargo fetches the repository into its managed cache. Paths in this repository's
 workspace manifests are internal workspace wiring, not a requirement imposed
 on external applications. Replace the revision placeholder with a commit containing this crate.
+
+## Bindings and devices
+
+`Bindings::conflicts_among`, `merged_with_defaults` and `rebind` back
+controls screens; `InputState::pressed_buttons` feeds rebind capture.
+`most_recent_device` compares activity stamps across input states (window
+and gamepad hub) to find the device used last.

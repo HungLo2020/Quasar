@@ -20,6 +20,7 @@ fn model(color: [u8; 4], unlit: bool) -> Model3D {
             indices: vec![0, 1, 2, 0, 2, 3],
             material: 0,
             skin: None,
+            colors: None,
         }],
         instances: vec![ModelInstance {
             node: 0,

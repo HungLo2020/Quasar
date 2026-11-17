@@ -1,9 +1,71 @@
 //! Modern 3D menu stack for Starfall.
 use crate::world::GameError;
+use quasar_input::{Bindings, Button};
 use quasar_ui::{
-    ActionId, Align, Edges, Layer, LayoutItem, Length, PanelLayout, Rect, StackDirection,
-    TextMeasure, Theme, Ui, UiEvent, UiInput, UiText, Widget,
+    ActionId, Align, ControlEntry, ControlsOutcome, ControlsScreen, Edges, Layer, LayoutItem,
+    Length, Localization, PanelLayout, Rect, StackDirection, StringTable, TextMeasure, Theme, Ui,
+    UiEvent, UiInput, UiText, Widget,
 };
+
+/// Menu strings. Keys come from the English text (`key_of`); English is
+/// also the fallback, so a missing translation shows English.
+const ENGLISH: &str = include_str!("../lang/en.lang");
+const SPANISH: &str = include_str!("../lang/es.lang");
+
+/// Languages offered in the options screen: (tag, native name).
+pub const LANGUAGES: [(&str, &str); 2] = [("en", "English"), ("es", "Español")];
+
+fn string_tables() -> Vec<StringTable> {
+    vec![
+        StringTable::parse("en", ENGLISH).expect("built-in English strings"),
+        StringTable::parse("es", SPANISH).expect("built-in Spanish strings"),
+    ]
+}
+
+/// Localisation chain for a language tag, falling back to English.
+pub fn localization(language: &str) -> Localization {
+    Localization::negotiate(language, &string_tables(), "en")
+}
+
+/// String-table key of a menu text: `menu.` + lower-case words joined by `_`.
+pub fn key_of(text: &str) -> String {
+    let words: String = text
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!(
+        "menu.{}",
+        words
+            .split('_')
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join("_")
+    )
+}
+
+fn keyed(text: &str) -> UiText {
+    UiText::keyed(key_of(text), text)
+}
+
+/// Game actions listed on the controls screen.
+pub fn control_entries() -> Vec<ControlEntry> {
+    [
+        ("forward", "THRUST"),
+        ("strafe", "STRAFE"),
+        ("turn", "TURN"),
+        ("shoot", "FIRE"),
+        ("restart", "RESTART"),
+    ]
+    .into_iter()
+    .map(|(action, label)| ControlEntry::new(action, keyed(label)))
+    .collect()
+}
 
 impl Default for Options {
     fn default() -> Self {
@@ -12,8 +74,14 @@ impl Default for Options {
             volume: 0.6,
             sensitivity: 0.0026,
             player_name: "Pilot".into(),
+            language: "en".into(),
         }
     }
+}
+
+/// Saved controls, next to the UI preferences.
+pub fn controls_path() -> std::path::PathBuf {
+    Options::path().with_file_name("starfall-controls.toml")
 }
 
 impl Options {
@@ -44,6 +112,7 @@ impl Options {
         let mut volume = None;
         let mut sensitivity = None;
         let mut player_name = None;
+        let mut language = None;
         for line in text.lines() {
             let line = line.split('#').next().unwrap_or("").trim();
             let Some((key, value)) = line.split_once('=') else {
@@ -55,6 +124,12 @@ impl Options {
                 "fullscreen" => fullscreen = Some(value == "true"),
                 "volume" => volume = value.parse::<f32>().ok(),
                 "sensitivity" => sensitivity = value.parse::<f32>().ok(),
+                "language" => {
+                    let tag = value.trim_matches('"');
+                    if LANGUAGES.iter().any(|(t, _)| *t == tag) {
+                        language = Some(tag.to_owned());
+                    }
+                }
                 "player_name" => {
                     player_name = Some(
                         value
@@ -74,6 +149,7 @@ impl Options {
                 .unwrap_or(defaults.sensitivity)
                 .clamp(0.0001, 0.05),
             player_name: player_name.unwrap_or(defaults.player_name),
+            language: language.unwrap_or(defaults.language),
         })
     }
 
@@ -89,8 +165,8 @@ impl Options {
             .replace('\n', "\\n")
             .replace('\r', "");
         let text = format!(
-            "# Starfall UI preferences (game-owned).\nversion = 1\n\n[ui]\nfullscreen = {}\nvolume = {:.3}\nsensitivity = {:.6}\nplayer_name = \"{}\"\n",
-            self.fullscreen, self.volume, self.sensitivity, player_name
+            "# Starfall UI preferences (game-owned).\nversion = 1\n\n[ui]\nfullscreen = {}\nvolume = {:.3}\nsensitivity = {:.6}\nplayer_name = \"{}\"\nlanguage = \"{}\"\n",
+            self.fullscreen, self.volume, self.sensitivity, player_name, self.language
         );
         let temporary = path.with_extension("tmp");
         std::fs::write(&temporary, text)
@@ -107,10 +183,13 @@ pub struct Options {
     pub volume: f32,
     pub sensitivity: f32,
     pub player_name: String,
+    /// Menu language tag (see [`LANGUAGES`]).
+    pub language: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Screen {
+    Controls,
     Main,
     Pause,
     Options,
@@ -128,6 +207,8 @@ pub enum MenuAction {
     QuitToMenu,
     Quit,
     Apply(Options),
+    /// The controls screen changed the game bindings.
+    ApplyBindings(Bindings),
 }
 
 pub struct Menu {
@@ -140,6 +221,10 @@ pub struct Menu {
     volume: Option<quasar_ui::NodeId>,
     sensitivity: Option<quasar_ui::NodeId>,
     player_name: Option<quasar_ui::NodeId>,
+    language: Option<quasar_ui::NodeId>,
+    controls: Option<ControlsScreen>,
+    bindings: Bindings,
+    default_bindings: Bindings,
 }
 
 impl Menu {
@@ -154,9 +239,47 @@ impl Menu {
             volume: None,
             sensitivity: None,
             player_name: None,
+            language: None,
+            controls: None,
+            bindings: Bindings::default(),
+            default_bindings: Bindings::default(),
         };
         menu.rebuild();
         menu
+    }
+
+    /// Game bindings shown on the controls screen and their defaults.
+    pub fn set_bindings(&mut self, bindings: Bindings, defaults: Bindings) {
+        self.bindings = bindings.merged_with_defaults(&defaults);
+        self.default_bindings = defaults;
+    }
+
+    pub fn bindings(&self) -> &Bindings {
+        &self.bindings
+    }
+
+    /// Whether the controls screen waits for a button press.
+    pub fn is_capturing(&self) -> bool {
+        self.controls
+            .as_ref()
+            .is_some_and(ControlsScreen::is_capturing)
+    }
+
+    /// Offers this frame's pressed buttons to a running rebind.
+    pub fn capture(&mut self, pressed: &[Button]) -> Result<MenuAction, GameError> {
+        let Some(controls) = &mut self.controls else {
+            return Ok(MenuAction::None);
+        };
+        match controls
+            .capture(&mut self.ui, pressed)
+            .map_err(|e| GameError::invalid(format!("controls: {e:?}")))?
+        {
+            ControlsOutcome::Rebound { .. } => {
+                self.bindings = controls.bindings().clone();
+                Ok(MenuAction::ApplyBindings(self.bindings.clone()))
+            }
+            _ => Ok(MenuAction::None),
+        }
     }
 
     pub fn open_main(&mut self) {
@@ -203,8 +326,30 @@ impl Menu {
         self.sync_options();
         let mut action = MenuAction::None;
         for event in &frame.events {
+            if let Some(controls) = &mut self.controls {
+                match controls
+                    .handle_event(&mut self.ui, event)
+                    .map_err(|e| GameError::invalid(format!("controls: {e:?}")))?
+                {
+                    ControlsOutcome::Reset => {
+                        self.bindings = controls.bindings().clone();
+                        action = MenuAction::ApplyBindings(self.bindings.clone());
+                        break;
+                    }
+                    ControlsOutcome::None => {}
+                    _ => continue,
+                }
+            }
             if matches!(event, UiEvent::Cancelled) {
                 action = match self.screen {
+                    Some(Screen::Controls) => {
+                        if self.is_capturing() {
+                            continue;
+                        }
+                        self.screen = Some(Screen::Options);
+                        self.rebuild();
+                        MenuAction::None
+                    }
                     Some(Screen::Pause) => {
                         self.close();
                         MenuAction::Resume
@@ -281,6 +426,16 @@ impl Menu {
                         self.rebuild();
                         MenuAction::None
                     }
+                    (Some(Screen::Options), 10) => {
+                        self.screen = Some(Screen::Controls);
+                        self.rebuild();
+                        MenuAction::None
+                    }
+                    (Some(Screen::Controls), 11) => {
+                        self.screen = Some(Screen::Options);
+                        self.rebuild();
+                        MenuAction::None
+                    }
                     (Some(Screen::ConfirmQuitApp), 8) => MenuAction::Quit,
                     (Some(Screen::ConfirmQuitToMenu), 8) => {
                         self.open_main();
@@ -337,6 +492,16 @@ impl Menu {
         {
             self.options.player_name.clone_from(text);
         }
+        if let Some(id) = self.language
+            && let Some(node) = self.ui.node(id)
+            && let Widget::Select { selected, .. } = &node.widget
+            && let Some((tag, _)) = LANGUAGES.get(*selected)
+            && self.options.language != *tag
+        {
+            // Preview the language immediately; Cancel restores it.
+            self.options.language = (*tag).to_owned();
+            self.ui.set_localization(&localization(tag));
+        }
     }
 
     fn rebuild(&mut self) {
@@ -344,11 +509,14 @@ impl Menu {
         self.volume = None;
         self.sensitivity = None;
         self.player_name = None;
+        self.language = None;
+        self.controls = None;
         let Some(screen) = self.screen else {
             self.ui = Ui::new(Theme::modern());
             return;
         };
         let mut ui = Ui::new(Theme::modern());
+        ui.set_localization(&localization(&self.options.language));
         let root = ui.add_root(
             Widget::Panel {
                 layout: PanelLayout::Absolute,
@@ -364,7 +532,7 @@ impl Menu {
             ),
         );
         let width = match screen {
-            Screen::Options => 620.0,
+            Screen::Options | Screen::Controls => 620.0,
             Screen::ConfirmQuitApp | Screen::ConfirmQuitToMenu | Screen::ConfirmRestart => 560.0,
             _ => 460.0,
         };
@@ -387,6 +555,7 @@ impl Menu {
             Screen::Main => "STARFALL",
             Screen::Pause => "PAUSED",
             Screen::Options => "OPTIONS",
+            Screen::Controls => "CONTROLS",
             Screen::ConfirmQuitApp => "QUIT STARFALL?",
             Screen::ConfirmQuitToMenu => "RETURN TO MAIN MENU?",
             Screen::ConfirmRestart => "RESTART RUN?",
@@ -415,7 +584,7 @@ impl Menu {
                     .add_child(
                         panel,
                         Widget::Checkbox {
-                            label: UiText::literal("FULLSCREEN"),
+                            label: keyed("FULLSCREEN"),
                             checked: self.options.fullscreen,
                             action: None,
                         },
@@ -427,7 +596,7 @@ impl Menu {
                     .add_child(
                         panel,
                         Widget::Slider {
-                            label: UiText::literal("MASTER VOLUME"),
+                            label: keyed("MASTER VOLUME"),
                             value: self.options.volume,
                             min: 0.0,
                             max: 1.0,
@@ -442,7 +611,7 @@ impl Menu {
                     .add_child(
                         panel,
                         Widget::Slider {
-                            label: UiText::literal("MOUSE SENSITIVITY"),
+                            label: keyed("MOUSE SENSITIVITY"),
                             value: self.options.sensitivity,
                             min: 0.0005,
                             max: 0.01,
@@ -458,7 +627,7 @@ impl Menu {
                         panel,
                         Widget::TextInput {
                             text: self.options.player_name.clone(),
-                            placeholder: UiText::literal("CALLSIGN"),
+                            placeholder: keyed("CALLSIGN"),
                             cursor: self.options.player_name.chars().count(),
                             anchor: self.options.player_name.chars().count(),
                             max_len: 32,
@@ -484,6 +653,45 @@ impl Menu {
                 add_button(&mut ui, panel, "APPLY", 5);
                 add_button(&mut ui, panel, "CANCEL", 6);
                 add_button(&mut ui, panel, "RESET DEFAULTS", 7);
+                add_button(&mut ui, panel, "CONTROLS", 10);
+                let selected = LANGUAGES
+                    .iter()
+                    .position(|(tag, _)| *tag == self.options.language)
+                    .unwrap_or(0);
+                let language = ui
+                    .add_child(
+                        panel,
+                        Widget::Select {
+                            label: keyed("LANGUAGE"),
+                            options: LANGUAGES
+                                .iter()
+                                .map(|(_, name)| UiText::literal(*name))
+                                .collect(),
+                            selected,
+                            action: None,
+                        },
+                        LayoutItem::size(Length::Fill, Length::fixed(30.0)),
+                    )
+                    .unwrap();
+                self.language = Some(language);
+            }
+            Screen::Controls => {
+                let mut controls = ControlsScreen::new(
+                    control_entries(),
+                    &self.bindings,
+                    self.default_bindings.clone(),
+                );
+                controls
+                    .build(&mut ui, panel, ActionId::new(12))
+                    .expect("controls screen");
+                add_label(
+                    &mut ui,
+                    panel,
+                    "SELECT A ROW, THEN PRESS A KEY. ESC CANCELS.",
+                    quasar_ui::TextStyle::Small,
+                );
+                add_button(&mut ui, panel, "BACK", 11);
+                self.controls = Some(controls);
             }
             Screen::ConfirmQuitApp | Screen::ConfirmQuitToMenu | Screen::ConfirmRestart => {
                 add_label(
@@ -509,7 +717,7 @@ impl Menu {
 fn add_label(ui: &mut Ui, parent: quasar_ui::NodeId, text: &str, style: quasar_ui::TextStyle) {
     ui.add_child(
         parent,
-        Widget::label(UiText::literal(text), style),
+        Widget::label(keyed(text), style),
         LayoutItem::size(Length::Fill, Length::Auto),
     )
     .unwrap();
@@ -519,7 +727,7 @@ fn add_button(ui: &mut Ui, parent: quasar_ui::NodeId, text: &str, action: u64) {
     ui.add_child(
         parent,
         Widget::Button {
-            text: UiText::literal(text),
+            text: keyed(text),
             action: Some(ActionId::new(action)),
         },
         LayoutItem::size(Length::Fill, Length::fixed(36.0)),

@@ -3,6 +3,9 @@
 use crate::world::{GameError, GameEvent, Level};
 use quasar_assets::{Asset, AssetError, AssetErrorKind, AssetLoader, AssetServer, LoadContext};
 use quasar_audio::Clip;
+use quasar_config::content::{
+    ContentFormat, ContentRecord, ContentRegistry, ContentSnapshot, Validator,
+};
 use quasar_diagnostics::{Diagnostics, Field, Level as LogLevel};
 use std::path::PathBuf;
 
@@ -88,36 +91,97 @@ impl AssetLoader for TextureLoader {
     }
 }
 
+/// One procedural sound (`sounds.toml`).
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SoundDef {
+    pub id: String,
+    pub notes: Vec<f32>,
+    pub note_seconds: f32,
+    pub gain: f32,
+}
+
+impl ContentRecord for SoundDef {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn validate(&self, v: &mut Validator) {
+        v.range("notes", self.notes.len(), 1, 8)
+            .check(
+                self.notes.iter().all(|n| (20.0..=20_000.0).contains(n)),
+                "notes",
+                "frequencies must be 20..=20000 Hz",
+            )
+            .range("note_seconds", f64::from(self.note_seconds), 0.01, 2.0)
+            .range("gain", f64::from(self.gain), 0.0, 1.0);
+    }
+}
+
+/// Which sound a game event plays (`cues.toml`).
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CueDef {
+    /// Event name (`crystal`, `shot`, ...).
+    pub id: String,
+    pub sound: String,
+}
+
+impl ContentRecord for CueDef {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn validate(&self, v: &mut Validator) {
+        v.check(event_of(&self.id).is_some(), "id", "unknown game event")
+            .reference("sound", "sounds", &self.sound);
+    }
+}
+
+fn event_of(name: &str) -> Option<GameEvent> {
+    Some(match name {
+        "crystal" => GameEvent::Crystal,
+        "shot" => GameEvent::Shot,
+        "drone_destroyed" => GameEvent::DroneDestroyed,
+        "damage" => GameEvent::Damage,
+        "portal_ready" => GameEvent::PortalReady,
+        "won" => GameEvent::Won,
+        "lost" => GameEvent::Lost,
+        _ => return None,
+    })
+}
+
+/// The registry holding Starfall's sound tables; `reload_paths` swaps in
+/// edited files after validating both tables together.
+pub fn sound_registry() -> ContentRegistry {
+    let mut registry = ContentRegistry::new();
+    registry
+        .register::<SoundDef>("sounds")
+        .register::<CueDef>("cues");
+    registry
+}
+
 #[derive(Clone)]
 pub struct SoundBank {
-    pub pickup: Clip,
-    pub shot: Clip,
-    pub hit: Clip,
-    pub win: Clip,
-    pub lose: Clip,
-    pub portal: Clip,
+    clips: Vec<(GameEvent, Clip)>,
 }
 impl SoundBank {
-    pub fn generate(sample_rate: u32) -> Result<Self, GameError> {
-        Ok(Self {
-            pickup: tone(sample_rate, 880., 0.11, 0.55)?,
-            shot: tone(sample_rate, 220., 0.08, 0.35)?,
-            hit: tone(sample_rate, 110., 0.16, 0.6)?,
-            win: arpeggio(sample_rate, &[523.25, 659.25, 783.99, 1046.5], 0.18, 0.5)?,
-            lose: tone(sample_rate, 82., 0.55, 0.5)?,
-            portal: arpeggio(sample_rate, &[392., 523.25, 659.25], 0.12, 0.35)?,
-        })
+    /// Synthesises every cue of a loaded registry snapshot.
+    pub fn from_content(content: &ContentSnapshot, sample_rate: u32) -> Result<Self, GameError> {
+        let missing = || GameError::invalid("sound tables are not loaded");
+        let sounds = content.table::<SoundDef>("sounds").ok_or_else(missing)?;
+        let cues = content.table::<CueDef>("cues").ok_or_else(missing)?;
+        let mut clips = Vec::new();
+        for cue in cues.records() {
+            let sound = sounds.get(&cue.sound).ok_or_else(missing)?;
+            let event = event_of(&cue.id).ok_or_else(missing)?;
+            clips.push((
+                event,
+                arpeggio(sample_rate, &sound.notes, sound.note_seconds, sound.gain)?,
+            ));
+        }
+        Ok(Self { clips })
     }
     pub fn for_event(&self, event: GameEvent) -> Option<&Clip> {
-        match event {
-            GameEvent::Crystal => Some(&self.pickup),
-            GameEvent::Shot => Some(&self.shot),
-            GameEvent::DroneDestroyed | GameEvent::Damage => Some(&self.hit),
-            GameEvent::PortalReady => Some(&self.portal),
-            GameEvent::Won => Some(&self.win),
-            GameEvent::Lost => Some(&self.lose),
-            GameEvent::Restart => None,
-        }
+        self.clips.iter().find(|(e, _)| *e == event).map(|(_, c)| c)
     }
 }
 
@@ -151,7 +215,18 @@ pub fn load_content(
         .map_err(|error| GameError::invalid(format!("load texture: {error}")))?
         .as_ref()
         .clone();
-    let sounds = SoundBank::generate(sample_rate)?;
+    let registry = sound_registry();
+    registry
+        .load_all(&[
+            (
+                "sounds",
+                &read_text(&root, "sounds.toml")?,
+                ContentFormat::Toml,
+            ),
+            ("cues", &read_text(&root, "cues.toml")?, ContentFormat::Toml),
+        ])
+        .map_err(|error| GameError::invalid(format!("sound tables:\n{error}")))?;
+    let sounds = SoundBank::from_content(&registry.snapshot(), sample_rate)?;
     diagnostics.event_with(
         LogLevel::Info,
         "starfall.assets",
@@ -168,6 +243,11 @@ pub fn load_content(
         texture,
         sounds,
     })
+}
+
+fn read_text(root: &std::path::Path, file: &str) -> Result<String, GameError> {
+    std::fs::read_to_string(root.join(file))
+        .map_err(|error| GameError::invalid(format!("read {file}: {error}")))
 }
 
 fn tone(sample_rate: u32, frequency: f32, duration: f32, gain: f32) -> Result<Clip, GameError> {

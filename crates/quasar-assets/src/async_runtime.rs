@@ -190,6 +190,15 @@ impl AsyncAssetServer {
         &self,
         path: impl AsRef<str>,
     ) -> Result<AsyncRequest<L::Asset>, AssetError> {
+        self.load_named::<L>("", path)
+    }
+    /// [`Self::load`] through a configuration registered with
+    /// [`AssetServer::register_named`].
+    pub fn load_named<L: AssetLoader>(
+        &self,
+        name: &'static str,
+        path: impl AsRef<str>,
+    ) -> Result<AsyncRequest<L::Asset>, AssetError> {
         let path = AssetPath::parse(path)?;
         let id = self.next_request.fetch_add(1, Ordering::Relaxed).max(1);
         let (sender, receiver) = sync_channel(1);
@@ -198,7 +207,7 @@ impl AsyncAssetServer {
         let worker_path = path.clone();
         let submitted_revision = self.revision();
         let job: Job = Box::new(move |server, _revision| {
-            let result = run_load::<L>(server, &worker_path, &worker_cancelled);
+            let result = run_load::<L>(server, name, &worker_path, &worker_cancelled);
             let _ = sender.send(result);
         });
         self.enqueue(job, &path)?;
@@ -303,13 +312,14 @@ impl Drop for AsyncAssetServer {
 
 fn run_load<L: AssetLoader>(
     server: &mut AssetServer,
+    name: &'static str,
     path: &AssetPath,
     cancelled: &AtomicBool,
 ) -> Result<AsyncLoaded<L::Asset>, AssetError> {
     if cancelled.load(Ordering::Acquire) {
         return Err(cancelled_error(path));
     }
-    let handle = server.load::<L>(path)?;
+    let handle = server.load_named::<L>(name, path)?;
     if cancelled.load(Ordering::Acquire) {
         return Err(cancelled_error(path));
     }

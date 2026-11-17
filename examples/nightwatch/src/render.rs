@@ -10,6 +10,18 @@ use quasar_render_2d::{Canvas, Color, DisplayOptions, LoadOp, Rect, RenderState2
 use quasar_render_3d::*;
 use vulkanic_gal::{CommandBuffer, TextureView};
 
+/// Display-referred night sky (the world pass encodes sRGB itself).
+const CLEAR: [f32; 3] = [0.014, 0.022, 0.035];
+const MAX_WORLD_LIGHTS: usize = 64;
+
+fn srgb_to_linear(v: f32) -> f32 {
+    if v <= 0.040_45 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 pub struct Graphics {
     world: SurfaceRenderState3D,
     weapon: SurfaceRenderState3D,
@@ -105,7 +117,21 @@ impl Graphics {
         submission: SubmissionConfig,
         root: &std::path::Path,
     ) -> GraphicsResult<Self> {
-        let world = SurfaceRenderState3D::with_submission(gal, 16, 2, submission)?;
+        // Room for every glowing prop plus muzzle flashes; clustered so each
+        // pixel only shades the lights that reach it.
+        let mut world =
+            SurfaceRenderState3D::with_submission(gal, MAX_WORLD_LIGHTS, 2, submission)?;
+        world.set_light_clusters(LightClusters {
+            min_lights: 8,
+            cell_size: 4.,
+            dims: [16, 4, 16],
+        })?;
+        // Night haze in the clear colour, so the far walls fade like the sky.
+        world.set_fog(Some(Fog {
+            color: CLEAR.map(srgb_to_linear),
+            start: 12.,
+            end: 44.,
+        }))?;
         let weapon = SurfaceRenderState3D::with_submission(gal, 8, 2, submission)?;
         let hud = RenderState2D::new(gal)?;
         let (vertices, indices) = geometry::cube();
@@ -375,7 +401,7 @@ impl Graphics {
             &draws,
             shadow_frame.as_ref().map(PreparedShadows::binding),
             PassOptions {
-                clear_color: Some([0.014, 0.022, 0.035, 1.]),
+                clear_color: Some([CLEAR[0], CLEAR[1], CLEAR[2], 1.]),
                 clear_depth: true,
             },
         )?;

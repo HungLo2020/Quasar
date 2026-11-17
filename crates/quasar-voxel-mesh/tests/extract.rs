@@ -778,3 +778,43 @@ fn packed_quads_texture_like_model_quads() {
         }
     }
 }
+
+#[test]
+fn partial_height_blocks_mesh_as_boxes_and_cull_by_derived_shapes() {
+    use quasar_voxel::FaceShape;
+    let mut w = world();
+    let wall = w.catalog.add(BlockDef::cube("wall", 4).with_height(0.6));
+    let def = w.catalog.get(wall).unwrap();
+    assert!(def.is_partial() && !def.full_cube && !def.opaque);
+    assert_eq!(def.faces[Face::NegY.index()], FaceShape::Full);
+    assert_eq!(def.faces[Face::PosY.index()], FaceShape::None);
+    assert!(matches!(def.faces[Face::NegX.index()], FaceShape::Shape(_)));
+    assert_eq!(def.faces[Face::NegX.index()], def.faces[Face::PosZ.index()]);
+    let slab = BlockDef::partial("slab", 4, [0.; 3], [1., 0.5, 1.]);
+    assert_ne!(
+        slab.faces[Face::NegX.index()],
+        def.faces[Face::NegX.index()]
+    );
+    assert!(!CatalogGreedy::new(&w.catalog).handles(wall));
+    let a = IVec3::new(5, 5, 5);
+    w.volume.set(w.block, a, wall);
+    w.volume.set(w.block, IVec3::new(6, 5, 5), wall);
+    w.volume.set(w.block, IVec3::new(5, 5, 6), w.stone);
+    w.volume.set(w.block, IVec3::new(5, 4, 5), w.stone);
+    let mesh = culled(&w, IVec3::ZERO);
+    let quads = &mesh.layer(Layer::Opaque).unwrap().quads;
+    // Wall A: walls cull each other, the stone beside and below hide its
+    // side and bottom; its inset top always draws (3). Wall B: 5. The
+    // stone beside the wall keeps the face the low wall cannot cover (6);
+    // the stone below is covered by the wall's full bottom (5).
+    assert_eq!(quads.len(), 19);
+    let tops: Vec<_> = quads
+        .iter()
+        .filter(|q| q.normal.y > 0.9 && (q.positions[0].y - 5.6).abs() < 1e-4)
+        .collect();
+    assert_eq!(tops.len(), 2, "both walls draw their top at 0.6");
+    for quad in quads {
+        assert_outward(quad);
+        assert!(quad.positions.iter().all(|p| p.y <= 6.0 + 1e-4));
+    }
+}

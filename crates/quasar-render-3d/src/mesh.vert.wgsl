@@ -53,7 +53,7 @@ fn main_1() {
     let _e13: Batch = batchData;
     let _e16: u32 = gl_InstanceIndex_1;
     instanceIndex = (_e13.first.x + u32(_e16));
-    let _e20: u32 = gl_VertexIndex_1;
+    let _e20: u32 = gl_VertexIndex_1 + u32(instanceData.items[instanceIndex].light.w);
     let _e23: Vertex = geometry.vertices[_e20];
     v = _e23;
     let _e26: u32 = instanceIndex;
@@ -76,7 +76,7 @@ fn main_1() {
     let _e85: vec3<f32> = (_e81.tint.xyz * _e84);
     let _e86: u32 = instanceIndex;
     let _e89: InstanceData = instanceData.items[_e86];
-    color = vec4<f32>(_e85.x, _e85.y, _e85.z, _e89.tint.w);
+    color = vec4<f32>(_e85.x, _e85.y, _e85.z, _e89.tint.w) * vertex_color(_e23.uv);
     let _e96: Vertex = v;
     uv = _e96.uv.xy;
     return;
@@ -112,4 +112,18 @@ fn _naga_inverse_3x3_f32(m: mat3x3<f32>) -> mat3x3<f32> {
             + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]));
 
     return adj * (1 / det);
+}
+
+// See surface.vert.wgsl: per-vertex colour packed into uv.zw.
+fn vertex_color(uv: vec4<f32>) -> vec4<f32> {
+    if (uv.w < 0.5) {
+        return vec4<f32>(1.0);
+    }
+    let packed = u32(uv.z);
+    return vec4<f32>(
+        f32(packed & 255u) / 255.0,
+        f32((packed >> 8u) & 255u) / 255.0,
+        f32((packed >> 16u) & 255u) / 255.0,
+        clamp(uv.w - 1.0, 0.0, 1.0),
+    );
 }

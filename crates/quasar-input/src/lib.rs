@@ -16,8 +16,10 @@ mod device;
 mod frame;
 mod gamepad;
 mod key;
-pub use bindings::{Binding, BindingError, Bindings};
-pub use device::{DeviceFamily, InputDevice};
+pub use bindings::{Binding, BindingConflict, BindingError, Bindings};
+pub use device::{
+    DeviceActivity, DeviceFamily, InputDevice, most_recent_activity, most_recent_device,
+};
 pub use frame::{ConsumedInput, FrameInput};
 #[cfg(feature = "gilrs")]
 pub use gamepad::GilrsGamepads;
@@ -104,7 +106,7 @@ pub struct InputState {
     pub preedit: String,
     /// Cursor position within `preedit`, in character indices.
     pub preedit_cursor: usize,
-    last_device: Option<InputDevice>,
+    last_device: Option<DeviceActivity>,
 }
 
 /// Processed stick/trigger magnitude that counts as deliberate gamepad use
@@ -204,6 +206,13 @@ impl InputState {
     pub fn button_pressed(&self, button: Button) -> bool {
         self.pressed.contains(&button)
     }
+    /// Buttons pressed since the edges were last consumed, in a stable
+    /// order (for rebind capture).
+    pub fn pressed_buttons(&self) -> Vec<Button> {
+        let mut buttons: Vec<Button> = self.pressed.iter().copied().collect();
+        buttons.sort_by_key(|b| format!("{b:?}"));
+        buttons
+    }
     pub fn button_released(&self, button: Button) -> bool {
         self.released.contains(&button)
     }
@@ -212,12 +221,17 @@ impl InputState {
     /// ([`Self::note_device`]). `None` until the first such input. Releases
     /// do not change it, and focus loss keeps the last value.
     pub fn last_active_device(&self) -> Option<InputDevice> {
+        self.last_device.map(|a| a.device)
+    }
+    /// [`Self::last_active_device`] with its recency stamp, comparable with
+    /// other input states through [`most_recent_device`].
+    pub fn last_activity(&self) -> Option<DeviceActivity> {
         self.last_device
     }
     /// Records activity that is not a button or axis, such as pointer motion
     /// or scrolling. Native adapters call this; games may call it too.
     pub fn note_device(&mut self, device: InputDevice) {
-        self.last_device = Some(device);
+        self.last_device = Some(DeviceActivity::now(device));
     }
     pub fn key(&mut self, key: Key, down: bool) {
         self.button(Button::Key(key), down);
@@ -249,7 +263,7 @@ impl InputState {
             {
                 changed = true;
                 if value.abs() >= ACTIVE_AXIS_THRESHOLD {
-                    self.last_device = Some(InputDevice::Gamepad);
+                    self.last_device = Some(DeviceActivity::now(InputDevice::Gamepad));
                 }
                 if value == 0.0 {
                     self.gamepad_axes.remove(&axis);
@@ -288,7 +302,7 @@ impl InputState {
         let changed = if down {
             if self.held.insert(button) {
                 self.pressed.insert(button);
-                self.last_device = Some(button.device());
+                self.last_device = Some(DeviceActivity::now(button.device()));
                 true
             } else {
                 false

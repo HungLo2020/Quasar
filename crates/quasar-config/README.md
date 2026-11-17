@@ -42,6 +42,8 @@ overwrite higher ones. CLI `--set KEY=VALUE` is applied last.
 - `json` (default): flattened JSON object files and JSON compatibility. Arrays
   are retained as serialized text; unknown keys are preserved.
 - `storage`: optional Basalt `GamePaths` shared-config loading.
+- `content`: validated content tables (`content::ContentTable`) and the
+  reload-safe `content::ContentRegistry`; see docs/configuration.md.
 - `load_file`/`load_file_typed`/`TypedConfig` select format by file extension.
 - No Clap dependency. `CommonArgs` is a small, composable parser; game-defined
   flags remain in `remaining`.

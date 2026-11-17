@@ -11,6 +11,8 @@ default = ["toml", "json"]
 json = ["dep:serde_json", "dep:serde"]
 toml = ["dep:toml", "dep:serde"]
 storage = ["dep:quasar-storage"]
+# Content tables (`content` module); TOML sources also need `toml`.
+content = ["json"]
 
 [dependencies]
 quasar-storage = { workspace = true, optional = true }

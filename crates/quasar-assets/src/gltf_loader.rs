@@ -334,9 +334,6 @@ impl GltfLoader {
                         "only triangle primitives without morph targets are supported",
                     ));
                 }
-                if primitive.get(&gltf::Semantic::Colors(0)).is_some() {
-                    return Err(error("vertex colors require an unsupported vertex layout"));
-                }
                 let count = primitive
                     .get(&gltf::Semantic::Positions)
                     .ok_or_else(|| error("primitive has no POSITION"))?
@@ -409,6 +406,16 @@ impl GltfLoader {
                 {
                     return Err(error("invalid normals/UVs"));
                 }
+                // COLOR_0 (RGB or RGBA; float or normalised integers) is linear.
+                let colors = reader
+                    .read_colors(0)
+                    .map(|c| c.into_rgba_f32().collect::<Vec<_>>());
+                if colors
+                    .as_ref()
+                    .is_some_and(|c| c.len() != count || c.iter().flatten().any(|v| !v.is_finite()))
+                {
+                    return Err(error("invalid COLOR_0"));
+                }
                 let skin_weights = if self.import_animation {
                     read_skin_weights(&reader, &primitive, count)?
                 } else {
@@ -430,6 +437,7 @@ impl GltfLoader {
                     return Err(budget("decoded vertex budget exceeded"));
                 }
                 let mut skin_out = skin_weights.clone();
+                let mut colors_out = colors.clone();
                 let (verts, inds) = if let Some(normals) = normals {
                     (
                         positions
@@ -472,6 +480,9 @@ impl GltfLoader {
                             });
                         }
                     }
+                    if let Some(colors) = &colors {
+                        colors_out = Some(inds.iter().map(|i| colors[*i as usize]).collect());
+                    }
                     if let Some(skin) = &skin_weights {
                         skin_out = Some(ModelSkinWeights {
                             joints: inds.iter().map(|i| skin.joints[*i as usize]).collect(),
@@ -489,6 +500,7 @@ impl GltfLoader {
                     indices: inds,
                     material,
                     skin: skin_out,
+                    colors: colors_out,
                 });
             }
             meshes.push(mesh_parts);

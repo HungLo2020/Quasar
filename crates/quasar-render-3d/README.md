@@ -119,3 +119,13 @@ Imported materials preserve alpha behavior, single/double-sided policy and
 mirrored winding. Existing mesh/material APIs and default face policy remain
 available. See [model asset architecture](../../docs/model-assets-3d.md) for
 budgets, sampler registration and command/descriptor lifetime requirements.
+
+## Effects, crowds and composition
+
+Clustered point/spot lights and distance fog (`set_light_clusters`,
+`set_fog`), per-vertex colours (`Mesh::upload_colored`, glTF `COLOR_0`),
+normal-mapped transparency (`SurfaceRenderState3D::prepare_transparent`),
+one-dispatch skinned crowds (`SkinnedCrowd`), GPU particles
+(`ParticleSystem`), projected decals (`DecalRenderer`) and screen-space
+outlines with see-through fills (`OutlineRenderer`). See
+[docs/effects-3d.md](../../docs/effects-3d.md).

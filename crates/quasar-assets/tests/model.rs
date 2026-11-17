@@ -337,3 +337,36 @@ fn model_loading_reuses_the_existing_bounded_async_worker() {
         second.handle.primitives[0].vertices
     );
 }
+#[test]
+fn vertex_colors_import_as_linear_rgba() {
+    let (mut document, mut bytes) = triangle(Some("mesh.bin"));
+    let offset = bytes.len();
+    bytes.extend([0u8, 0]); // align the colour view to 4 bytes
+    let offset = offset + 2;
+    bytes.extend([255u8, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0]);
+    document["buffers"][0]["byteLength"] = bytes.len().into();
+    document["bufferViews"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"buffer":0,"byteOffset":offset,"byteLength":12}));
+    document["accessors"].as_array_mut().unwrap().push(
+        serde_json::json!({"bufferView":2,"componentType":5121,"normalized":true,"count":3,"type":"VEC4"}),
+    );
+    document["meshes"][0]["primitives"][0]["attributes"]["COLOR_0"] = 2.into();
+    let mut server = server(&document, bytes);
+    let model = server.load::<GltfLoader>("models/triangle.gltf").unwrap();
+    let colors = model.primitives[0]
+        .colors
+        .as_ref()
+        .expect("COLOR_0 imported");
+    assert_eq!(colors.len(), model.primitives[0].vertices.len());
+    assert_eq!(colors[0], [1., 0., 0., 1.]);
+    assert_eq!(colors[1][1], 1.);
+    assert!((colors[1][3] - 128. / 255.).abs() < 1e-6);
+    assert_eq!(colors[2], [0., 0., 1., 0.]);
+    // Primitives without COLOR_0 carry none.
+    let (plain, bytes) = triangle(Some("mesh.bin"));
+    let mut server = self::server(&plain, bytes);
+    let model = server.load::<GltfLoader>("models/triangle.gltf").unwrap();
+    assert!(model.primitives[0].colors.is_none());
+}

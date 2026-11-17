@@ -92,3 +92,13 @@ had no gamepad visible to evdev (`devices=0`), so no physical input was recorded
 The hardware smoke requirement is therefore partially unverified. The adapter
 and probe are ready for a machine with a controller; no performance/force-feedback
 claims are made.
+
+## Most recent device across input states
+
+The window's keyboard/mouse state and each `GamepadHub` player keep separate
+`InputState`s. Every state stamps its activity from one process-wide counter
+(`InputState::last_activity`, `FrameInput::last_activity`,
+`GamepadHub::last_activity`), so
+`most_recent_device([frame.last_activity(), hub.last_activity()])` answers
+which device was used last overall, for example to switch button prompts.
+`GamepadHub::last_active_player` names the player who used it.

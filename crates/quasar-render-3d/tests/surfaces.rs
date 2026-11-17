@@ -981,7 +981,7 @@ fn instanced_buffer_growth_and_culling_preserve_per_instance_materials() {
     assert_eq!(optimized.work_stats().visible, 16);
     assert_eq!(optimized.work_stats().culled, 4);
     assert_eq!(optimized.work_stats().draws, 1);
-    assert_eq!(optimized.work_stats().instance_upload_bytes, 16 * 208);
+    assert_eq!(optimized.work_stats().instance_upload_bytes, 16 * 224);
     optimized.release(&gal).unwrap();
     reference.release(&gal).unwrap();
     mesh.release(&gal).unwrap();

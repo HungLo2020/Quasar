@@ -115,6 +115,7 @@ fn reset_defaults_restores_the_default_snapshot_before_apply() {
         volume: 0.2,
         sensitivity: 0.009,
         player_name: "Test Pilot".into(),
+        language: "en".into(),
     });
     menu.open_main();
     advance(&mut menu, next());
@@ -171,6 +172,7 @@ fn preferences_round_trip_and_clamp_invalid_values() {
         volume: 0.25,
         sensitivity: 0.004,
         player_name: "Pilot".into(),
+        language: "en".into(),
     };
     options.save(&path).unwrap();
     assert_eq!(Options::load(&path).unwrap(), options);
@@ -184,4 +186,100 @@ fn preferences_round_trip_and_clamp_invalid_values() {
     let loaded = Options::load(&path).unwrap();
     assert_eq!(loaded.volume, 1.0);
     assert_eq!(loaded.sensitivity, 0.0001);
+}
+
+fn open_options(menu: &mut Menu) {
+    menu.open_main();
+    advance(menu, next());
+    assert_eq!(advance(menu, activate()), MenuAction::None);
+}
+
+fn resolved_buttons(menu: &mut Menu) -> Vec<String> {
+    // Lay out the freshly built screen.
+    advance(menu, UiInput::default());
+    let ui = menu.ui().unwrap();
+    ui.layout_entries()
+        .iter()
+        .filter_map(|e| match &ui.node(e.id)?.widget {
+            quasar_ui::Widget::Button { text, .. } => Some(ui.resolve_text(text).to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_language_option_localises_the_menu_and_applies() {
+    let mut menu = Menu::new(Options::default());
+    open_options(&mut menu);
+    assert!(resolved_buttons(&mut menu).contains(&"APPLY".to_owned()));
+    // FULLSCREEN … RESET DEFAULTS, CONTROLS, then LANGUAGE.
+    for _ in 0..8 {
+        advance(&mut menu, next());
+    }
+    advance(
+        &mut menu,
+        UiInput {
+            right: true,
+            ..UiInput::default()
+        },
+    );
+    assert_eq!(menu.options().language, "es");
+    let buttons = resolved_buttons(&mut menu);
+    assert!(buttons.contains(&"APLICAR".to_owned()), "{buttons:?}");
+    assert!(
+        menu.ui().unwrap().missing_keys().is_empty(),
+        "every menu key is translated"
+    );
+    // APPLY is four rows up from LANGUAGE.
+    for _ in 0..5 {
+        advance(&mut menu, next());
+    }
+    match advance(&mut menu, activate()) {
+        MenuAction::Apply(options) => assert_eq!(options.language, "es"),
+        other => panic!("expected apply, got {other:?}"),
+    }
+    // The main menu stays Spanish after applying.
+    assert!(resolved_buttons(&mut menu).iter().any(|b| b == "OPCIONES"));
+    // Every English key has a Spanish translation.
+    let en = quasar_ui::StringTable::parse("en", include_str!("../lang/en.lang")).unwrap();
+    let es = quasar_ui::StringTable::parse("es", include_str!("../lang/es.lang")).unwrap();
+    assert!(es.missing_from(&en).is_empty());
+}
+
+#[test]
+fn the_controls_screen_rebinds_axes_and_reports_new_bindings() {
+    use quasar_input::{Binding, Button, Key};
+    let defaults = starfall::settings::ControlKeys::default()
+        .bindings()
+        .unwrap();
+    let mut menu = Menu::new(Options::default());
+    menu.set_bindings(defaults.clone(), defaults.clone());
+    open_options(&mut menu);
+    for _ in 0..7 {
+        advance(&mut menu, next());
+    }
+    assert_eq!(advance(&mut menu, activate()), MenuAction::None);
+    // Focus starts on THRUST; activating it starts a capture.
+    advance(&mut menu, activate());
+    assert!(menu.is_capturing());
+    assert_eq!(
+        menu.capture(&[Button::Key(Key::KeyK)]).unwrap(),
+        MenuAction::None
+    );
+    let action = menu.capture(&[Button::Key(Key::KeyI)]).unwrap();
+    let MenuAction::ApplyBindings(bindings) = action else {
+        panic!("expected new bindings, got {action:?}");
+    };
+    assert!(bindings.actions["forward"].contains(&Binding::axis(Key::KeyK, Key::KeyI)));
+    assert_eq!(menu.bindings(), &bindings);
+    assert!(!menu.is_capturing());
+    // Escape leaves the controls screen for the options screen.
+    advance(
+        &mut menu,
+        UiInput {
+            cancel: true,
+            ..UiInput::default()
+        },
+    );
+    assert!(resolved_buttons(&mut menu).contains(&"CONTROLS".to_owned()));
 }

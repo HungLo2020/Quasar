@@ -29,8 +29,9 @@ cargo test -p quasar-ui --features input,config
 
 | Feature | Default | Adds | Effect |
 |---|---|---|---|
-| *(none)* | yes | — | Core widget tree, layout, focus, events, themes. No graphics or input crates. |
-| `input` | no | `quasar-input` | `UiBindings`, preferred `from_frame_input`, and `from_input_state` adapters. |
+| *(none)* | yes | — | Core widget tree, layout, focus, events, themes, localisation (`StringTable`, `Localization`). No graphics or input crates. |
+| `input` | no | `quasar-input` | `UiBindings`, preferred `from_frame_input`, `from_input_state` adapters and the `ControlsScreen`. |
+| `controls-file` | no | `input`, `config` (TOML/JSON, storage) | `save_bindings` / `load_bindings` for controls-screen persistence. |
 | `render2d` | no | `quasar-render-2d` | `UiRenderer` painter and `BitmapTextMeasure`. |
 | `config` | no | `quasar-config` | `config_to_value` / `value_to_config` bridges. |
 | `serde` | no | `serde` | `Theme` serialization. |
@@ -248,7 +249,7 @@ claim. Layout is O(nodes) per update and allocates only event/measure buffers.
   uses the existing bitmap font; `text`/`text-render2d` add shaped TTF/OTF text
   and glyph atlases.
 - No rich text or inline images. Labels are single-line unless created with
-  `Widget::wrapped_label` (`TextWrap::Word`), which wraps in both the bitmap and
+  `Widget::wrapped_label` (`LabelWrap::Word`), which wraps in both the bitmap and
   shaped paths and grows the label height during layout. Long text is the caller's responsibility to
   truncate or clip.
 - No animations beyond hover/press transitions and no tween/timeline

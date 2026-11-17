@@ -52,7 +52,10 @@ mod query;
 mod storage;
 mod volume;
 
-pub use catalog::{AIR, BlockCatalog, BlockChannels, BlockDef, FaceShape, Layer, PlaceError};
+pub use catalog::{
+    AIR, BlockCatalog, BlockChannels, BlockDef, FaceShape, Layer, PlaceError, UNIT_BOUNDS,
+    box_face_shape,
+};
 pub use chunk::{ChannelData, ChannelDef, ChannelId, Chunk, RawKind, Schema};
 pub use connect::{Components, components, split_check};
 pub use edit::{

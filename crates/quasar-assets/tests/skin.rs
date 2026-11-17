@@ -175,3 +175,28 @@ fn static_models_still_get_a_node_table() {
     assert!(model.skins.is_empty() && model.animations.is_empty());
     assert_eq!(model.primitives[0].skin, None);
 }
+
+#[test]
+fn named_loader_configurations_coexist_and_cache_separately() {
+    let mut server = server(GltfLoader::default());
+    server.register_named("animated", GltfLoader::animated());
+    // The default slot still rejects skins; the named slot imports them.
+    assert!(server.load::<GltfLoader>("bar.gltf").is_err());
+    let animated = server
+        .load_named::<GltfLoader>("animated", "bar.gltf")
+        .unwrap();
+    assert!(!animated.skins.is_empty());
+    let again = server
+        .load_named::<GltfLoader>("animated", "bar.gltf")
+        .unwrap();
+    assert_eq!(animated.id(), again.id(), "named loads hit their own cache");
+    let missing = server
+        .load_named::<GltfLoader>("static", "bar.gltf")
+        .unwrap_err();
+    assert_eq!(missing.kind(), AssetErrorKind::Configuration);
+    assert!(missing.message().contains("\"static\""), "{missing}");
+    // Unloading a path drops every configuration's entry.
+    drop((animated, again));
+    assert!(server.unload("bar.gltf").unwrap());
+    assert!(!server.is_cached("bar.gltf"));
+}

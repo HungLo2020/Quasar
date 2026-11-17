@@ -23,6 +23,9 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+#[cfg(feature = "json")]
+pub mod content;
+
 use std::path::Path;
 use std::{collections::BTreeMap, error::Error, fmt, path::PathBuf, str::FromStr};
 

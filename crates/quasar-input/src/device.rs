@@ -18,6 +18,59 @@ pub enum InputDevice {
     Gamepad,
 }
 
+/// One device's most recent meaningful input, ordered by when it happened.
+///
+/// Every [`InputState`](crate::InputState) stamps its activity from one
+/// process-wide counter, so activity from separate states (the window's
+/// keyboard/mouse state and each gamepad player's state) compares by recency.
+/// Use [`most_recent_device`] to ask which device was used last overall.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct DeviceActivity {
+    pub device: InputDevice,
+    /// Monotonic process-wide sequence number; larger is more recent.
+    pub stamp: u64,
+}
+
+impl Ord for DeviceActivity {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.stamp
+            .cmp(&other.stamp)
+            .then(self.device.cmp(&other.device))
+    }
+}
+impl PartialOrd for DeviceActivity {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+static ACTIVITY_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl DeviceActivity {
+    /// Activity for `device` stamped now.
+    pub fn now(device: InputDevice) -> Self {
+        Self {
+            device,
+            stamp: ACTIVITY_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+/// The most recent of several activity records, for example
+/// `[window.last_activity(), hub.last_activity()]`.
+pub fn most_recent_activity(
+    activity: impl IntoIterator<Item = Option<DeviceActivity>>,
+) -> Option<DeviceActivity> {
+    activity.into_iter().flatten().max()
+}
+
+/// The device used most recently across several input states.
+pub fn most_recent_device(
+    activity: impl IntoIterator<Item = Option<DeviceActivity>>,
+) -> Option<InputDevice> {
+    most_recent_activity(activity).map(|a| a.device)
+}
+
 /// Naming convention for prompts. Gamepad families differ in face-button and
 /// shoulder names; `GenericGamepad` uses positional names.
 #[derive(

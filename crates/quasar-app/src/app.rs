@@ -188,6 +188,14 @@ pub trait DesktopApplication: Application {
         Ok(())
     }
 
+    /// Bindings to install on the window's input state, polled after every
+    /// frame update. Return `Some` once after a controls screen changed the
+    /// bindings; the new actions apply from the next frame. The default
+    /// never changes them after [`Self::configure_window`].
+    fn take_bindings(&mut self) -> Option<quasar_input::Bindings> {
+        None
+    }
+
     /// Raw native window event hook. Input state is already forwarded to
     /// `window.input`; use `AppContext::input` in frame/tick callbacks for the
     /// deterministic frame snapshot.

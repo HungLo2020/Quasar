@@ -88,11 +88,7 @@ impl UiRenderer {
                 continue;
             }
             match &node.widget {
-                Widget::Panel { .. } if node.style.is_some() => {
-                    if node.modal {
-                        focus_border(canvas, rect, theme.focus, theme.focus_width * scale);
-                    }
-                }
+                Widget::Panel { .. } if node.style.is_some() => {}
                 Widget::Panel { .. } => {
                     let color = if node.modal {
                         theme.panel
@@ -100,7 +96,7 @@ impl UiRenderer {
                         theme.panel_alt
                     };
                     canvas.rect(rect, to_color(color));
-                    if node.modal {
+                    if node.modal && theme.modal_outline {
                         focus_border(canvas, rect, theme.focus, theme.focus_width * scale);
                     }
                 }
@@ -114,8 +110,8 @@ impl UiRenderer {
                     };
                     let text = ui.resolve_text(text);
                     let lines = match wrap {
-                        crate::TextWrap::None => text.split('\n').map(str::to_owned).collect(),
-                        crate::TextWrap::Word => {
+                        crate::LabelWrap::None => text.split('\n').map(str::to_owned).collect(),
+                        crate::LabelWrap::Word => {
                             crate::wrap_greedy(text, entry.rect.width + 0.5, |part| {
                                 part.chars().count() as f32 * size * TEXT_ADVANCE
                             })
@@ -171,10 +167,13 @@ impl UiRenderer {
                     step,
                     ..
                 } => {
+                    let inner = entry
+                        .rect
+                        .inset(crate::Edges::all(theme.control_inset * scale));
                     let track = Rect::new(
-                        entry.rect.x,
-                        entry.rect.y + entry.rect.height - 5.0 * scale,
-                        entry.rect.width,
+                        inner.x,
+                        inner.y + inner.height - 5.0 * scale,
+                        inner.width,
                         4.0 * scale,
                     );
                     canvas.rect(track, to_color(theme.track));
@@ -203,8 +202,8 @@ impl UiRenderer {
                     );
                     draw_text(
                         canvas,
-                        entry.rect.x,
-                        entry.rect.y,
+                        inner.x,
+                        inner.y,
                         ui.resolve_text(label),
                         small,
                         theme.dim_text,
@@ -212,9 +211,8 @@ impl UiRenderer {
                     let value_text = format_slider_value(*value, *step);
                     draw_text(
                         canvas,
-                        entry.rect.right()
-                            - value_text.chars().count() as f32 * small * TEXT_ADVANCE,
-                        entry.rect.y,
+                        inner.right() - value_text.chars().count() as f32 * small * TEXT_ADVANCE,
+                        inner.y,
                         &value_text,
                         small,
                         theme.text,
@@ -532,6 +530,133 @@ fn focus_border(canvas: &mut Canvas, rect: Rect, color: Color, width: f32) {
 #[cfg(test)]
 mod tests {
     use super::format_slider_value;
+    use crate::{
+        Edges, Layer, LayoutItem, Length, NodeStyle, PanelLayout, Rect, Theme, Ui, UiInput,
+        UiRenderer, UiText, Widget,
+    };
+    use quasar_render_2d::Canvas;
+
+    fn panel() -> Widget {
+        Widget::Panel {
+            layout: PanelLayout::Absolute,
+            padding: Edges::ZERO,
+            clip: false,
+            scrollable: false,
+        }
+    }
+
+    fn settle(ui: &mut Ui) {
+        for _ in 0..30 {
+            ui.update(
+                &UiInput::default(),
+                Rect::new(0.0, 0.0, 400.0, 300.0),
+                1.0,
+                Edges::ZERO,
+                &super::BitmapTextMeasure,
+                1.0 / 30.0,
+            );
+        }
+    }
+
+    fn focus_quads(canvas: &Canvas, theme: &Theme) -> usize {
+        let focus = super::to_color(theme.focus);
+        canvas.quads().iter().filter(|q| q.color == focus).count()
+    }
+
+    fn draw(ui: &Ui) -> Canvas {
+        let mut canvas = Canvas::new(400, 300).unwrap();
+        UiRenderer::new().draw(&mut canvas, ui);
+        canvas
+    }
+
+    #[test]
+    fn styled_modal_panels_draw_no_focus_outline() {
+        let mut ui = Ui::new(Theme::modern());
+        let dimmer = ui.add_root(panel(), LayoutItem::fill(), Layer::Overlay, true);
+        ui.set_style(
+            dimmer,
+            Some(NodeStyle {
+                background: Some(crate::Color::rgba(0, 0, 0, 160)),
+                border: None,
+                radius: 0.0,
+            }),
+        )
+        .unwrap();
+        ui.set_modal(Some(dimmer));
+        settle(&mut ui);
+        assert_eq!(focus_quads(&draw(&ui), ui.theme()), 0);
+    }
+
+    #[test]
+    fn unstyled_modal_outline_follows_the_theme() {
+        for outline in [true, false] {
+            let mut theme = Theme::modern();
+            theme.modal_outline = outline;
+            let mut ui = Ui::new(theme);
+            let modal = ui.add_root(
+                panel(),
+                LayoutItem::size(Length::fixed(100.0), Length::fixed(80.0)),
+                Layer::Overlay,
+                true,
+            );
+            ui.set_modal(Some(modal));
+            settle(&mut ui);
+            assert_eq!(focus_quads(&draw(&ui), ui.theme()) > 0, outline);
+        }
+    }
+
+    #[test]
+    fn focused_slider_contents_sit_inside_the_focus_outline() {
+        let mut ui = Ui::new(Theme::modern());
+        let root = ui.add_root(panel(), LayoutItem::fill(), Layer::Normal, false);
+        ui.set_style(root, Some(NodeStyle::transparent())).unwrap();
+        let slider = ui
+            .add_child(
+                root,
+                Widget::Slider {
+                    label: UiText::literal("Volume"),
+                    value: 0.5,
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.1,
+                    action: None,
+                },
+                LayoutItem::size(Length::fixed(240.0), Length::Auto),
+            )
+            .unwrap();
+        ui.focus(Some(slider));
+        settle(&mut ui);
+        let rect = ui
+            .layout_entries()
+            .iter()
+            .find(|e| e.id == slider)
+            .unwrap()
+            .rect;
+        let canvas = draw(&ui);
+        let theme = ui.theme();
+        let focus = super::to_color(theme.focus);
+        let outline = theme.focus_width;
+        let mut contents = 0;
+        for quad in canvas.quads() {
+            let (x0, x1) = (quad.origin[0], quad.origin[0] + quad.x[0]);
+            let (y0, y1) = (quad.origin[1], quad.origin[1] + quad.y[1]);
+            let touches = |a: f32, b: f32| (a - b).abs() < 1e-3;
+            let is_outline = quad.color == focus
+                && (touches(y0, rect.y)
+                    || touches(y1, rect.bottom())
+                    || touches(x0, rect.x)
+                    || touches(x1, rect.right()));
+            if is_outline {
+                continue;
+            }
+            contents += 1;
+            assert!(
+                y0 >= rect.y + outline - 1e-3 && y1 <= rect.bottom() - outline + 1e-3,
+                "slider content touches the focus outline: {quad:?} in {rect:?}"
+            );
+        }
+        assert!(contents > 3, "label, track, fill and knob drawn");
+    }
 
     #[test]
     fn slider_precision_follows_the_step() {

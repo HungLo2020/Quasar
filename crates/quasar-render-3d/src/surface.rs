@@ -50,7 +50,7 @@ impl<'a> SurfaceDraw3D<'a> {
     }
 }
 pub struct SurfaceRenderState3D {
-    lit: LitRenderState3D,
+    pub(crate) lit: LitRenderState3D,
     max_shadows: usize,
 }
 impl SurfaceRenderState3D {
@@ -99,40 +99,12 @@ impl SurfaceRenderState3D {
         shadows: Option<&ShadowBinding>,
         options: impl Into<LitPassOptions>,
     ) -> GraphicsResult<Prepared3D> {
-        if shadows.is_some_and(|s| s.records.len() > self.max_shadows)
-            || draws.iter().any(|d| {
-                !d.material.lit.valid()
-                    || d.material.normal_map.as_ref().is_some_and(|n| {
-                        !n.strength.is_finite()
-                            || !(0. ..=8.).contains(&n.strength)
-                            || n.uv_scale
-                                .iter()
-                                .any(|x| !x.is_finite() || x.abs() < 1e-6 || x.abs() > 10000.)
-                    })
-            })
-        {
-            return Err(error(
-                "invalid normal map/material or shadow budget exceeded",
-            ));
-        }
-        if lighting.output_color_space == ColorSpace::Srgb
-            && (target.format.is_srgb() || draws.iter().any(|d| d.material.lit.base.transparent))
-        {
+        let materials: Vec<&SurfaceMaterial> = draws.iter().map(|d| &d.material).collect();
+        self.validate_refs(&lighting, &materials, shadows)?;
+        if lighting.output_color_space == ColorSpace::Srgb && target.format.is_srgb() {
             return Err(error(
                 "use a linear target for blending; encode sRGB only once",
             ));
-        }
-        if let Some(binding) = shadows {
-            for record in &binding.records {
-                if !matches!(
-                    lighting.lights.get(record[16] as usize),
-                    Some(Light::Directional { .. } | Light::Spot { .. })
-                ) {
-                    return Err(error(
-                        "shadow map must reference a supplied directional or spot light",
-                    ));
-                }
-            }
         }
         let data = self.lit.light_bytes(camera, lighting)?;
         let input: Vec<_> = draws
@@ -160,6 +132,58 @@ impl SurfaceRenderState3D {
             shadows,
         )
     }
+    pub(crate) fn validate(
+        &self,
+        lighting: &Lighting<'_>,
+        materials: &[SurfaceMaterial],
+        shadows: Option<&ShadowBinding>,
+    ) -> GraphicsResult<()> {
+        let refs: Vec<&SurfaceMaterial> = materials.iter().collect();
+        self.validate_refs(lighting, &refs, shadows)
+    }
+    fn validate_refs(
+        &self,
+        lighting: &Lighting<'_>,
+        materials: &[&SurfaceMaterial],
+        shadows: Option<&ShadowBinding>,
+    ) -> GraphicsResult<()> {
+        if shadows.is_some_and(|s| s.records.len() > self.max_shadows)
+            || materials.iter().any(|m| {
+                !m.lit.valid()
+                    || m.normal_map.as_ref().is_some_and(|n| {
+                        !n.strength.is_finite()
+                            || !(0. ..=8.).contains(&n.strength)
+                            || n.uv_scale
+                                .iter()
+                                .any(|x| !x.is_finite() || x.abs() < 1e-6 || x.abs() > 10000.)
+                    })
+            })
+        {
+            return Err(error(
+                "invalid normal map/material or shadow budget exceeded",
+            ));
+        }
+        if lighting.output_color_space == ColorSpace::Srgb
+            && materials.iter().any(|m| m.lit.base.transparent)
+        {
+            return Err(error(
+                "use a linear target for blending; encode sRGB only once",
+            ));
+        }
+        if let Some(binding) = shadows {
+            for record in &binding.records {
+                if !matches!(
+                    lighting.lights.get(record[16] as usize),
+                    Some(Light::Directional { .. } | Light::Spot { .. })
+                ) {
+                    return Err(error(
+                        "shadow map must reference a supplied directional or spot light",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn set_texture_sampler(
         &mut self,
         _gpu: &Gpu,
@@ -177,6 +201,17 @@ impl SurfaceRenderState3D {
     }
     pub fn work_stats(&self) -> RenderWork {
         self.lit.work_stats()
+    }
+    /// See [`LitRenderState3D::set_fog`].
+    pub fn set_fog(&mut self, fog: Option<Fog>) -> GraphicsResult<()> {
+        self.lit.set_fog(fog)
+    }
+    pub fn fog(&self) -> Option<Fog> {
+        self.lit.fog()
+    }
+    /// See [`LitRenderState3D::set_light_clusters`].
+    pub fn set_light_clusters(&mut self, clusters: LightClusters) -> GraphicsResult<()> {
+        self.lit.set_light_clusters(clusters)
     }
     #[cfg(feature = "diagnostics")]
     pub fn set_diagnostics(&mut self, d: quasar_diagnostics::Diagnostics) {

@@ -99,3 +99,21 @@ cargo run -p starfall -- --help
   install defaults, load files, then apply explicit game CLI values with
   `set_cli`, followed by `CommonArgs::apply_overrides`. The example still needs
   that correction; the library's precedence handling is already available.
+
+## Content tables
+
+With the `content` feature, `quasar_config::content` loads game data such as
+weapons, enemies, items and sound cues from TOML or JSON tables
+(`[[weapons]] id = "laser" …`). Records implement `ContentRecord`: an id and
+`validate`, which runs field checks (`range`, `finite`, `non_empty`, `check`)
+and declares references to other tables (`reference("ammo", "ammo", id)`). A
+load reports every problem at once, including duplicate ids, deserialisation
+errors and dangling references, as `table[record].field: message`.
+
+`ContentRegistry` replaces global `OnceLock` registries. `snapshot()` hands
+out an immutable `Arc` view of every table. `reload_str` and `reload_paths`
+(fed by an asset watcher) validate the new data against every other table
+before swapping it in, so a broken edit keeps the running game on the
+previous content. Holders of older snapshots stay consistent until they
+fetch a new one (`ContentSnapshot::revision`). Starfall loads its sounds and
+event cues this way.

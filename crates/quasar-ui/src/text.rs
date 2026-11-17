@@ -294,6 +294,27 @@ mod gpu {
                         self.glyphs.warm(&mut engine, &layout);
                     }
                 }
+                // Wrapped labels place glyphs at different positions than the
+                // single-line layout, so warm the exact layout `draw_widget`
+                // will use; otherwise new lines only appear a frame later.
+                if let Widget::Label {
+                    text,
+                    style,
+                    wrap: crate::LabelWrap::Word,
+                    ..
+                } = &node.widget
+                {
+                    let size = theme.size(*style) * scale;
+                    if let Some(layout) = self.measure.wrapped_layout(
+                        ui.resolve_text(text),
+                        *style,
+                        size,
+                        entry.rect.width + 0.5,
+                    ) {
+                        let mut engine = self.engine.borrow_mut();
+                        self.glyphs.warm(&mut engine, &layout);
+                    }
+                }
             }
             self.gpu.sync(state, gal, textures, self.glyphs.atlas_mut())
         }
@@ -322,8 +343,8 @@ mod gpu {
                 } => {
                     let size = theme.size(*style) * scale;
                     let layout = match wrap {
-                        crate::TextWrap::None => self.layout(ui.resolve_text(text), *style, size),
-                        crate::TextWrap::Word => self.measure.wrapped_layout(
+                        crate::LabelWrap::None => self.layout(ui.resolve_text(text), *style, size),
+                        crate::LabelWrap::Word => self.measure.wrapped_layout(
                             ui.resolve_text(text),
                             *style,
                             size,
@@ -376,10 +397,15 @@ mod gpu {
                     step,
                     ..
                 } => {
+                    let inner = to_rect(
+                        entry
+                            .rect
+                            .inset(crate::Edges::all(theme.control_inset * scale)),
+                    );
                     let track = RenderRect::new(
-                        rect.x,
-                        rect.y + rect.height - 5.0 * scale,
-                        rect.width,
+                        inner.x,
+                        inner.y + inner.height - 5.0 * scale,
+                        inner.width,
                         4.0 * scale,
                     );
                     canvas.rect(track, render_color(theme.track));
@@ -409,15 +435,15 @@ mod gpu {
                     if let Some(layout) =
                         self.layout(ui.resolve_text(label), TextStyle::Small, small)
                     {
-                        self.draw_layout(canvas, &layout, rect.x, rect.y, theme.dim_text);
+                        self.draw_layout(canvas, &layout, inner.x, inner.y, theme.dim_text);
                     }
                     let value_text = format_slider_value(*value, *step);
                     if let Some(layout) = self.layout(&value_text, TextStyle::Small, small) {
                         self.draw_layout(
                             canvas,
                             &layout,
-                            rect.x + rect.width - layout.width(),
-                            rect.y,
+                            inner.x + inner.width - layout.width(),
+                            inner.y,
                             theme.text,
                         );
                     }

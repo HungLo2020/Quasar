@@ -1,26 +1,34 @@
 //! Caller-owned mesh rendering using upstream wgpu types through VulkanicGAL.
+mod decals;
 mod lighting;
 mod math;
 #[cfg(feature = "model-assets")]
 mod model_assets;
+mod outline;
+mod particles;
 mod post;
 mod primitives;
 mod shadows;
 mod skinning;
 mod submission;
 mod surface;
+pub use decals::{Decal, DecalRenderer};
 pub use lighting::{
-    Attenuation, ColorSpace, DEFAULT_LIT_FRAGMENT_SHADER, LIGHTING_WGSL, LIGHTS_BINDING, Light,
-    Lighting, LitCamera3D, LitDraw3D, LitMaterial, LitPassOptions, LitRenderState3D,
-    SHADOW_RECORDS_BINDING, SHADOW_SAMPLER_BINDING, SHADOW_TEXTURE_BINDING, ShadingModel,
-    encode_lighting,
+    Attenuation, ColorSpace, DEFAULT_LIT_FRAGMENT_SHADER, Fog, LIGHTING_WGSL, LIGHTS_BINDING,
+    Light, LightClusters, LightGrid, Lighting, LightingOptions, LitCamera3D, LitDraw3D,
+    LitMaterial, LitPassOptions, LitRenderState3D, SHADOW_RECORDS_BINDING, SHADOW_SAMPLER_BINDING,
+    SHADOW_TEXTURE_BINDING, ShadingModel, cluster_lights, empty_lighting_bytes, encode_lighting,
+    encode_lighting_with,
 };
 pub use math::Mat4;
 #[cfg(feature = "model-assets")]
 pub use model_assets::{MaterialConversion, ModelUploadOptions, UploadedModel, UploadedTexture};
+pub use outline::{MAX_OUTLINE_STYLES, OutlineDraw, OutlineRenderer, OutlineStyle};
+pub use particles::{Particle, ParticleBurst, ParticleCamera, ParticleSettings, ParticleSystem};
 pub use post::{
     BlendMode, BloomSettings, ColorGrade, OutputEncoding, PostChain, PostSettings, SCENE_FORMAT,
-    SceneTarget, Tonemap, TransparentDraw3D, VignetteSettings, sort_back_to_front,
+    SceneTarget, SurfaceTransparentDraw3D, Tonemap, TransparentDraw3D, VignetteSettings,
+    sort_back_to_front,
 };
 pub use primitives::MeshData;
 use quasar_frame::{Gpu, GraphicsResult, RenderTarget, error, texture_2d};
@@ -30,7 +38,9 @@ pub use shadows::{
     PreparedShadows, ShadowBinding, ShadowCaster, ShadowConfig, ShadowFilter, ShadowRenderState3D,
     ShadowSettings, ShadowStats, ShadowTarget, ShadowView,
 };
-pub use skinning::{MAX_JOINTS, SkinInfluence, SkinnedMesh, SkinningPass, skin_vertices};
+pub use skinning::{
+    MAX_JOINTS, SkinInfluence, SkinnedCrowd, SkinnedMesh, SkinningPass, skin_vertices,
+};
 use std::collections::{BTreeMap, HashMap};
 use submission::Visibility;
 pub use submission::{RenderWork, SubmissionConfig};
@@ -60,16 +70,45 @@ pub struct Mesh {
     face_policy: MeshFacePolicy,
     opaque_alpha: bool,
     bounds: ([f32; 3], [f32; 3]),
+    /// First vertex of this mesh in `vertices` (non-zero for meshes that
+    /// share one buffer, such as [`SkinnedCrowd`] instances). Draws of
+    /// meshes sharing buffers merge into one instanced draw.
+    vertex_base: u32,
 }
 impl Mesh {
     pub fn upload(gpu: &Gpu, vertices: &[Vertex], indices: &[u32]) -> GraphicsResult<Self> {
         Self::upload_with_usage(gpu, vertices, indices, BufferUsages::empty())
+    }
+    /// [`Self::upload`] with one linear RGBA colour per vertex, multiplied
+    /// into the material's texture and tint by every 3D pass. Colours are
+    /// stored at 8 bits per channel.
+    pub fn upload_colored(
+        gpu: &Gpu,
+        vertices: &[Vertex],
+        colors: &[[f32; 4]],
+        indices: &[u32],
+    ) -> GraphicsResult<Self> {
+        if colors.len() != vertices.len() || colors.iter().flatten().any(|c| !c.is_finite()) {
+            return Err(error(
+                "vertex colours need one finite RGBA value per vertex",
+            ));
+        }
+        Self::upload_encoded(gpu, vertices, Some(colors), indices, BufferUsages::empty())
     }
     /// [`Self::upload`] with extra vertex-buffer usages (the buffer is always
     /// `STORAGE`), e.g. `COPY_SRC` for readback or compute-written meshes.
     pub(crate) fn upload_with_usage(
         gpu: &Gpu,
         vertices: &[Vertex],
+        indices: &[u32],
+        extra: BufferUsages,
+    ) -> GraphicsResult<Self> {
+        Self::upload_encoded(gpu, vertices, None, indices, extra)
+    }
+    pub(crate) fn upload_encoded(
+        gpu: &Gpu,
+        vertices: &[Vertex],
+        colors: Option<&[[f32; 4]]>,
         indices: &[u32],
         extra: BufferUsages,
     ) -> GraphicsResult<Self> {
@@ -97,7 +136,9 @@ impl Mesh {
         }
         let encoded: Vec<_> = vertices
             .iter()
-            .flat_map(|v| {
+            .enumerate()
+            .flat_map(|(i, v)| {
+                let (packed, alpha) = colors.map_or((0., 0.), |c| pack_vertex_color(c[i]));
                 [
                     v.position[0],
                     v.position[1],
@@ -109,8 +150,8 @@ impl Mesh {
                     0.,
                     v.uv[0],
                     v.uv[1],
-                    0.,
-                    0.,
+                    packed,
+                    alpha,
                 ]
             })
             .flat_map(f32::to_ne_bytes)
@@ -132,6 +173,7 @@ impl Mesh {
             count: indices.len() as u32,
             face_policy: MeshFacePolicy::Legacy,
             opaque_alpha: false,
+            vertex_base: 0,
             bounds: (
                 std::array::from_fn(|a| {
                     vertices
@@ -156,6 +198,16 @@ impl Mesh {
     }
     pub fn local_bounds(&self) -> ([f32; 3], [f32; 3]) {
         self.bounds
+    }
+    /// Whether two meshes draw the same geometry buffers, so their draws can
+    /// share one instanced draw call.
+    pub(crate) fn shares_buffers(&self, other: &Mesh) -> bool {
+        std::ptr::eq(self, other)
+            || (self.vertices == other.vertices
+                && self.indices == other.indices
+                && self.count == other.count
+                && self.face_policy == other.face_policy
+                && self.opaque_alpha == other.opaque_alpha)
     }
     /// Drops this owner's references. Encoded/submitted native commands retain their own.
     pub fn release(&mut self, _gpu: &Gpu) -> GraphicsResult<()> {
@@ -655,12 +707,13 @@ impl Core3D {
                             if n.flip_y { -1. } else { 1. },
                         ]
                     }));
+                    values.extend([d.mesh.vertex_base as f32, 0., 0., 0.]);
                 } else {
                     values.extend([
                         camera.light_direction[0],
                         camera.light_direction[1],
                         camera.light_direction[2],
-                        0.,
+                        d.mesh.vertex_base as f32,
                     ]);
                 }
                 data.extend(bytes(values));
@@ -679,7 +732,7 @@ impl Core3D {
                     && !d.base.transparent
                     && d.blend.is_none()
                     && let Some(b) = batches.last_mut()
-                    && std::ptr::eq(b.mesh, d.mesh)
+                    && b.mesh.shares_buffers(d.mesh)
                     && b.image == d.base.texture_view
                     && b.normal == normal
                     && b.sampler == sampler
@@ -715,7 +768,7 @@ impl Core3D {
                 uniform_upload_bytes: data.len(),
             };
             if data.is_empty() {
-                data.resize(if self.lit { 208 } else { 160 }, 0);
+                data.resize(if self.lit { 224 } else { 160 }, 0);
             }
             let instance_size = data.len() as u64;
             let mut changed = quasar_frame::grow_buffer(
@@ -726,7 +779,14 @@ impl Core3D {
                 BufferUsages::STORAGE,
             )?;
             let lights_offset = data.len() as u64;
-            let light_data = lights.unwrap_or(&[0; 112]);
+            let empty_lights;
+            let light_data = match lights {
+                Some(lights) => lights,
+                None => {
+                    empty_lights = empty_lighting_bytes();
+                    &empty_lights
+                }
+            };
             if self.lit {
                 data.extend_from_slice(light_data);
                 changed |= quasar_frame::grow_buffer(
@@ -1000,6 +1060,13 @@ impl RenderState3D {
         self.core.release();
         Ok(())
     }
+}
+/// Packs a linear RGBA vertex colour into the spare `uv.zw` vertex slots:
+/// RGB as an exact 24-bit integer float and alpha + 1 (0 marks "no colour").
+pub(crate) fn pack_vertex_color(color: [f32; 4]) -> (f32, f32) {
+    let channel = |v: f32| (v.clamp(0., 1.) * 255. + 0.5) as u32;
+    let rgb = channel(color[0]) | channel(color[1]) << 8 | channel(color[2]) << 16;
+    (rgb as f32, 1. + color[3].clamp(0., 1.))
 }
 fn mirrored(m: Mat4) -> bool {
     let a = m.0;

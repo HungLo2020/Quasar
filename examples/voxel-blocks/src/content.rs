@@ -1,7 +1,6 @@
 //! Block definitions, procedural textures and per-block tables.
-use quasar_math::Vec3;
-use quasar_voxel::{BlockCatalog, BlockDef, FaceShape, Layer};
-use quasar_voxel_mesh::{ModelLibrary, box_quads, opaque_table};
+use quasar_voxel::{BlockCatalog, BlockDef, Layer};
+use quasar_voxel_mesh::{ModelLibrary, opaque_table};
 
 /// Texture tile edge in texels.
 pub const TILE: u32 = 16;
@@ -56,7 +55,7 @@ pub struct Content {
 impl Content {
     pub fn new() -> Self {
         let mut catalog = BlockCatalog::new();
-        let mut library = ModelLibrary::new();
+        let library = ModelLibrary::new();
         let side = |s: u32, top: u32, bottom: u32| [s, s, bottom, top, s, s];
         let stone = catalog.add(BlockDef::cube("stone", tex::STONE));
         let dirt = catalog.add(BlockDef::cube("dirt", tex::DIRT));
@@ -77,19 +76,10 @@ impl Content {
         let glass = catalog.add(BlockDef::cube("glass", tex::GLASS).with_layer(Layer::Translucent));
         let lamp = catalog.add(BlockDef::cube("lamp", tex::LAMP).with_emission(14));
         let planks = catalog.add(BlockDef::cube("planks", tex::PLANKS));
-        // A half block: full bottom face, open top, half-height sides that
-        // only cull against other half blocks.
-        let slab_model = library.add(box_quads(
-            Vec3::ZERO,
-            Vec3::new(1.0, 0.5, 1.0),
-            [tex::PLANKS; 6],
-        ));
-        let half = FaceShape::Shape(1);
-        let slab = catalog.add(
-            BlockDef::cube("slab", tex::PLANKS)
-                .with_model(slab_model)
-                .with_faces([half, half, FaceShape::Full, FaceShape::None, half, half]),
-        );
+        // A half block: a native partial-height block. Its full bottom face,
+        // open top and half-height sides (which only cull against other half
+        // blocks) are derived from its bounds.
+        let slab = catalog.add(BlockDef::cube("slab", tex::PLANKS).with_height(0.5));
         let blocks = Blocks {
             stone,
             dirt,
@@ -112,12 +102,7 @@ impl Content {
         let collision = catalog
             .defs()
             .iter()
-            .enumerate()
-            .map(|(id, d)| match (d.collision, id as u16 == slab) {
-                (false, _) => 0.0,
-                (true, true) => 0.5,
-                (true, false) => 1.0,
-            })
+            .map(|d| if d.collision { d.bounds[1][1] } else { 0.0 })
             .collect();
         Self {
             catalog,

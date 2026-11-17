@@ -70,6 +70,15 @@ pub struct DriftStats {
     pub collider_chunks: usize,
 }
 
+/// Visual-only events for the renderer (never part of the state hash).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Effect {
+    /// Asteroid dug (or filled) around a world point.
+    Dig { point: Vec3, fill: bool },
+    /// A ship block was cut out at a world point.
+    BlockRemoved { point: Vec3 },
+}
+
 pub struct DriftWorld {
     pub asteroid: Asteroid,
     pub fleet: Fleet,
@@ -82,6 +91,7 @@ pub struct DriftWorld {
     pub stats: DriftStats,
     pool: JobPool,
     updates: Vec<GeometryUpdate>,
+    effects: Vec<Effect>,
     tick: u64,
 }
 
@@ -126,6 +136,7 @@ impl DriftWorld {
             stats: DriftStats::default(),
             pool,
             updates,
+            effects: Vec::new(),
             tick: 0,
         };
         world.refresh();
@@ -250,13 +261,21 @@ impl DriftWorld {
     }
 
     fn secondary(&mut self) {
-        if let Some(Target::Ship(hit)) = self.target
-            && self
+        if let Some(Target::Ship(hit)) = self.target {
+            let point = self.ship_cell_world(hit.ship, hit.hit.voxel).as_vec3();
+            if self
                 .fleet
                 .remove(hit.ship, hit.hit.voxel, self.physics.raw_mut())
-        {
-            self.stats.removed += 1;
+            {
+                self.stats.removed += 1;
+                self.effects.push(Effect::BlockRemoved { point });
+            }
         }
+    }
+
+    /// Visual events since the last call.
+    pub fn take_effects(&mut self) -> Vec<Effect> {
+        std::mem::take(&mut self.effects)
     }
 
     /// Digs (or fills) a 3.5 m sphere of asteroid at `point` (voxel space).
@@ -270,6 +289,7 @@ impl DriftWorld {
             mat::ICE as u8,
         );
         if changed > 0 {
+            self.effects.push(Effect::Dig { point, fill });
             if fill {
                 self.stats.fills += 1;
             } else {
@@ -280,7 +300,11 @@ impl DriftWorld {
 
     /// Removes a ship block by grid cell (scripted runs and tests).
     pub fn remove_ship_block(&mut self, ship: usize, cell: IVec3) -> bool {
+        let point = self.ship_cell_world(ship, cell).as_vec3();
         let done = self.fleet.remove(ship, cell, self.physics.raw_mut());
+        if done {
+            self.effects.push(Effect::BlockRemoved { point });
+        }
         self.stats.removed += u64::from(done);
         done
     }

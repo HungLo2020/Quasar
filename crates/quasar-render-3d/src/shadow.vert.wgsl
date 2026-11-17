@@ -48,7 +48,7 @@ fn main_1() {
     let _e12: Batch = batchData;
     let _e15: u32 = gl_InstanceIndex_1;
     instanceIndex = (_e12.first.x + u32(_e15));
-    let _e19: u32 = gl_VertexIndex_1;
+    let _e19: u32 = gl_VertexIndex_1 + u32(instanceData.items[instanceIndex].alpha.z);
     let _e22: Vertex = geometry.vertices[_e19];
     v = _e22;
     let _e25: u32 = instanceIndex;

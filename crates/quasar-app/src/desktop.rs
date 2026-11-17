@@ -420,6 +420,12 @@ impl<A: DesktopApplication> ApplicationHandler for Runner<A> {
         };
         self.frame_input
             .apply_consumption(&mut self.window.as_mut().unwrap().input);
+        if let Some(bindings) = self.application.take_bindings()
+            && let Err(error) = self.window.as_mut().unwrap().input.set_bindings(bindings)
+        {
+            self.fail(event_loop, std::io::Error::other(error.to_string()));
+            return;
+        }
         match frame_flow {
             Ok(Flow::Continue | Flow::Deferred) => {}
             Ok(Flow::Exit) => {

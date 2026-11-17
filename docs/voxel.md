@@ -175,3 +175,25 @@ The benchmarks print JSON. `--check` fails when a target from
 `voxel-spec.md` §11 is missed, after retries and normalisation for machine
 load (`quasar_profile::micro`; see §11). The examples print settle, tick and prepare
 timings and can write them as JSON (`--benchmark-file`).
+
+## Partial-height blocks
+
+`BlockDef::with_height(h)`, `with_bounds(min, max)` and `BlockDef::partial`
+make a single-cell block occupy a box inside its cell, such as slabs,
+cut-away walls a top-down camera sees over, and pedestals. Face shapes are
+derived from the box:
+
+- A face covering the whole cell side is `Full`.
+- A partial face on the cell boundary gets a shape id shared by equal
+  rectangles, so two equal walls cull each other, including when rotated.
+- An inset face never hides anything and is never hidden.
+
+The default `CatalogModels` meshes the box (rotated with the block), and
+`BlockDef::bounds` gives collision code the height. voxel-blocks' slab is a
+`with_height(0.5)` block.
+
+## Voxels with meshes
+
+See [3D effects](effects-3d.md#voxels-and-meshes-on-one-scene) for
+`HybridFrame`, which orders voxel and render-3d passes on one `SceneTarget`
+and reports voxel submissions.

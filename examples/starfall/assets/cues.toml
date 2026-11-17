@@ -1,0 +1,29 @@
+# Which sound each game event plays (references `sounds.toml`).
+
+[[cues]]
+id = "crystal"
+sound = "pickup"
+
+[[cues]]
+id = "shot"
+sound = "shot"
+
+[[cues]]
+id = "drone_destroyed"
+sound = "hit"
+
+[[cues]]
+id = "damage"
+sound = "hit"
+
+[[cues]]
+id = "portal_ready"
+sound = "portal"
+
+[[cues]]
+id = "won"
+sound = "win"
+
+[[cues]]
+id = "lost"
+sound = "lose"

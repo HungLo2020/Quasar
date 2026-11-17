@@ -385,3 +385,115 @@ fn shaped_text_clipping_and_resize_stay_inside_logical_bounds() {
         0
     );
 }
+
+#[cfg(feature = "text-render2d")]
+#[test]
+#[ignore = "requires a Vulkan-capable graphics device"]
+fn wrapped_labels_draw_every_line_on_the_first_frame() {
+    use quasar_text::{FontData, FontStack};
+    use quasar_ui::{TextRenderer, TextRendererOptions, UiTextStyles};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let mut fonts = FontStack::new();
+    fonts.add_font(FontData::new(
+        "DejaVuSans.ttf",
+        include_bytes!("../../quasar-text/tests/fonts/DejaVuSans.ttf").as_slice(),
+    ));
+    fonts.with_default_family("DejaVu Sans");
+    let engine = Rc::new(RefCell::new(fonts.build("en-US").unwrap()));
+    let renderer = TextRenderer::new(
+        engine,
+        UiTextStyles::new("DejaVu Sans"),
+        TextRendererOptions::default(),
+    )
+    .unwrap();
+    let measure = renderer.measure();
+    let mut ui = Ui::new(Theme::modern());
+    let root = ui.add_root(
+        Widget::Panel {
+            layout: PanelLayout::Stack {
+                direction: quasar_ui::StackDirection::Vertical,
+                gap: 0.0,
+            },
+            padding: Edges::all(4.0),
+            clip: false,
+            scrollable: false,
+        },
+        LayoutItem::size(Length::fixed(150.0), Length::Auto),
+        Layer::Normal,
+        false,
+    );
+    let label = ui
+        .add_child(
+            root,
+            Widget::wrapped_label(
+                UiText::literal("Every wrapped line of this paragraph must be visible at once"),
+                quasar_ui::TextStyle::Body,
+                None,
+            ),
+            LayoutItem::auto(),
+        )
+        .unwrap();
+    ui.update(
+        &quasar_ui::UiInput::default(),
+        Rect::new(0.0, 0.0, 320.0, 240.0),
+        1.0,
+        Edges::ZERO,
+        &measure,
+        1.0 / 60.0,
+    );
+    let rect = ui
+        .layout_entries()
+        .iter()
+        .find(|e| e.id == label)
+        .unwrap()
+        .rect;
+    let mut ui_renderer = UiRenderer::new();
+    ui_renderer.enable_text(renderer);
+    let gal = Gpu::headless().unwrap();
+    let mut state_2d = RenderState2D::new(&gal).unwrap();
+    let target = OffscreenTarget::new(&gal, 320, 240).unwrap();
+    let mut textures = Textures::default();
+    let mut frames = Vec::new();
+    for _ in 0..2 {
+        let report = target
+            .render(&gal, |gal, target| {
+                ui_renderer.prepare_text(&mut state_2d, gal, &mut textures, &ui)?;
+                let mut canvas = quasar_render_2d::Canvas::new(320, 240).unwrap();
+                canvas.clear = quasar_render_2d::Color([0, 0, 0, 255]);
+                ui_renderer.draw(&mut canvas, &ui);
+                let prepared = state_2d.prepare(
+                    gal,
+                    &canvas,
+                    &textures,
+                    target,
+                    DisplayOptions::default(),
+                    LoadOp::Clear,
+                )?;
+                Ok(vec![prepared.commands])
+            })
+            .unwrap();
+        frames.push(report.rgba);
+    }
+    // Text pixels in the bottom line band prove the last wrapped line drew.
+    let line = Theme::modern().font_size;
+    assert!(rect.height >= line * 3.0, "label wraps to several lines");
+    let lit = |rgba: &[u8], y0: f32, y1: f32| {
+        (y0 as usize..y1 as usize)
+            .flat_map(|y| (rect.x as usize..rect.right() as usize).map(move |x| (x, y)))
+            .filter(|&(x, y)| rgba[(y * 320 + x) * 4] > 100)
+            .count()
+    };
+    let bottom = lit(&frames[0], rect.bottom() - line, rect.bottom());
+    assert!(
+        bottom > 20,
+        "last wrapped line missing on frame one ({bottom} px)"
+    );
+    assert_eq!(
+        frames[0], frames[1],
+        "first frame differs from the settled one"
+    );
+    target.release(&gal).unwrap();
+    state_2d.release(&gal).unwrap();
+}

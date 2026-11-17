@@ -91,6 +91,22 @@ SECTIONS: list[list] = [
                 "cargo check --locked -p quasar-config --all-targets --features storage"
             ],
             [
+                "cargo check --locked -p quasar-config --no-default-features --all-targets --features content",
+                "cargo check --locked -p quasar-config --no-default-features --all-targets --features content"
+            ],
+            [
+                "cargo test --locked -p quasar-config --all-features --test content",
+                "cargo test --locked -p quasar-config --all-features --test content"
+            ],
+            [
+                "cargo test --locked -p quasar-net",
+                "cargo test --locked -p quasar-net"
+            ],
+            [
+                "cargo run --locked -p quasar-net --example net_duel",
+                "cargo run --locked -p quasar-net --example net_duel"
+            ],
+            [
                 "cargo check --locked -p quasar-profile --all-targets",
                 "cargo check --locked -p quasar-profile --all-targets"
             ],
@@ -157,6 +173,10 @@ SECTIONS: list[list] = [
             [
                 "cargo check --locked -p quasar-ui --lib --features text",
                 "cargo check --locked -p quasar-ui --lib --features text"
+            ],
+            [
+                "cargo test --locked -p quasar-ui --features controls-file --test controls",
+                "cargo test --locked -p quasar-ui --features controls-file --test controls"
             ],
             [
                 "cargo check --locked -p quasar-text --lib",

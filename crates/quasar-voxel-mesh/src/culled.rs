@@ -149,6 +149,10 @@ impl ModelSource for CatalogModels<'_> {
         if block == AIR {
             return;
         }
+        if !def.full_cube && def.model == u32::MAX && def.is_partial() {
+            partial_box(def, orientation, out);
+            return;
+        }
         match self.library.get(def.model) {
             Some(quads) => out.extend(quads.iter().map(|q| q.rotated(orientation))),
             None => {
@@ -162,6 +166,19 @@ impl ModelSource for CatalogModels<'_> {
             }
         }
     }
+}
+
+/// Box quads of a partial-height block (kept out of line so the cube path
+/// stays as tight as before).
+#[cold]
+#[inline(never)]
+fn partial_box(def: &quasar_voxel::BlockDef, orientation: Orientation, out: &mut Vec<ModelQuad>) {
+    let [min, max] = def.bounds;
+    out.extend(
+        box_quads(Vec3::from(min), Vec3::from(max), def.materials)
+            .iter()
+            .map(|q| q.rotated(orientation)),
+    );
 }
 
 /// A cell seen by policies.

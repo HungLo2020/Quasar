@@ -50,3 +50,15 @@ cargo run --release -p voxel-drift -- --headless --autoplay --ticks 600 --screen
 `--headless --autoplay` flies in, drills and fills the asteroid, builds on the
 ship and then cuts its neck so the halves drift apart. It prints counts, the
 LOD node mix and a state hash, which is the same for any thread count.
+
+## Composition and effects
+
+The renderer draws everything into one linear HDR `SceneTarget` through
+`quasar_render_voxel::HybridFrame`, in this order:
+
+1. Opaque voxels, then a lit mesh drone sharing their depth.
+2. Scorch decals projected onto freshly dug rock.
+3. Mining dust and cutting sparks as GPU particles.
+4. The drone's outline, with a see-through fill where the asteroid hides
+   it.
+5. Bloom and tonemapping in the post chain, then the 2D HUD.

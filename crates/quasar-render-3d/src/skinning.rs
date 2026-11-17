@@ -148,13 +148,30 @@ impl SkinnedMesh {
         indices: &[u32],
         joint_count: usize,
     ) -> GraphicsResult<Self> {
+        Self::upload_with_colors(gpu, vertices, None, influences, indices, joint_count)
+    }
+
+    /// [`Self::upload`] with per-vertex linear RGBA colours (see
+    /// [`Mesh::upload_colored`]); skinning carries them through.
+    pub fn upload_with_colors(
+        gpu: &Gpu,
+        vertices: &[Vertex],
+        colors: Option<&[[f32; 4]]>,
+        influences: &[SkinInfluence],
+        indices: &[u32],
+        joint_count: usize,
+    ) -> GraphicsResult<Self> {
         if !(1..=MAX_JOINTS).contains(&joint_count) || influences.len() != vertices.len() {
             return Err(error(
                 "skinned meshes need 1..=1024 joints and one influence per vertex",
             ));
         }
+        if colors.is_some_and(|c| c.len() != vertices.len()) {
+            return Err(error("vertex colours need one value per vertex"));
+        }
         let influences = normalized(influences, joint_count)?;
-        let mut mesh = Mesh::upload_with_usage(gpu, vertices, indices, BufferUsages::COPY_SRC)?;
+        let mut mesh =
+            Mesh::upload_encoded(gpu, vertices, colors, indices, BufferUsages::COPY_SRC)?;
         // Bind-pose bounds are a poor fit once joints move; grow them so
         // frustum culling stays conservative. Callers with known motion
         // ranges can tighten them with `set_local_bounds`.
@@ -209,7 +226,7 @@ impl SkinnedMesh {
             BufferUsages::STORAGE | BufferUsages::COPY_DST,
         );
         let mut param_bytes = Vec::with_capacity(16);
-        for value in [vertices.len() as u32, joint_count as u32, 0, 0] {
+        for value in [vertices.len() as u32, joint_count as u32, 1, 0] {
             param_bytes.extend(value.to_ne_bytes());
         }
         let params = buffer(
@@ -260,7 +277,14 @@ impl SkinnedMesh {
                 weights: *weights,
             })
             .collect();
-        Self::upload(gpu, &vertices, &influences, &primitive.indices, joint_count)
+        Self::upload_with_colors(
+            gpu,
+            &vertices,
+            primitive.colors.as_deref(),
+            &influences,
+            &primitive.indices,
+            joint_count,
+        )
     }
 
     /// The posed mesh, drawable by every 3D pass and shadow caster.
@@ -288,59 +312,272 @@ impl SkinnedMesh {
     /// Reads the posed vertices back (for tests, tools and headless checks;
     /// never needed for rendering).
     pub fn read_vertices(&self, gpu: &Gpu) -> GraphicsResult<Vec<Vertex>> {
-        let size = u64::from(self.vertex_count) * 48;
-        let staging = gpu.device.create_buffer(&BufferDescriptor {
-            label: Some("skinned vertex readback"),
-            size,
-            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = gpu.encoder("skinned vertex readback");
-        encoder.copy_buffer_to_buffer(
-            self.mesh
-                .vertices
-                .as_ref()
-                .ok_or_else(|| error("released skinned mesh"))?,
-            0,
-            &staging,
-            0,
-            size,
-        );
-        let index = gpu.queue.submit([encoder.finish()]);
-        let (send, recv) = std::sync::mpsc::sync_channel(1);
-        staging.map_async(MapMode::Read, .., move |result| {
-            let _ = send.send(result);
-        });
-        gpu.device
-            .poll(PollType::Wait {
-                submission_index: Some(index),
-                timeout: Some(std::time::Duration::from_secs(30)),
-            })
-            .map_err(error)?;
-        recv.recv_timeout(std::time::Duration::from_secs(30))
-            .map_err(error)?
-            .map_err(error)?;
-        let mapped = staging.get_mapped_range(..).map_err(error)?;
-        let floats: Vec<f32> = mapped
-            .chunks_exact(4)
-            .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
-            .collect();
-        drop(mapped);
-        staging.unmap();
-        Ok(floats
-            .chunks_exact(12)
-            .map(|v| Vertex {
-                position: [v[0], v[1], v[2]],
-                normal: [v[4], v[5], v[6]],
-                uv: [v[8], v[9]],
-            })
-            .collect())
+        let output = self
+            .mesh
+            .vertices
+            .as_ref()
+            .ok_or_else(|| error("released skinned mesh"))?;
+        read_buffer_vertices(gpu, output, 0, u64::from(self.vertex_count) * 48)
     }
     /// Drops this owner's GPU references.
     pub fn release(&mut self, gpu: &Gpu) -> GraphicsResult<()> {
         self.group = None;
         self.mesh.release(gpu)
     }
+}
+
+/// Workgroup counts covering `threads` invocations of the 64-wide skinning
+/// kernel, split over two dimensions so large crowds stay under the
+/// per-dimension dispatch limit.
+fn dispatch_size(threads: u32) -> (u32, u32) {
+    let groups = threads.div_ceil(64).max(1);
+    let x = groups.min(65_535);
+    (x, groups.div_ceil(x))
+}
+
+/// Many posed copies of one skinned mesh, skinned by a single dispatch with
+/// a single palette upload and drawn as one instanced draw.
+///
+/// Every slot ([`Self::instance`]) is an ordinary [`Mesh`] sharing the
+/// crowd's vertex and index buffers at its own vertex offset, so lit,
+/// surface, transparent and shadow passes draw it unchanged. With
+/// [`SubmissionConfig::instancing`] enabled, consecutive draws of one
+/// crowd's slots with the same material merge into one instanced draw call. Use this for hordes: a [`SkinnedMesh`] per enemy
+/// costs a dispatch, an upload and a draw each.
+pub struct SkinnedCrowd {
+    instances: Vec<Mesh>,
+    output: Buffer,
+    bind_pose: Buffer,
+    influences: Buffer,
+    palette: Buffer,
+    params: Buffer,
+    vertex_count: u32,
+    joint_count: u32,
+    group: Option<BindGroup>,
+}
+
+impl SkinnedCrowd {
+    /// Uploads one bind pose for `capacity` instances. Every instance starts
+    /// in the bind pose.
+    pub fn upload(
+        gpu: &Gpu,
+        vertices: &[Vertex],
+        colors: Option<&[[f32; 4]]>,
+        influences: &[SkinInfluence],
+        indices: &[u32],
+        joint_count: usize,
+        capacity: usize,
+    ) -> GraphicsResult<Self> {
+        let template = SkinnedMesh::upload_with_colors(
+            gpu,
+            vertices,
+            colors,
+            influences,
+            indices,
+            joint_count,
+        )?;
+        let limits = gpu.device.limits();
+        let vertex_bytes = vertices.len() as u64 * 48;
+        let output_size = vertex_bytes.saturating_mul(capacity as u64);
+        if capacity == 0
+            || output_size > limits.max_storage_buffer_binding_size
+            || output_size > limits.max_buffer_size
+            || (joint_count * capacity) as u64 * 64 > limits.max_storage_buffer_binding_size
+            || vertices.len() as u64 * capacity as u64 > u64::from(u32::MAX)
+        {
+            return Err(error("crowd capacity exceeds the storage buffer limits"));
+        }
+        let output = gpu.device.create_buffer(&BufferDescriptor {
+            label: Some("skinned crowd vertices"),
+            size: output_size,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.encoder("skinned crowd setup");
+        for slot in 0..capacity as u64 {
+            encoder.copy_buffer_to_buffer(
+                template.mesh.vertices.as_ref().expect("fresh mesh"),
+                0,
+                &output,
+                slot * vertex_bytes,
+                vertex_bytes,
+            );
+        }
+        gpu.queue.submit([encoder.finish()]);
+        let palette = gpu.device.create_buffer(&BufferDescriptor {
+            label: Some("skinned crowd palettes"),
+            size: (joint_count * capacity) as u64 * 64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let params = gpu.device.create_buffer(&BufferDescriptor {
+            label: Some("skinned crowd parameters"),
+            size: 16,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let base = &template.mesh;
+        let instances = (0..capacity)
+            .map(|slot| Mesh {
+                vertices: Some(output.clone()),
+                indices: base.indices.clone(),
+                count: base.count,
+                face_policy: base.face_policy,
+                opaque_alpha: base.opaque_alpha,
+                bounds: base.bounds,
+                vertex_base: (slot * vertices.len()) as u32,
+            })
+            .collect();
+        Ok(Self {
+            instances,
+            output,
+            bind_pose: template.bind_pose.clone(),
+            influences: template.influences.clone(),
+            palette,
+            params,
+            vertex_count: template.vertex_count,
+            joint_count: template.joint_count,
+            group: None,
+        })
+    }
+
+    /// Uploads a skinned `quasar-assets` primitive for `capacity` instances.
+    #[cfg(feature = "model-assets")]
+    pub fn from_model_primitive(
+        gpu: &Gpu,
+        primitive: &quasar_assets::model::ModelPrimitive,
+        joint_count: usize,
+        capacity: usize,
+    ) -> GraphicsResult<Self> {
+        let skin = primitive
+            .skin
+            .as_ref()
+            .ok_or_else(|| error("model primitive has no skin weights"))?;
+        let vertices: Vec<Vertex> = primitive
+            .vertices
+            .iter()
+            .map(|v| Vertex {
+                position: v.position,
+                normal: v.normal,
+                uv: v.uv,
+            })
+            .collect();
+        let influences: Vec<SkinInfluence> = skin
+            .joints
+            .iter()
+            .zip(&skin.weights)
+            .map(|(joints, weights)| SkinInfluence {
+                joints: joints.map(u32::from),
+                weights: *weights,
+            })
+            .collect();
+        Self::upload(
+            gpu,
+            &vertices,
+            primitive.colors.as_deref(),
+            &influences,
+            &primitive.indices,
+            joint_count,
+            capacity,
+        )
+    }
+
+    /// The posed mesh of slot `index`.
+    pub fn instance(&self, index: usize) -> &Mesh {
+        &self.instances[index]
+    }
+    /// Every slot, in order.
+    pub fn instances(&self) -> &[Mesh] {
+        &self.instances
+    }
+    pub fn capacity(&self) -> usize {
+        self.instances.len()
+    }
+    pub fn joint_count(&self) -> usize {
+        self.joint_count as usize
+    }
+    pub fn vertex_count(&self) -> usize {
+        self.vertex_count as usize
+    }
+    /// Face policy for every slot.
+    pub fn set_face_policy(&mut self, policy: MeshFacePolicy) {
+        for mesh in &mut self.instances {
+            mesh.face_policy = policy;
+        }
+    }
+    /// Culling bounds for every slot (see [`SkinnedMesh::set_local_bounds`]).
+    pub fn set_local_bounds(&mut self, min: [f32; 3], max: [f32; 3]) -> GraphicsResult<()> {
+        if !min.iter().chain(&max).all(|v| v.is_finite()) || (0..3).any(|a| min[a] > max[a]) {
+            return Err(error("invalid skinned crowd bounds"));
+        }
+        for mesh in &mut self.instances {
+            mesh.bounds = (min, max);
+        }
+        Ok(())
+    }
+    /// Reads one slot's posed vertices back (tests and tools).
+    pub fn read_vertices(&self, gpu: &Gpu, index: usize) -> GraphicsResult<Vec<Vertex>> {
+        if index >= self.instances.len() {
+            return Err(error("crowd slot out of range"));
+        }
+        read_buffer_vertices(
+            gpu,
+            &self.output,
+            u64::from(self.vertex_count) * 48 * index as u64,
+            u64::from(self.vertex_count) * 48,
+        )
+    }
+    /// Drops this owner's GPU references.
+    pub fn release(&mut self, _gpu: &Gpu) -> GraphicsResult<()> {
+        self.group = None;
+        self.instances.clear();
+        Ok(())
+    }
+}
+
+fn read_buffer_vertices(
+    gpu: &Gpu,
+    source: &Buffer,
+    offset: u64,
+    size: u64,
+) -> GraphicsResult<Vec<Vertex>> {
+    let staging = gpu.device.create_buffer(&BufferDescriptor {
+        label: Some("skinned vertex readback"),
+        size,
+        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = gpu.encoder("skinned vertex readback");
+    encoder.copy_buffer_to_buffer(source, offset, &staging, 0, size);
+    let index = gpu.queue.submit([encoder.finish()]);
+    let (send, recv) = std::sync::mpsc::sync_channel(1);
+    staging.map_async(MapMode::Read, .., move |result| {
+        let _ = send.send(result);
+    });
+    gpu.device
+        .poll(PollType::Wait {
+            submission_index: Some(index),
+            timeout: Some(std::time::Duration::from_secs(30)),
+        })
+        .map_err(error)?;
+    recv.recv_timeout(std::time::Duration::from_secs(30))
+        .map_err(error)?
+        .map_err(error)?;
+    let mapped = staging.get_mapped_range(..).map_err(error)?;
+    let floats: Vec<f32> = mapped
+        .chunks_exact(4)
+        .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    drop(mapped);
+    staging.unmap();
+    Ok(floats
+        .chunks_exact(12)
+        .map(|v| Vertex {
+            position: [v[0], v[1], v[2]],
+            normal: [v[4], v[5], v[6]],
+            uv: [v[8], v[9]],
+        })
+        .collect())
 }
 
 /// Compute pipeline that poses [`SkinnedMesh`]es. One per device is enough.
@@ -461,8 +698,101 @@ impl SkinningPass {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, mesh.group.as_ref(), &[]);
-        pass.dispatch_workgroups(mesh.vertex_count.div_ceil(64), 1, 1);
+        let (x, y) = dispatch_size(mesh.vertex_count);
+        pass.dispatch_workgroups(x, y, 1);
         Ok(())
+    }
+
+    /// Poses the first `palettes.len()` slots of `crowd` (one palette of
+    /// `joint_count` matrices each) with one upload and one dispatch.
+    pub fn record_crowd(
+        &mut self,
+        gpu: &Gpu,
+        encoder: &mut CommandEncoder,
+        crowd: &mut SkinnedCrowd,
+        palettes: &[&[Mat4]],
+    ) -> GraphicsResult<()> {
+        if palettes.len() > crowd.capacity() {
+            return Err(error("more crowd palettes than slots"));
+        }
+        if palettes
+            .iter()
+            .any(|p| !palette_valid(p, crowd.joint_count as usize))
+        {
+            return Err(error("palette must hold one finite matrix per joint"));
+        }
+        if palettes.is_empty() {
+            return Ok(());
+        }
+        let mut data = Vec::with_capacity(16 + palettes.len() * crowd.joint_count as usize * 64);
+        for value in [
+            crowd.vertex_count,
+            crowd.joint_count,
+            palettes.len() as u32,
+            0,
+        ] {
+            data.extend(value.to_ne_bytes());
+        }
+        for palette in palettes {
+            data.extend(bytes(
+                palette.iter().flat_map(|m| m.0.into_iter().flatten()),
+            ));
+        }
+        let upload = quasar_frame::staging_buffer(gpu, "crowd palette upload", &data);
+        encoder.copy_buffer_to_buffer(&upload, 0, &crowd.params, 0, 16);
+        encoder.copy_buffer_to_buffer(&upload, 16, &crowd.palette, 0, data.len() as u64 - 16);
+        if crowd.group.is_none() {
+            crowd.group = Some(gpu.device.create_bind_group(&BindGroupDescriptor {
+                label: Some("skinned crowd"),
+                layout: &self.layout,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: crowd.bind_pose.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: crowd.influences.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: crowd.palette.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: crowd.output.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: crowd.params.as_entire_binding(),
+                    },
+                ],
+            }));
+        }
+        let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+            label: Some("skinned crowd"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, crowd.group.as_ref(), &[]);
+        let (x, y) = dispatch_size(crowd.vertex_count * palettes.len() as u32);
+        pass.dispatch_workgroups(x, y, 1);
+        Ok(())
+    }
+
+    /// Poses several crowds into one command buffer.
+    pub fn prepare_crowds(
+        &mut self,
+        gpu: &Gpu,
+        jobs: &mut [(&mut SkinnedCrowd, &[&[Mat4]])],
+    ) -> GraphicsResult<CommandBuffer> {
+        checked(gpu, || {
+            let mut encoder = gpu.encoder("skinned crowds");
+            for (crowd, palettes) in jobs.iter_mut() {
+                self.record_crowd(gpu, &mut encoder, crowd, palettes)?;
+            }
+            Ok(encoder.finish())
+        })?
     }
 
     /// Poses every mesh with its palette into one command buffer. Submit it

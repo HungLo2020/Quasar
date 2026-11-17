@@ -31,8 +31,8 @@ use std::time::Duration;
 use vulkanic_gal::PresentMode;
 
 /// Game actions plus UI navigation actions installed on one input state.
-fn desktop_bindings(settings: &GameSettings) -> Result<Bindings, GameError> {
-    let mut bindings = settings.controls.bindings()?;
+fn desktop_bindings(game: &Bindings) -> Result<Bindings, GameError> {
+    let mut bindings = game.clone();
     bindings
         .bind("ui_up", Binding::key(Key::ArrowUp))
         .bind("ui_down", Binding::key(Key::ArrowDown))
@@ -113,6 +113,7 @@ pub fn run(settings: GameSettings, diagnostics: Diagnostics) -> Result<(), GameE
         volume: settings.audio_volume,
         sensitivity: settings.mouse_sensitivity,
         player_name: "Pilot".into(),
+        language: "en".into(),
     });
     let (text_measure, text_renderer) = build_text(&settings)?;
     run_app(
@@ -144,6 +145,9 @@ struct StarfallApp {
     text_measure: ShapedTextMeasure,
     text_renderer: Option<TextRenderer>,
     player_name: String,
+    /// Game actions as rebound on the controls screen.
+    game_bindings: Bindings,
+    pending_bindings: Option<Bindings>,
 }
 impl StarfallApp {
     fn new(
@@ -160,6 +164,21 @@ impl StarfallApp {
             && !settings.autoplay;
         let player_name = initial_options.player_name.clone();
         let mut menu = Menu::new(initial_options);
+        let defaults = settings.controls.bindings().unwrap_or_default();
+        let game_bindings =
+            match quasar_ui::load_bindings(starfall::menu::controls_path(), &defaults) {
+                Ok(bindings) => bindings,
+                Err(error) => {
+                    diagnostics.event_with(
+                        LogLevel::Warn,
+                        "starfall.settings",
+                        "controls_load_failed",
+                        [Field::new("error", error.to_string())],
+                    );
+                    defaults.clone()
+                }
+            };
+        menu.set_bindings(game_bindings.clone(), defaults);
         if interactive {
             menu.open_main();
         }
@@ -185,6 +204,8 @@ impl StarfallApp {
             text_measure,
             text_renderer: Some(text_renderer),
             player_name,
+            game_bindings,
+            pending_bindings: None,
         }
     }
     fn initialize(&mut self, context: &mut AppContext<'_>) -> Result<(), GameError> {
@@ -200,7 +221,7 @@ impl StarfallApp {
             self.texture = Some(content.texture.clone());
             self.sounds = Some(content.sounds.clone());
         }
-        let expected_bindings = desktop_bindings(&self.settings)?;
+        let expected_bindings = desktop_bindings(&self.game_bindings)?;
         if let Some(window) = context.window
             && window.input.bindings() != &expected_bindings
         {
@@ -301,14 +322,20 @@ impl StarfallApp {
         if self.menu.is_open() {
             let viewport = Rect::new(0.0, 0.0, context.size.0 as f32, context.size.1 as f32);
             let scale = context.scale_factor.max(0.5) as f32;
-            let input = from_frame_input(context.input, &UiBindings::default());
-            let action = self.menu.update(
-                &input,
-                viewport,
-                scale,
-                &self.text_measure,
-                context.elapsed.as_secs_f32(),
-            )?;
+            let action = if self.menu.is_capturing() {
+                // A controls row waits for a key: offer raw presses instead of
+                // UI navigation.
+                self.menu.capture(&context.input.pressed_buttons())?
+            } else {
+                let input = from_frame_input(context.input, &UiBindings::default());
+                self.menu.update(
+                    &input,
+                    viewport,
+                    scale,
+                    &self.text_measure,
+                    context.elapsed.as_secs_f32(),
+                )?
+            };
             context.input.consume_all();
             if let Some(window) = context.window
                 && let Some(flow) = self.apply_menu_action(action, window)?
@@ -386,6 +413,21 @@ impl StarfallApp {
                 self.set_cursor_capture(window, false);
             }
             MenuAction::Quit => return Ok(Some(Flow::Exit)),
+            MenuAction::ApplyBindings(bindings) => {
+                self.game_bindings = bindings;
+                // Installed by the runner through `take_bindings`.
+                self.pending_bindings = Some(desktop_bindings(&self.game_bindings)?);
+                if let Err(error) =
+                    quasar_ui::save_bindings(starfall::menu::controls_path(), &self.game_bindings)
+                {
+                    self.diagnostics.event_with(
+                        LogLevel::Error,
+                        "starfall.settings",
+                        "controls_save_failed",
+                        [Field::new("error", error.to_string())],
+                    );
+                }
+            }
             MenuAction::Apply(options) => {
                 self.settings.fullscreen = options.fullscreen;
                 self.settings.audio_volume = options.volume;
@@ -588,11 +630,15 @@ impl DesktopApplication for StarfallApp {
         self.initialize(context)
     }
 
+    fn take_bindings(&mut self) -> Option<Bindings> {
+        self.pending_bindings.take()
+    }
+
     fn configure_window(
         &mut self,
         window: &mut quasar_window::GameWindow,
     ) -> Result<(), Self::Error> {
-        let bindings = desktop_bindings(&self.settings)?;
+        let bindings = desktop_bindings(&self.game_bindings)?;
         window.native().set_ime_allowed(true);
         window
             .input

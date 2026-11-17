@@ -19,8 +19,10 @@
 //! * Lighting and shadows use render-3d's shared [`quasar_render_3d::LIGHTING_WGSL`]
 //!   module, so voxels and meshes light identically. Voxels can also cast into
 //!   render-3d shadow maps through [`VoxelRenderer::prepare_depth`].
+pub mod hybrid;
 mod materials;
 
+pub use hybrid::{HybridCommands, HybridFrame, Stage};
 pub use materials::{MaterialDef, MaterialFilter, VoxelMaterials};
 
 use quasar_frame::{
@@ -154,14 +156,10 @@ impl VoxelCamera {
     }
 }
 
-/// Distance fog in camera-relative metres.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Fog {
-    /// Linear RGB.
-    pub color: [f32; 3],
-    pub start: f32,
-    pub end: f32,
-}
+/// Distance fog in camera-relative metres. The same type configures mesh fog
+/// ([`quasar_render_3d::SurfaceRenderState3D::set_fog`]), so voxels and
+/// meshes fade identically.
+pub use quasar_render_3d::Fog;
 
 /// Voxel shading controls.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1272,7 +1270,10 @@ impl VoxelRenderer {
                 );
                 (lights, shadows)
             }
-            None => (f32_bytes([0.0f32; 28]), f32_bytes([0.0f32; 28])),
+            None => (
+                quasar_render_3d::empty_lighting_bytes(),
+                f32_bytes([0.0f32; 28]),
+            ),
         };
         changed |= Self::grow(
             gpu,

@@ -5,7 +5,7 @@
 //! [`PlayerInput`] owns one [`InputState`] so keyboard, mouse and gamepad
 //! bindings combine into the same named actions. [`GamepadHub`] owns device
 //! discovery, stable session ids and player assignment.
-use crate::{Bindings, InputState};
+use crate::{Bindings, DeviceActivity, InputState, most_recent_activity};
 #[cfg(feature = "diagnostics")]
 use quasar_diagnostics::{Diagnostics, Field, Level};
 use serde::{Deserialize, Serialize};
@@ -725,6 +725,18 @@ impl GamepadHub {
     }
     pub fn players(&self) -> impl Iterator<Item = &PlayerInput> {
         self.players.values()
+    }
+    /// The most recent activity of any player's input state.
+    pub fn last_activity(&self) -> Option<DeviceActivity> {
+        most_recent_activity(self.players.values().map(|p| p.input.last_activity()))
+    }
+    /// The player whose input state saw the most recent activity.
+    pub fn last_active_player(&self) -> Option<PlayerId> {
+        self.players
+            .values()
+            .filter_map(|p| p.input.last_activity().map(|a| (a, p.id)))
+            .max_by_key(|(a, _)| *a)
+            .map(|(_, id)| id)
     }
     pub fn players_mut(&mut self) -> impl Iterator<Item = &mut PlayerInput> {
         self.players.values_mut()

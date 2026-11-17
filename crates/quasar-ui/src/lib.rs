@@ -42,21 +42,31 @@
 //! assert!(!frame.events.is_empty() || ui.layout_entries().len() >= 2);
 //! # Ok::<(), quasar_ui::UiError>(())
 //! ```
+mod locale;
 mod math;
 mod theme;
 mod ui;
 mod widget;
 
+pub use locale::{LocaleError, Localization, StringTable};
 pub use math::{Edges, Rect, Vec2};
 pub use theme::{Color, TextStyle, Theme};
 pub use ui::{Ui, UiError, UiNode, UiResult};
+#[allow(deprecated)]
+pub use widget::TextWrap;
 pub use widget::{
-    ActionId, Align, Anchor, Border, Layer, LayoutEntry, LayoutItem, Length, MonospaceMeasure,
-    NodeId, NodeStyle, PanelLayout, StackDirection, TextMeasure, TextWrap, UiEvent, UiFrame,
-    UiInput, UiText, UiValue, Widget, WidgetState, rounded_border_spans, rounded_rect_spans,
-    wrap_greedy,
+    ActionId, Align, Anchor, Border, LabelWrap, Layer, LayoutEntry, LayoutItem, Length,
+    MonospaceMeasure, NodeId, NodeStyle, PanelLayout, StackDirection, TextMeasure, UiEvent,
+    UiFrame, UiInput, UiText, UiValue, Widget, WidgetState, rounded_border_spans,
+    rounded_rect_spans, wrap_greedy,
 };
 
+#[cfg(feature = "input")]
+mod controls;
+#[cfg(feature = "input")]
+pub use controls::{ControlEntry, ControlsOutcome, ControlsScreen};
+#[cfg(feature = "controls-file")]
+pub use controls::{load_bindings, save_bindings};
 #[cfg(feature = "input")]
 mod input;
 #[cfg(feature = "input")]

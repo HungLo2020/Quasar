@@ -71,6 +71,12 @@ pub struct Theme {
     pub border_width: f32,
     pub focus_width: f32,
     pub transition_rate: f32,
+    /// Draw the focus outline around unstyled modal panels. Styled panels
+    /// (with a [`crate::NodeStyle`]) never get one; their style owns the look.
+    pub modal_outline: bool,
+    /// Inner padding, in logical units, between a control's focus outline
+    /// and its contents (slider label and track).
+    pub control_inset: f32,
 }
 
 impl Theme {
@@ -102,6 +108,8 @@ impl Theme {
             border_width: 1.0,
             focus_width: 2.0,
             transition_rate: 18.0,
+            modal_outline: true,
+            control_inset: 3.0,
         }
     }
 
@@ -133,6 +141,8 @@ impl Theme {
             border_width: 1.0,
             focus_width: 2.0,
             transition_rate: 14.0,
+            modal_outline: true,
+            control_inset: 4.0,
         }
     }
 

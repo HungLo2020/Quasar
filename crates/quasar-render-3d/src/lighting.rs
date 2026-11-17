@@ -25,11 +25,225 @@ pub const SHADOW_RECORDS_BINDING: u32 = 6;
 /// Group-0 binding of the shadow comparison sampler.
 pub const SHADOW_SAMPLER_BINDING: u32 = 21;
 
-/// Encodes the lights storage buffer read by [`LIGHTING_WGSL`].
+/// Distance fog towards the eye. Colours are linear; distances are metres
+/// from the camera position the lighting was encoded with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fog {
+    /// Linear RGB.
+    pub color: [f32; 3],
+    pub start: f32,
+    pub end: f32,
+}
+
+impl Fog {
+    fn valid(&self) -> bool {
+        positive_rgb(self.color)
+            && self.start.is_finite()
+            && self.end.is_finite()
+            && self.start >= 0.
+            && self.end > self.start
+    }
+}
+
+/// World-space light clustering. Space around the camera is split into a
+/// grid of cubic cells; every positional (point or spot) light is listed in
+/// the cells its range touches, and each fragment shades only its cell's
+/// lights plus every directional light. Fragments outside the grid shade
+/// every light, so clustering never changes the image, only its cost.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightClusters {
+    /// Positional lights needed before clustering is used; with fewer,
+    /// every fragment loops over all lights (cheaper for small counts).
+    pub min_lights: usize,
+    /// Cell edge length in metres.
+    pub cell_size: f32,
+    /// Cells per axis (X, Y, Z), centred on the camera.
+    pub dims: [u32; 3],
+}
+
+impl Default for LightClusters {
+    fn default() -> Self {
+        Self {
+            min_lights: 12,
+            cell_size: 6.,
+            dims: [24, 12, 24],
+        }
+    }
+}
+
+impl LightClusters {
+    /// Never cluster: every fragment shades every light.
+    pub const DISABLED: Self = Self {
+        min_lights: usize::MAX,
+        cell_size: 6.,
+        dims: [1, 1, 1],
+    };
+    /// Upper bound on cells (`dims` product).
+    pub const MAX_CELLS: u64 = 1 << 16;
+
+    fn valid(&self) -> bool {
+        self.cell_size.is_finite()
+            && self.cell_size > 0.
+            && self.dims.iter().all(|d| (1..=256).contains(d))
+            && self.dims.iter().map(|&d| u64::from(d)).product::<u64>() <= Self::MAX_CELLS
+    }
+}
+
+/// Per-pass options of the shared lighting encoding.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LightingOptions {
+    pub fog: Option<Fog>,
+    pub clusters: LightClusters,
+}
+
+/// CPU light grid built by [`cluster_lights`]: the exact lists the shader
+/// reads, for tests, tools and debug views.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LightGrid {
+    /// Minimum corner of the grid.
+    pub origin: [f32; 3],
+    pub cell_size: f32,
+    pub dims: [u32; 3],
+    /// Directional lights, shaded everywhere.
+    pub globals: Vec<u32>,
+    /// `(start, count)` into `indices` per cell, X fastest then Y then Z.
+    pub cells: Vec<(u32, u32)>,
+    pub indices: Vec<u32>,
+}
+
+impl LightGrid {
+    /// The cell holding `point`, or `None` outside the grid.
+    pub fn cell_of(&self, point: [f32; 3]) -> Option<usize> {
+        let mut index = 0usize;
+        let mut stride = 1usize;
+        for ((p, origin), dim) in point.iter().zip(self.origin).zip(self.dims) {
+            let cell = ((p - origin) / self.cell_size).floor();
+            if !(cell >= 0. && cell < dim as f32) {
+                return None;
+            }
+            index += cell as usize * stride;
+            stride *= dim as usize;
+        }
+        Some(index)
+    }
+    /// Positional lights listed for `point` (directional lights excluded),
+    /// or `None` outside the grid.
+    pub fn lights_at(&self, point: [f32; 3]) -> Option<&[u32]> {
+        let (start, count) = self.cells[self.cell_of(point)?];
+        Some(&self.indices[start as usize..(start + count) as usize])
+    }
+}
+
+/// Builds the world-space light grid centred on `center`, or `None` when
+/// clustering is disabled for this light count. Light indices refer to
+/// `lights` (shadow records keep referencing the same indices).
+pub fn cluster_lights(
+    lights: &[Light],
+    center: [f32; 3],
+    clusters: &LightClusters,
+) -> GraphicsResult<Option<LightGrid>> {
+    if !clusters.valid() || !center.iter().all(|v| v.is_finite()) {
+        return Err(error("invalid light cluster settings"));
+    }
+    let positional = lights
+        .iter()
+        .filter(|l| !matches!(l, Light::Directional { .. }))
+        .count();
+    if positional < clusters.min_lights.max(1) {
+        return Ok(None);
+    }
+    let size = clusters.cell_size;
+    let dims = clusters.dims;
+    let origin: [f32; 3] =
+        std::array::from_fn(|a| (center[a] / size).floor() * size - (dims[a] / 2) as f32 * size);
+    let cell_count = dims.iter().map(|&d| d as usize).product::<usize>();
+    let mut lists: Vec<Vec<u32>> = vec![Vec::new(); cell_count];
+    let mut globals = Vec::new();
+    for (index, light) in lights.iter().enumerate() {
+        let (position, range) = match *light {
+            Light::Directional { .. } => {
+                globals.push(index as u32);
+                continue;
+            }
+            Light::Point {
+                position, range, ..
+            }
+            | Light::Spot {
+                position, range, ..
+            } => (position, range),
+        };
+        let mut lo = [0usize; 3];
+        let mut hi = [0usize; 3];
+        let mut outside = false;
+        for a in 0..3 {
+            let min = ((position[a] - range - origin[a]) / size).floor();
+            let max = ((position[a] + range - origin[a]) / size).floor();
+            if max < 0. || min >= dims[a] as f32 {
+                outside = true;
+                break;
+            }
+            lo[a] = min.max(0.) as usize;
+            hi[a] = (max as usize).min(dims[a] as usize - 1);
+        }
+        if outside {
+            continue;
+        }
+        let range_squared = range * range;
+        for z in lo[2]..=hi[2] {
+            for y in lo[1]..=hi[1] {
+                for x in lo[0]..=hi[0] {
+                    // Sphere-box test: distance from the light to the cell.
+                    let cell = [x, y, z];
+                    let distance_squared: f32 = (0..3)
+                        .map(|a| {
+                            let min = origin[a] + cell[a] as f32 * size;
+                            let d = (min - position[a]).max(position[a] - (min + size)).max(0.);
+                            d * d
+                        })
+                        .sum();
+                    if distance_squared < range_squared {
+                        let flat = x + dims[0] as usize * (y + dims[1] as usize * z);
+                        lists[flat].push(index as u32);
+                    }
+                }
+            }
+        }
+    }
+    let mut cells = Vec::with_capacity(cell_count);
+    let mut indices = Vec::new();
+    for list in lists {
+        cells.push((indices.len() as u32, list.len() as u32));
+        indices.extend(list);
+    }
+    Ok(Some(LightGrid {
+        origin,
+        cell_size: size,
+        dims,
+        globals,
+        cells,
+        indices,
+    }))
+}
+
+/// Encodes the lights storage buffer read by [`LIGHTING_WGSL`] with default
+/// [`LightingOptions`] (no fog, automatic clustering).
 pub fn encode_lighting(
     camera: LitCamera3D,
     lighting: Lighting<'_>,
     max_lights: usize,
+) -> GraphicsResult<Vec<u8>> {
+    encode_lighting_with(camera, lighting, max_lights, &LightingOptions::default())
+}
+
+/// Floats in the lights header before the light array.
+const LIGHT_HEADER_FLOATS: usize = 28;
+
+/// [`encode_lighting`] with explicit fog and clustering options.
+pub fn encode_lighting_with(
+    camera: LitCamera3D,
+    lighting: Lighting<'_>,
+    max_lights: usize,
+    options: &LightingOptions,
 ) -> GraphicsResult<Vec<u8>> {
     if !camera.position.iter().all(|x| x.is_finite())
         || !positive_rgb(lighting.ambient)
@@ -37,7 +251,16 @@ pub fn encode_lighting(
     {
         return Err(error("invalid lighting/camera or light budget exceeded"));
     }
-    let mut values = vec![
+    if options.fog.is_some_and(|f| !f.valid()) {
+        return Err(error(
+            "fog needs a non-negative colour and 0 <= start < end",
+        ));
+    }
+    let grid = cluster_lights(lighting.lights, camera.position, &options.clusters)?;
+    let fog = options.fog;
+    let fog_color = fog.map_or([0.; 3], |f| f.color);
+    let mut values = Vec::with_capacity(LIGHT_HEADER_FLOATS + 16 * (lighting.lights.len() + 1));
+    values.extend([
         lighting.ambient[0],
         lighting.ambient[1],
         lighting.ambient[2],
@@ -48,16 +271,57 @@ pub fn encode_lighting(
         0.,
         lighting.lights.len() as f32,
         f32::from(lighting.output_color_space == ColorSpace::Srgb),
+        f32::from(grid.is_some()),
+        0.,
+        fog_color[0],
+        fog_color[1],
+        fog_color[2],
+        f32::from(fog.is_some()),
+        fog.map_or(0., |f| f.start),
+        fog.map_or(1., |f| f.end),
         0.,
         0.,
-    ];
+    ]);
+    match &grid {
+        Some(grid) => values.extend([
+            grid.origin[0],
+            grid.origin[1],
+            grid.origin[2],
+            grid.cell_size,
+            grid.dims[0] as f32,
+            grid.dims[1] as f32,
+            grid.dims[2] as f32,
+            lighting.lights.len() as f32,
+        ]),
+        None => values.extend([0., 0., 0., 1., 0., 0., 0., 0.]),
+    }
     for light in lighting.lights {
         values.extend(light.encoded()?);
     }
-    if lighting.lights.is_empty() {
-        values.resize(28, 0.);
+    if let Some(grid) = grid {
+        let globals = grid.globals.len() as u32;
+        let lists = 1 + globals + 2 * grid.cells.len() as u32;
+        let mut words: Vec<u32> = Vec::with_capacity((lists as usize) + grid.indices.len());
+        words.push(globals);
+        words.extend(&grid.globals);
+        for (start, count) in &grid.cells {
+            words.push(lists + start);
+            words.push(*count);
+        }
+        words.extend(&grid.indices);
+        words.resize(words.len().next_multiple_of(16), 0);
+        values.extend(words.into_iter().map(f32::from_bits));
+    }
+    if values.len() == LIGHT_HEADER_FLOATS {
+        values.resize(LIGHT_HEADER_FLOATS + 16, 0.);
     }
     Ok(bytes(values))
+}
+
+/// Lights buffer for a pass without lights (the shader still needs one
+/// record to bind).
+pub fn empty_lighting_bytes() -> Vec<u8> {
+    vec![0; (LIGHT_HEADER_FLOATS + 16) * 4]
 }
 
 /// Color textures are decoded explicitly; GAL UNORM targets do not perform sRGB conversion.
@@ -407,6 +671,7 @@ impl From<PassOptions> for LitPassOptions {
 pub struct LitRenderState3D {
     pub(crate) core: Core3D,
     pub(crate) max_lights: usize,
+    pub(crate) options: LightingOptions,
 }
 impl LitRenderState3D {
     pub fn new(gpu: &Gpu, max_lights: usize) -> GraphicsResult<Self> {
@@ -423,6 +688,7 @@ impl LitRenderState3D {
         Ok(Self {
             core: Core3D::new(gpu, true, submission, None)?,
             max_lights,
+            options: LightingOptions::default(),
         })
     }
     /// A WGSL fragment entry point using the documented native surface binding layout.
@@ -437,6 +703,7 @@ impl LitRenderState3D {
         Ok(Self {
             core: Core3D::new(gpu, true, SubmissionConfig::default(), Some(fragment))?,
             max_lights,
+            options: LightingOptions::default(),
         })
     }
     pub(crate) fn light_bytes(
@@ -444,7 +711,33 @@ impl LitRenderState3D {
         camera: LitCamera3D,
         lighting: Lighting<'_>,
     ) -> GraphicsResult<Vec<u8>> {
-        encode_lighting(camera, lighting, self.max_lights)
+        encode_lighting_with(camera, lighting, self.max_lights, &self.options)
+    }
+    /// Distance fog for every later pass of this state (opaque and
+    /// transparent). Matches the voxel renderer's fog so meshes fade into
+    /// the same colour as distant blocks.
+    pub fn set_fog(&mut self, fog: Option<Fog>) -> GraphicsResult<()> {
+        if fog.is_some_and(|f| !f.valid()) {
+            return Err(error(
+                "fog needs a non-negative colour and 0 <= start < end",
+            ));
+        }
+        self.options.fog = fog;
+        Ok(())
+    }
+    pub fn fog(&self) -> Option<Fog> {
+        self.options.fog
+    }
+    /// Light clustering used once a pass has enough positional lights.
+    pub fn set_light_clusters(&mut self, clusters: LightClusters) -> GraphicsResult<()> {
+        if !clusters.valid() {
+            return Err(error("invalid light cluster settings"));
+        }
+        self.options.clusters = clusters;
+        Ok(())
+    }
+    pub fn light_clusters(&self) -> LightClusters {
+        self.options.clusters
     }
     pub fn prepare(
         &mut self,

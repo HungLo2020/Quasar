@@ -249,6 +249,100 @@ impl LitRenderState3D {
     }
 }
 
+/// One sorted, blended draw for [`SurfaceRenderState3D::prepare_transparent`]:
+/// a [`SurfaceMaterial`] (normal map, shadow receiving) with a blend mode.
+pub struct SurfaceTransparentDraw3D<'a> {
+    pub mesh: &'a Mesh,
+    pub model: Mat4,
+    pub material: SurfaceMaterial,
+    pub blend: BlendMode,
+    /// See [`TransparentDraw3D::depth_write`].
+    pub depth_write: bool,
+}
+
+impl<'a> SurfaceTransparentDraw3D<'a> {
+    pub fn new(
+        mesh: &'a Mesh,
+        model: Mat4,
+        material: impl Into<SurfaceMaterial>,
+        blend: BlendMode,
+    ) -> Self {
+        Self {
+            mesh,
+            model,
+            material: material.into(),
+            blend,
+            depth_write: false,
+        }
+    }
+}
+
+impl SurfaceRenderState3D {
+    /// Draws blended, normal-mapped and shadow-receiving surfaces back to
+    /// front into a linear target, after the opaque pass. The same rules as
+    /// [`LitRenderState3D::prepare_transparent`] apply: a linear output
+    /// colour space and, normally, [`PassOptions::load`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Explicit caller-owned pass inputs preserve independent composition."
+    )]
+    pub fn prepare_transparent(
+        &mut self,
+        gpu: &Gpu,
+        target: &RenderTarget,
+        camera: LitCamera3D,
+        lighting: Lighting<'_>,
+        draws: &[SurfaceTransparentDraw3D<'_>],
+        shadows: Option<&ShadowBinding>,
+        options: impl Into<LitPassOptions>,
+    ) -> GraphicsResult<Prepared3D> {
+        if lighting.output_color_space != ColorSpace::Linear {
+            return Err(error(
+                "transparent draws need a linear target; encode sRGB once in the post chain",
+            ));
+        }
+        let materials: Vec<SurfaceMaterial> = draws
+            .iter()
+            .map(|d| {
+                let mut material = d.material.clone();
+                material.lit.base.transparent = true;
+                material.lit.base.depth_write = d.depth_write;
+                material
+            })
+            .collect();
+        self.validate(&lighting, &materials, shadows)?;
+        let order = sort_back_to_front(
+            camera.view_projection,
+            draws.iter().map(|d| (d.model, d.mesh.local_bounds())),
+        );
+        let data = self.lit.light_bytes(camera, lighting)?;
+        let input: Vec<_> = order
+            .iter()
+            .map(|&index| Input {
+                mesh: draws[index].mesh,
+                model: draws[index].model,
+                base: &materials[index].lit.base,
+                lit: Some(&materials[index].lit),
+                normal: materials[index].normal_map.as_ref(),
+                receives_shadows: materials[index].receives_shadows,
+                blend: Some(draws[index].blend),
+            })
+            .collect();
+        self.lit.core.prepare(
+            gpu,
+            target,
+            Camera3D {
+                view_projection: camera.view_projection,
+                light_direction: [0., 1., 0.],
+            },
+            &input,
+            options.into().pass,
+            Some(&data),
+            shadows,
+        )
+    }
+}
+
 /// Display mapping from HDR scene values to `[0, 1]`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tonemap {

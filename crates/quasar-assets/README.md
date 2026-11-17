@@ -155,3 +155,9 @@ participate in existing dependency invalidation and async loading.
 `LoadContext::read_relative`, `read_limited` and loader source-byte budgets are
 also available to other format loaders. See [3D model assets](../../docs/model-assets-3d.md)
 for scope, URI handling, cache/revision policy, GPU adapters and validation.
+
+## Named loader configurations
+
+`register_named(name, loader)` / `load_named::<L>(name, path)` keep several
+configurations of one loader type (for example static and animated
+`GltfLoader`s), each with its own cache entries.

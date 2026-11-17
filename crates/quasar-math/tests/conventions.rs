@@ -163,3 +163,31 @@ fn types_serialise_when_enabled() {
         Vec3::new(1.0, 2.0, 3.0)
     );
 }
+
+#[test]
+fn yaw_rotation_for_turns_any_authored_forward_to_the_yaw_direction() {
+    use quasar_math::{GLTF_FORWARD, Vec3, forward_from_yaw, yaw_rotation_for};
+    for model_forward in [
+        GLTF_FORWARD,
+        FORWARD,
+        Vec3::X,
+        Vec3::NEG_X,
+        Vec3::new(1.0, 0.4, 1.0),
+    ] {
+        for step in 0..16 {
+            let yaw = step as f32 * 0.4 - 3.0;
+            let facing = yaw_rotation_for(model_forward, yaw) * model_forward;
+            let horizontal = Vec3::new(facing.x, 0.0, facing.z).normalize();
+            assert!(
+                horizontal.abs_diff_eq(forward_from_yaw(yaw), 1e-5),
+                "{model_forward} at {yaw}: {horizontal}"
+            );
+        }
+    }
+    // A −Z model needs no correction; a glTF (+Z) model is turned by π.
+    assert!(yaw_rotation_for(FORWARD, 0.3).abs_diff_eq(yaw_rotation(0.3), 1e-6));
+    let gltf = yaw_rotation_for(GLTF_FORWARD, 0.0) * GLTF_FORWARD;
+    assert!(gltf.abs_diff_eq(FORWARD, 1e-6));
+    // Vertical axes fall back to the plain yaw rotation.
+    assert!(yaw_rotation_for(Vec3::Y, 0.3).abs_diff_eq(yaw_rotation(0.3), 1e-6));
+}

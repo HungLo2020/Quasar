@@ -12,6 +12,8 @@ serde = ["dep:serde"]
 render2d = ["dep:quasar-render-2d"]
 input = ["dep:quasar-input"]
 config = ["dep:quasar-config"]
+# Save/load controls-screen bindings as TOML or JSON.
+controls-file = ["input", "config", "quasar-config/toml", "quasar-config/json", "quasar-config/storage"]
 text = ["dep:quasar-text"]
 math = ["dep:quasar-math"]
 text-render2d = ["text", "render2d", "quasar-render-2d/text", "quasar-render-2d/gpu"]
@@ -26,6 +28,7 @@ serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = "1"
+tempfile.workspace = true
 quasar-frame = { workspace = true, features = ["vulkan", "diagnostics"] }
 quasar-render-2d = { workspace = true, features = ["gpu", "vulkan"] }
 vulkanic-gal = { workspace = true, features = ["vulkan"] }

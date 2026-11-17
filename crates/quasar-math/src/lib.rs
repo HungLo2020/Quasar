@@ -280,6 +280,28 @@ pub fn yaw_rotation(yaw: f32) -> Quat {
     Quat::from_rotation_y(yaw)
 }
 
+/// glTF's model forward axis. glTF assets face **+Z** (the spec's "front"),
+/// while Quasar yaw 0 faces [`FORWARD`] (−Z).
+pub const GLTF_FORWARD: Vec3 = Vec3::Z;
+
+/// Rotation that makes a model authored facing `model_forward` face
+/// `forward_from_yaw(yaw)`. Pass [`GLTF_FORWARD`] for glTF/GLB models so an
+/// object steered with Quasar yaw does not end up turned by π:
+///
+/// ```
+/// use quasar_math::{GLTF_FORWARD, Vec3, forward_from_yaw, yaw_rotation_for};
+/// let yaw = 0.7;
+/// let facing = yaw_rotation_for(GLTF_FORWARD, yaw) * GLTF_FORWARD;
+/// assert!(facing.abs_diff_eq(forward_from_yaw(yaw), 1e-5));
+/// ```
+///
+/// Only the horizontal part of `model_forward` matters; a vertical or zero
+/// axis is treated as [`FORWARD`].
+pub fn yaw_rotation_for(model_forward: Vec3, yaw: f32) -> Quat {
+    let offset = yaw_of(model_forward).unwrap_or(0.0);
+    Quat::from_rotation_y(wrap_angle(yaw - offset))
+}
+
 /// Translation · rotation · scale model matrix.
 pub fn trs(translation: Vec3, rotation: Quat, scale: Vec3) -> Mat4 {
     Mat4::from_scale_rotation_translation(scale, rotation, translation)

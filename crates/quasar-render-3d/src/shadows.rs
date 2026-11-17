@@ -516,7 +516,7 @@ impl ShadowRenderState3D {
                             .flatten()
                             .chain(c.model.0.iter().flatten())
                             .copied()
-                            .chain([c.alpha_cutoff, c.opacity, 0., 0.]),
+                            .chain([c.alpha_cutoff, c.opacity, c.mesh.vertex_base as f32, 0.]),
                     ));
                     let sampler = self
                         .samplers
@@ -525,7 +525,7 @@ impl ShadowRenderState3D {
                         .clone();
                     if self.submission.instancing
                         && let Some(b) = batches.last_mut()
-                        && std::ptr::eq(b.0, c.mesh)
+                        && b.0.shares_buffers(c.mesh)
                         && b.1 == c.texture_view
                         && b.2 == sampler
                     {

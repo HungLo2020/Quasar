@@ -21,7 +21,7 @@ desktop = [
 quasar-app.workspace = true
 quasar-assets = { workspace = true, features = ["diagnostics"] }
 quasar-audio = { workspace = true, features = ["diagnostics"] }
-quasar-config = { workspace = true, features = ["toml", "json"] }
+quasar-config = { workspace = true, features = ["toml", "json", "content"] }
 quasar-core.workspace = true
 quasar-diagnostics = { workspace = true, features = ["timing"] }
 quasar-frame = { workspace = true, features = ["vulkan", "diagnostics"] }
@@ -32,7 +32,7 @@ quasar-render-2d = { workspace = true, features = ["gpu", "vulkan"] }
 quasar-render-3d.workspace = true
 quasar-sim = { workspace = true, features = ["serde"] }
 quasar-text = { workspace = true, optional = true }
-quasar-ui = { workspace = true, features = ["input", "render2d"] }
+quasar-ui = { workspace = true, features = ["input", "render2d", "controls-file"] }
 quasar-window = { workspace = true, optional = true }
 png.workspace = true
 serde.workspace = true

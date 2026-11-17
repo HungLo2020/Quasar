@@ -1,7 +1,7 @@
 //! Word-wrapped labels, per-node styles, root offsets and anchors.
 use quasar_ui::{
-    Anchor, Color, Edges, Layer, LayoutItem, Length, MonospaceMeasure, NodeStyle, PanelLayout,
-    Rect, StackDirection, TextMeasure, TextStyle, TextWrap, Theme, Ui, UiError, UiText, Widget,
+    Anchor, Color, Edges, LabelWrap, Layer, LayoutItem, Length, MonospaceMeasure, NodeStyle,
+    PanelLayout, Rect, StackDirection, TextMeasure, TextStyle, Theme, Ui, UiError, UiText, Widget,
     rounded_border_spans, rounded_rect_spans, wrap_greedy,
 };
 
@@ -141,6 +141,54 @@ fn wrapped_label_respects_dpi_scale_and_fixed_width() {
     let lines = MonospaceMeasure.wrap_lines(TEXT, TextStyle::Body, font, 200.0);
     assert!(lines.len() > 1);
     assert_eq!(rect.height, font * lines.len() as f32);
+}
+
+#[test]
+fn auto_height_cards_with_a_fixed_width_wrap_children_at_the_card_width() {
+    // A fixed-width card anchored on a wide screen: its auto height must come
+    // from children wrapped at the card's width, not at the screen's.
+    let mut ui = Ui::new(Theme::retro());
+    let root = ui.add_root(absolute(), LayoutItem::fill(), Layer::Hud, false);
+    let card = ui
+        .add_child(
+            root,
+            Widget::Panel {
+                layout: PanelLayout::Stack {
+                    direction: StackDirection::Vertical,
+                    gap: 0.0,
+                },
+                padding: Edges::all(5.0),
+                clip: false,
+                scrollable: false,
+            },
+            LayoutItem::size(Length::fixed(150.0), Length::Auto).with_anchor(Anchor::Center),
+        )
+        .unwrap();
+    let label = ui
+        .add_child(
+            card,
+            Widget::wrapped_label(UiText::literal(TEXT), TextStyle::Body, None),
+            LayoutItem::auto(),
+        )
+        .unwrap();
+    ui.layout(
+        Rect::new(0.0, 0.0, 1600.0, 900.0),
+        1.0,
+        Edges::ZERO,
+        &MonospaceMeasure,
+    );
+    let font = Theme::retro().font_size;
+    let lines = MonospaceMeasure.wrap_lines(TEXT, TextStyle::Body, font, 140.0);
+    assert!(lines.len() > 2);
+    let card = rect_of(&ui, card);
+    let label = rect_of(&ui, label);
+    assert_eq!(card.width, 150.0);
+    assert_eq!(label.height, font * lines.len() as f32);
+    assert_eq!(
+        card.height,
+        label.height + 10.0,
+        "card fits every wrapped line"
+    );
 }
 
 #[test]
@@ -338,7 +386,7 @@ fn text_wrap_defaults_to_none() {
     else {
         unreachable!()
     };
-    assert_eq!((wrap, max_width), (TextWrap::None, None));
+    assert_eq!((wrap, max_width), (LabelWrap::None, None));
 }
 
 #[cfg(feature = "render2d")]

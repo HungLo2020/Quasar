@@ -15,6 +15,8 @@ pub struct ModelPrimitive {
     /// Per-vertex joint influences, parallel to `vertices`, when the
     /// primitive is skinned and the loader imported skins.
     pub skin: Option<ModelSkinWeights>,
+    /// Linear RGBA vertex colours (glTF `COLOR_0`), parallel to `vertices`.
+    pub colors: Option<Vec<[f32; 4]>>,
 }
 /// Up to four joint influences per vertex. `joints` index the owning
 /// [`ModelSkin::joints`] list; `weights` sum to 1.

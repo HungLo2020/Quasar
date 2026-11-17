@@ -147,7 +147,15 @@ fn content_loads_level_texture_and_generated_sounds() {
     assert_eq!(content.level.drones.len(), 3);
     assert_eq!((content.texture.width, content.texture.height), (8, 8));
     assert_eq!(content.texture.rgba.len(), 8 * 8 * 4);
-    assert!(content.sounds.win.samples().len() > 1_000);
+    assert!(
+        content
+            .sounds
+            .for_event(starfall::world::GameEvent::Won)
+            .unwrap()
+            .samples()
+            .len()
+            > 1_000
+    );
     for event in [
         starfall::world::GameEvent::Crystal,
         starfall::world::GameEvent::Shot,
@@ -389,4 +397,56 @@ fn timeout_sets_loss_and_emits_the_loss_event() {
 fn game_error_is_a_regular_error() {
     let error = GameError::invalid("test");
     assert_eq!(error.to_string(), "test");
+}
+
+#[test]
+fn sound_tables_validate_ranges_and_cue_references() {
+    use quasar_config::content::ContentFormat;
+    let registry = starfall::content::sound_registry();
+    let sounds = "[[sounds]]\nid = \"beep\"\nnotes = [5.0]\nnote_seconds = 0.1\ngain = 0.5\n";
+    let cues =
+        "[[cues]]\nid = \"shot\"\nsound = \"boop\"\n[[cues]]\nid = \"explode\"\nsound = \"beep\"\n";
+    let error = registry
+        .load_all(&[
+            ("sounds", sounds, ContentFormat::Toml),
+            ("cues", cues, ContentFormat::Toml),
+        ])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("sounds[beep].notes"), "{error}");
+    assert!(
+        error.contains("cues[explode].id: unknown game event"),
+        "{error}"
+    );
+    assert_eq!(registry.snapshot().revision(), 0, "nothing loaded on error");
+    // The shipped tables are valid and cover every audible event.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+    registry
+        .load_all(&[
+            (
+                "sounds",
+                &std::fs::read_to_string(root.join("sounds.toml")).unwrap(),
+                ContentFormat::Toml,
+            ),
+            (
+                "cues",
+                &std::fs::read_to_string(root.join("cues.toml")).unwrap(),
+                ContentFormat::Toml,
+            ),
+        ])
+        .unwrap();
+    let bank = starfall::content::SoundBank::from_content(&registry.snapshot(), 8_000).unwrap();
+    use starfall::world::GameEvent::*;
+    for event in [
+        Crystal,
+        Shot,
+        DroneDestroyed,
+        Damage,
+        PortalReady,
+        Won,
+        Lost,
+    ] {
+        assert!(bank.for_event(event).is_some(), "{event:?}");
+    }
+    assert!(bank.for_event(Restart).is_none());
 }

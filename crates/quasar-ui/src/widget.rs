@@ -156,13 +156,40 @@ impl LayoutItem {
 
 /// How a [`Widget::Label`] breaks lines.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub enum TextWrap {
+pub enum LabelWrap {
     /// One line per explicit `\n`; text never wraps.
     #[default]
     None,
     /// Greedy word wrapping at the label's width limit. Words longer than the
     /// limit break between characters.
     Word,
+}
+
+/// Former name of [`LabelWrap`]. It clashed with `quasar_text::TextWrap`, a
+/// different type with overlapping variants.
+#[deprecated(since = "0.2.25", note = "renamed to `LabelWrap`")]
+pub type TextWrap = LabelWrap;
+
+#[cfg(feature = "text")]
+impl From<LabelWrap> for quasar_text::TextWrap {
+    fn from(wrap: LabelWrap) -> Self {
+        match wrap {
+            LabelWrap::None => quasar_text::TextWrap::None,
+            LabelWrap::Word => quasar_text::TextWrap::WordOrGlyph,
+        }
+    }
+}
+
+#[cfg(feature = "text")]
+impl From<quasar_text::TextWrap> for LabelWrap {
+    /// Any wrapping policy maps to [`LabelWrap::Word`], which already breaks
+    /// overlong words between characters.
+    fn from(wrap: quasar_text::TextWrap) -> Self {
+        match wrap {
+            quasar_text::TextWrap::None => LabelWrap::None,
+            _ => LabelWrap::Word,
+        }
+    }
 }
 
 /// Border painted by a [`NodeStyle`].
@@ -381,10 +408,10 @@ pub enum Widget {
     Label {
         text: UiText,
         style: TextStyle,
-        /// Line breaking. [`TextWrap::Word`] wraps at the narrowest of the
+        /// Line breaking. [`LabelWrap::Word`] wraps at the narrowest of the
         /// available width, a fixed/percent item width and `max_width`, and
         /// the label's height grows with its line count during layout.
-        wrap: TextWrap,
+        wrap: LabelWrap,
         /// Optional wrap limit in logical units.
         max_width: Option<f32>,
     },
@@ -455,7 +482,7 @@ impl Widget {
         Self::Label {
             text,
             style,
-            wrap: TextWrap::None,
+            wrap: LabelWrap::None,
             max_width: None,
         }
     }
@@ -464,7 +491,7 @@ impl Widget {
         Self::Label {
             text,
             style,
-            wrap: TextWrap::Word,
+            wrap: LabelWrap::Word,
             max_width,
         }
     }

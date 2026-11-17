@@ -125,6 +125,111 @@ impl Bindings {
     }
 }
 
+/// One physical button used by more than one action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingConflict {
+    pub button: Button,
+    /// Actions that read `button`, sorted.
+    pub actions: Vec<String>,
+}
+
+impl Binding {
+    /// Physical buttons this binding reads (analog axes read none).
+    pub fn buttons(&self) -> Vec<Button> {
+        match self {
+            Self::Button { button } => vec![*button],
+            Self::Axis { negative, positive } => vec![*negative, *positive],
+            Self::Chord { buttons } => buttons.clone(),
+            Self::GamepadAxis { .. } => Vec::new(),
+        }
+    }
+}
+
+impl Bindings {
+    /// Buttons bound to more than one of `actions` (for example the actions
+    /// of one controls screen; UI and gameplay actions may share buttons
+    /// on purpose, so only the listed actions are compared). Chord members
+    /// count: a chord sharing a button with a plain binding conflicts.
+    pub fn conflicts_among(&self, actions: &[&str]) -> Vec<BindingConflict> {
+        let mut users: BTreeMap<String, (Button, Vec<String>)> = BTreeMap::new();
+        for action in actions {
+            for binding in self.actions.get(*action).into_iter().flatten() {
+                for button in binding.buttons() {
+                    let entry = users
+                        .entry(format!("{button:?}"))
+                        .or_insert_with(|| (button, Vec::new()));
+                    if !entry.1.iter().any(|a| a == action) {
+                        entry.1.push((*action).to_owned());
+                    }
+                }
+            }
+        }
+        users
+            .into_values()
+            .filter(|(_, actions)| actions.len() > 1)
+            .map(|(button, mut actions)| {
+                actions.sort();
+                BindingConflict { button, actions }
+            })
+            .collect()
+    }
+
+    /// Saved bindings over `defaults`: actions present here keep their
+    /// (possibly empty) bindings; actions only in `defaults` (added by a
+    /// game update) get their defaults; actions no longer in `defaults`
+    /// are dropped.
+    pub fn merged_with_defaults(&self, defaults: &Bindings) -> Bindings {
+        Bindings {
+            actions: defaults
+                .actions
+                .iter()
+                .map(|(action, default)| {
+                    let chosen = self.actions.get(action).unwrap_or(default);
+                    (action.clone(), chosen.clone())
+                })
+                .collect(),
+        }
+    }
+
+    /// Replaces `action`'s `slot`-th binding read by `device` (appending
+    /// when there is none) with `binding`. Returns the replaced binding.
+    pub fn rebind(
+        &mut self,
+        action: &str,
+        device: crate::InputDevice,
+        slot: usize,
+        binding: Binding,
+    ) -> Option<Binding> {
+        let list = self.actions.entry(action.to_owned()).or_default();
+        let index = list
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.device() == Some(device))
+            .map(|(i, _)| i)
+            .nth(slot);
+        match index {
+            Some(i) => Some(std::mem::replace(&mut list[i], binding)),
+            None => {
+                list.push(binding);
+                None
+            }
+        }
+    }
+
+    /// Removes every binding of `button` from the listed actions except
+    /// `keep` (resolving a conflict in favour of `keep`).
+    pub fn unbind_button_except(&mut self, button: Button, actions: &[&str], keep: &str) {
+        for action in actions {
+            if *action == keep {
+                continue;
+            }
+            if let Some(list) = self.actions.get_mut(*action) {
+                list.retain(|b| !b.buttons().contains(&button));
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BindingError(pub String);
 impl fmt::Display for BindingError {

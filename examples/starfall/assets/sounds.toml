@@ -1,0 +1,38 @@
+# Starfall's procedural sounds, loaded as quasar-config content tables.
+# `notes` are played in sequence (one note is a plain tone).
+
+[[sounds]]
+id = "pickup"
+notes = [880.0]
+note_seconds = 0.11
+gain = 0.55
+
+[[sounds]]
+id = "shot"
+notes = [220.0]
+note_seconds = 0.08
+gain = 0.35
+
+[[sounds]]
+id = "hit"
+notes = [110.0]
+note_seconds = 0.16
+gain = 0.6
+
+[[sounds]]
+id = "win"
+notes = [523.25, 659.25, 783.99, 1046.5]
+note_seconds = 0.18
+gain = 0.5
+
+[[sounds]]
+id = "lose"
+notes = [82.0]
+note_seconds = 0.55
+gain = 0.5
+
+[[sounds]]
+id = "portal"
+notes = [392.0, 523.25, 659.25]
+note_seconds = 0.12
+gain = 0.35
