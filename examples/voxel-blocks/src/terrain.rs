@@ -1,5 +1,6 @@
 //! Deterministic procedural terrain: rolling hills, beaches, caves and trees.
 use crate::content::Blocks;
+use quasar_core::noise::{Fractal, Noise};
 use quasar_math::IVec3;
 use quasar_voxel::{AIR, ChannelId, Chunk, ChunkLayout, Cube16, Schema, VoxelSource};
 
@@ -15,37 +16,21 @@ pub struct Terrain {
     pub blocks: Blocks,
 }
 
+fn seed32(seed: u64) -> u32 {
+    quasar_core::noise::hash_u64(seed) as u32
+}
+
 fn hash2(seed: u64, x: i32, z: i32) -> u32 {
-    let mut h = seed
-        ^ (x as u32 as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
-        ^ (z as u32 as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
-    h ^= h >> 31;
-    h = h.wrapping_mul(0x94d0_49bb_1331_11eb);
-    h ^= h >> 29;
-    h as u32
+    quasar_core::noise::hash2(seed32(seed), x, z)
 }
 
 fn hash3(seed: u64, p: IVec3) -> u32 {
-    hash2(
-        seed ^ (p.y as u32 as u64).wrapping_mul(0xd6e8_feb8_6659_fd93),
-        p.x,
-        p.z,
-    )
-}
-
-fn smooth(t: f32) -> f32 {
-    t * t * (3.0 - 2.0 * t)
+    quasar_core::noise::hash3(seed32(seed), p.x, p.y, p.z)
 }
 
 /// Value noise in `[0, 1]` on a lattice of `scale` blocks.
 fn noise(seed: u64, x: f32, z: f32, scale: f32) -> f32 {
-    let (fx, fz) = (x / scale, z / scale);
-    let (ix, iz) = (fx.floor() as i32, fz.floor() as i32);
-    let (tx, tz) = (smooth(fx - ix as f32), smooth(fz - iz as f32));
-    let v = |dx: i32, dz: i32| (hash2(seed, ix + dx, iz + dz) & 0xffff) as f32 / 65535.0;
-    let a = v(0, 0) + (v(1, 0) - v(0, 0)) * tx;
-    let b = v(0, 1) + (v(1, 1) - v(0, 1)) * tx;
-    a + (b - a) * tz
+    Noise::new(seed).value2(x / scale, z / scale)
 }
 
 impl Terrain {
@@ -68,6 +53,20 @@ impl Terrain {
         );
         (worm - 0.5).abs() < 0.035
     }
+    /// Crystal seams: thin sheets where 3D fractal noise crosses zero,
+    /// only well below the surface.
+    fn ore(&self, p: IVec3) -> bool {
+        if p.y > 18 {
+            return false;
+        }
+        let n = Noise::new(self.seed ^ 0x0e5).fbm3(
+            p.x as f32,
+            p.y as f32 * 1.6,
+            p.z as f32,
+            Fractal::new(0.045, 3),
+        );
+        n.abs() < 0.035
+    }
     fn tree_at(&self, x: i32, z: i32) -> Option<i32> {
         let h = self.height(x, z);
         (h > SEA + 1 && hash2(self.seed ^ 0x7ee, x, z).is_multiple_of(61)).then_some(h)
@@ -85,6 +84,8 @@ impl Terrain {
                 if beach { b.sand } else { b.grass }
             } else if p.y > h - 4 {
                 if beach { b.sand } else { b.dirt }
+            } else if self.ore(p) {
+                b.ore
             } else {
                 b.stone
             };
@@ -177,6 +178,8 @@ impl VoxelSource<Cube16> for Terrain {
                     if beach { b.sand } else { b.grass }
                 } else if p.y > h - 4 {
                     if beach { b.sand } else { b.dirt }
+                } else if self.ore(p) {
+                    b.ore
                 } else {
                     b.stone
                 }

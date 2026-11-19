@@ -283,3 +283,50 @@ fn the_controls_screen_rebinds_axes_and_reports_new_bindings() {
     );
     assert!(resolved_buttons(&mut menu).contains(&"CONTROLS".to_owned()));
 }
+
+#[test]
+fn the_gamepad_column_rebinds_sticks_by_deflection() {
+    use quasar_input::{Binding, Button, GamepadAxis, GamepadButton};
+    let defaults = starfall::settings::ControlKeys::default()
+        .bindings()
+        .unwrap();
+    let mut menu = Menu::new(Options::default());
+    menu.set_bindings(defaults.clone(), defaults.clone());
+    open_options(&mut menu);
+    for _ in 0..7 {
+        advance(&mut menu, next());
+    }
+    assert_eq!(advance(&mut menu, activate()), MenuAction::None);
+    let buttons = resolved_buttons(&mut menu);
+    assert!(buttons.contains(&"SHOW GAMEPAD".to_owned()), "{buttons:?}");
+    // Rows THRUST..RESTART, then RESET, then SHOW GAMEPAD.
+    for _ in 0..6 {
+        advance(&mut menu, next());
+    }
+    advance(&mut menu, activate());
+    assert!(resolved_buttons(&mut menu).contains(&"SHOW KEYBOARD".to_owned()));
+    // THRUST on the gamepad is the left stick: a button never replaces it.
+    advance(&mut menu, activate());
+    assert!(menu.is_capturing());
+    assert_eq!(
+        menu.capture(&[Button::Gamepad(GamepadButton::South)])
+            .unwrap(),
+        MenuAction::None
+    );
+    // Rest, then push the right stick up (negative Y): bound inverted.
+    assert_eq!(
+        menu.capture_axes(&[(GamepadAxis::RightStickY, 0.0)])
+            .unwrap(),
+        MenuAction::None
+    );
+    let action = menu
+        .capture_axes(&[(GamepadAxis::RightStickY, -0.9)])
+        .unwrap();
+    let MenuAction::ApplyBindings(bindings) = action else {
+        panic!("expected new bindings, got {action:?}");
+    };
+    assert!(bindings.actions["forward"].contains(&Binding::GamepadAxis {
+        axis: GamepadAxis::RightStickY,
+        scale: -1.0
+    }));
+}

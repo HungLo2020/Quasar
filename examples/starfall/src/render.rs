@@ -21,6 +21,8 @@ pub struct Graphics {
     textures: Textures,
     ui: UiRenderer,
     stats: RendererStats,
+    /// World-space camera shake added to the eye and focus.
+    pub camera_shake: [f32; 3],
 }
 impl Graphics {
     pub fn new(gal: &Gpu, texture: &TextureData) -> GraphicsResult<Self> {
@@ -48,6 +50,7 @@ impl Graphics {
             textures: Textures::default(),
             ui: UiRenderer::new(),
             stats: RendererStats::default(),
+            camera_shake: [0.; 3],
         })
     }
     pub fn last_stats(&self) -> RendererStats {
@@ -66,8 +69,13 @@ impl Graphics {
     ) -> GraphicsResult<Vec<CommandBuffer>> {
         let size = target;
         let aspect = size.width as f32 / size.height.max(1) as f32;
-        let eye = world.camera_eye();
-        let focus = world.player + Vec3::new(0., 0.6, 0.);
+        let shake = Vec3::new(
+            self.camera_shake[0],
+            self.camera_shake[1],
+            self.camera_shake[2],
+        );
+        let eye = world.camera_eye() + shake;
+        let focus = world.player + Vec3::new(0., 0.6, 0.) + shake;
         let view = Mat4::look_at(
             [eye.x, eye.y, eye.z],
             [focus.x, focus.y, focus.z],

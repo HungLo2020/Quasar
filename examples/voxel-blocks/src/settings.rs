@@ -15,6 +15,8 @@ pub struct Settings {
     pub screenshot: Option<PathBuf>,
     pub autoplay: bool,
     pub occlusion: bool,
+    /// Bevelled stone and valley mist instead of the classic look.
+    pub sculpted: bool,
     pub benchmark: bool,
     pub benchmark_frames: usize,
     pub benchmark_file: Option<PathBuf>,
@@ -34,6 +36,7 @@ impl Default for Settings {
             screenshot: None,
             autoplay: false,
             occlusion: true,
+            sculpted: false,
             benchmark: false,
             benchmark_frames: 240,
             benchmark_file: None,
@@ -74,6 +77,7 @@ impl Settings {
                 "--headless" => settings.headless = true,
                 "--autoplay" => settings.autoplay = true,
                 "--no-occlusion" => settings.occlusion = false,
+                "--sculpted" => settings.sculpted = true,
                 "--benchmark" => settings.benchmark = true,
                 "--ticks" => settings.ticks = number(&mut arguments, "--ticks")?,
                 "--seed" => settings.seed = number(&mut arguments, "--seed")?,
@@ -130,6 +134,7 @@ OPTIONS:
     --workers N                Generation/meshing threads (default: all cores)
     --autoplay                 Drive the scripted player (walk, dig, build, fly)
     --no-occlusion             Draw every chunk (disable connectivity culling)
+    --sculpted                 Bevelled, chipped stone and valley mist
     --width N --height N       Window or screenshot dimensions
     --screenshot PATH          Write a PNG after the run
     --benchmark                Native: collect frame data, then exit

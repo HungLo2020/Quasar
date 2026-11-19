@@ -258,6 +258,50 @@ impl Rng {
         last
     }
 
+    /// Index chosen with probability proportional to integer `weights`,
+    /// using exactly one [`Self::range_u64`] draw over the weight total (so
+    /// for totals below 2^32 it matches `range_u32(0..total)`). Zero weights
+    /// are never picked; returns `None` without drawing when every weight
+    /// is zero. Integer weights avoid floating-point rounding, so content
+    /// tables give the same picks everywhere.
+    pub fn weighted_index_u32(&mut self, weights: &[u32]) -> Option<usize> {
+        let total: u64 = weights.iter().map(|&w| u64::from(w)).sum();
+        if total == 0 {
+            return None;
+        }
+        let mut roll = self.range_u64(0..total);
+        for (index, &weight) in weights.iter().enumerate() {
+            let weight = u64::from(weight);
+            if roll < weight {
+                return Some(index);
+            }
+            roll -= weight;
+        }
+        None
+    }
+
+    /// Item chosen with probability proportional to its integer weight; see
+    /// [`Self::weighted_index_u32`].
+    pub fn weighted_u32<'a, T>(
+        &mut self,
+        items: &'a [T],
+        weight: impl Fn(&T) -> u32,
+    ) -> Option<&'a T> {
+        let total: u64 = items.iter().map(|item| u64::from(weight(item))).sum();
+        if total == 0 {
+            return None;
+        }
+        let mut roll = self.range_u64(0..total);
+        for item in items {
+            let w = u64::from(weight(item));
+            if roll < w {
+                return Some(item);
+            }
+            roll -= w;
+        }
+        None
+    }
+
     /// Reference to an item chosen with probability proportional to
     /// `weight(item)`.
     pub fn weighted<'a, T>(&mut self, items: &'a [T], weight: impl Fn(&T) -> f64) -> Option<&'a T> {
@@ -457,5 +501,49 @@ mod tests {
         let mut bytes = [0u8; 13];
         rng.fill_bytes(&mut bytes);
         assert!(bytes.iter().any(|byte| *byte != 0));
+    }
+}
+
+#[cfg(test)]
+mod integer_weight_tests {
+    use super::*;
+
+    #[test]
+    fn integer_weights_use_one_range_u32_draw() {
+        // Reference implementation games already ship (one range_u32 draw,
+        // subtract weights in order); the engine version must match it.
+        fn reference(rng: &mut Rng, weights: &[u32]) -> Option<usize> {
+            let total: u32 = weights.iter().sum();
+            if total == 0 {
+                return None;
+            }
+            let mut roll = rng.range_u32(0..total);
+            for (i, &w) in weights.iter().enumerate() {
+                if roll < w {
+                    return Some(i);
+                }
+                roll -= w;
+            }
+            None
+        }
+        let weights = [3, 0, 7, 1, 12];
+        let mut a = Rng::seed_from_u64(99);
+        let mut b = Rng::seed_from_u64(99);
+        for _ in 0..2000 {
+            assert_eq!(a.weighted_index_u32(&weights), reference(&mut b, &weights));
+        }
+        assert_eq!(a, b);
+        let items = [("a", 1u32), ("b", 0), ("c", 3)];
+        let picks: Vec<&str> = (0..400)
+            .filter_map(|_| a.weighted_u32(&items, |i| i.1).map(|i| i.0))
+            .collect();
+        assert!(!picks.contains(&"b"));
+        let before = a.clone();
+        assert_eq!(a.weighted_index_u32(&[0, 0]), None);
+        assert_eq!(a, before, "all-zero weights do not draw");
+        assert_eq!(
+            a.weighted_index_u32(&[u32::MAX, u32::MAX]).map(|i| i < 2),
+            Some(true)
+        );
     }
 }

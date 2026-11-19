@@ -85,7 +85,12 @@ impl BlocksApp {
 
     fn initialize(&mut self, context: &mut AppContext<'_>) -> Result<()> {
         if self.world.is_none() {
-            let mut world = BlockWorld::new(
+            let mut world = BlockWorld::with_content(
+                if self.settings.sculpted {
+                    voxel_blocks::content::Content::sculpted()
+                } else {
+                    voxel_blocks::content::Content::new()
+                },
                 self.settings.seed,
                 self.settings.radius,
                 self.settings.workers,
@@ -116,6 +121,7 @@ impl BlocksApp {
         let mut graphics = Graphics::new(&gal)
             .map_err(|e| BlocksError::invalid(format!("create renderers: {e}")))?;
         graphics.occlusion = self.settings.occlusion;
+        graphics.mist = self.settings.sculpted;
         self.surface = Some(surface);
         self.graphics = Some(graphics);
         gal.set_gpu_timestamps(self.settings.benchmark);

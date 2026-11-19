@@ -1,10 +1,10 @@
 //! Modern 3D menu stack for Starfall.
 use crate::world::GameError;
-use quasar_input::{Bindings, Button};
+use quasar_input::{Bindings, Button, DeviceFamily, GamepadAxis, InputDevice};
 use quasar_ui::{
-    ActionId, Align, ControlEntry, ControlsOutcome, ControlsScreen, Edges, Layer, LayoutItem,
-    Length, Localization, PanelLayout, Rect, StackDirection, StringTable, TextMeasure, Theme, Ui,
-    UiEvent, UiInput, UiText, Widget,
+    ActionId, Align, Color, ControlEntry, ControlsOutcome, ControlsScreen, Edges, LabelWrap, Layer,
+    LayoutItem, Length, Localization, PanelLayout, Rect, RichSpan, StackDirection, StringTable,
+    TextMeasure, Theme, Ui, UiEvent, UiInput, UiText, Widget, WidgetColors,
 };
 
 /// Menu strings. Keys come from the English text (`key_of`); English is
@@ -223,6 +223,8 @@ pub struct Menu {
     player_name: Option<quasar_ui::NodeId>,
     language: Option<quasar_ui::NodeId>,
     controls: Option<ControlsScreen>,
+    /// Which column the controls screen edits.
+    controls_device: InputDevice,
     bindings: Bindings,
     default_bindings: Bindings,
 }
@@ -241,6 +243,7 @@ impl Menu {
             player_name: None,
             language: None,
             controls: None,
+            controls_device: InputDevice::KeyboardMouse,
             bindings: Bindings::default(),
             default_bindings: Bindings::default(),
         };
@@ -272,6 +275,24 @@ impl Menu {
         };
         match controls
             .capture(&mut self.ui, pressed)
+            .map_err(|e| GameError::invalid(format!("controls: {e:?}")))?
+        {
+            ControlsOutcome::Rebound { .. } => {
+                self.bindings = controls.bindings().clone();
+                Ok(MenuAction::ApplyBindings(self.bindings.clone()))
+            }
+            _ => Ok(MenuAction::None),
+        }
+    }
+
+    /// Offers the gamepad's processed axes to a running rebind of an
+    /// analogue row (stick or trigger).
+    pub fn capture_axes(&mut self, axes: &[(GamepadAxis, f32)]) -> Result<MenuAction, GameError> {
+        let Some(controls) = &mut self.controls else {
+            return Ok(MenuAction::None);
+        };
+        match controls
+            .capture_axes(&mut self.ui, axes)
             .map_err(|e| GameError::invalid(format!("controls: {e:?}")))?
         {
             ControlsOutcome::Rebound { .. } => {
@@ -436,6 +457,14 @@ impl Menu {
                         self.rebuild();
                         MenuAction::None
                     }
+                    (Some(Screen::Controls), 13) => {
+                        self.controls_device = match self.controls_device {
+                            InputDevice::KeyboardMouse => InputDevice::Gamepad,
+                            InputDevice::Gamepad => InputDevice::KeyboardMouse,
+                        };
+                        self.rebuild();
+                        MenuAction::None
+                    }
                     (Some(Screen::ConfirmQuitApp), 8) => MenuAction::Quit,
                     (Some(Screen::ConfirmQuitToMenu), 8) => {
                         self.open_main();
@@ -560,7 +589,9 @@ impl Menu {
             Screen::ConfirmQuitToMenu => "RETURN TO MAIN MENU?",
             Screen::ConfirmRestart => "RESTART RUN?",
         };
-        add_label(&mut ui, panel, title, quasar_ui::TextStyle::Heading);
+        let heading = add_label(&mut ui, panel, title, quasar_ui::TextStyle::Heading);
+        let accent = ui.theme().accent;
+        ui.set_text_color(heading, Some(accent)).unwrap();
         match screen {
             Screen::Main => {
                 add_label(
@@ -571,7 +602,8 @@ impl Menu {
                 );
                 add_button(&mut ui, panel, "START", 1);
                 add_button(&mut ui, panel, "OPTIONS", 2);
-                add_button(&mut ui, panel, "QUIT", 3);
+                let quit = add_button(&mut ui, panel, "QUIT", 3);
+                danger(&mut ui, quit);
             }
             Screen::Pause => {
                 add_button(&mut ui, panel, "RESUME", 1);
@@ -676,19 +708,45 @@ impl Menu {
                 self.language = Some(language);
             }
             Screen::Controls => {
+                // The reset button matches the menu's full-width buttons.
                 let mut controls = ControlsScreen::new(
                     control_entries(),
                     &self.bindings,
                     self.default_bindings.clone(),
-                );
+                )
+                .with_reset_item(LayoutItem::size(Length::Fill, Length::fixed(36.0)));
                 controls
                     .build(&mut ui, panel, ActionId::new(12))
                     .expect("controls screen");
-                add_label(
+                if self.controls_device == InputDevice::Gamepad {
+                    controls
+                        .set_device(&mut ui, InputDevice::Gamepad, DeviceFamily::Xbox)
+                        .expect("gamepad column");
+                }
+                // A prompt with an inline key cap.
+                ui.add_child(
+                    panel,
+                    Widget::RichText {
+                        spans: vec![
+                            RichSpan::Text(keyed("SELECT A ROW, THEN PRESS A KEY.")),
+                            RichSpan::Key(UiText::literal("ESC")),
+                            RichSpan::Text(keyed("CANCELS.")),
+                        ],
+                        style: quasar_ui::TextStyle::Small,
+                        wrap: LabelWrap::Word,
+                        max_width: None,
+                    },
+                    LayoutItem::size(Length::Fill, Length::Auto),
+                )
+                .unwrap();
+                add_button(
                     &mut ui,
                     panel,
-                    "SELECT A ROW, THEN PRESS A KEY. ESC CANCELS.",
-                    quasar_ui::TextStyle::Small,
+                    match self.controls_device {
+                        InputDevice::KeyboardMouse => "SHOW GAMEPAD",
+                        InputDevice::Gamepad => "SHOW KEYBOARD",
+                    },
+                    13,
                 );
                 add_button(&mut ui, panel, "BACK", 11);
                 self.controls = Some(controls);
@@ -700,7 +758,8 @@ impl Menu {
                     "CURRENT RUN PROGRESS WILL BE LOST.",
                     quasar_ui::TextStyle::Body,
                 );
-                add_button(&mut ui, panel, "YES", 8);
+                let yes = add_button(&mut ui, panel, "YES", 8);
+                danger(&mut ui, yes);
                 add_button(&mut ui, panel, "NO", 9);
             }
         }
@@ -714,16 +773,26 @@ impl Menu {
     }
 }
 
-fn add_label(ui: &mut Ui, parent: quasar_ui::NodeId, text: &str, style: quasar_ui::TextStyle) {
+fn add_label(
+    ui: &mut Ui,
+    parent: quasar_ui::NodeId,
+    text: &str,
+    style: quasar_ui::TextStyle,
+) -> quasar_ui::NodeId {
     ui.add_child(
         parent,
         Widget::label(keyed(text), style),
         LayoutItem::size(Length::Fill, Length::Auto),
     )
-    .unwrap();
+    .unwrap()
 }
 
-fn add_button(ui: &mut Ui, parent: quasar_ui::NodeId, text: &str, action: u64) {
+fn add_button(
+    ui: &mut Ui,
+    parent: quasar_ui::NodeId,
+    text: &str,
+    action: u64,
+) -> quasar_ui::NodeId {
     ui.add_child(
         parent,
         Widget::Button {
@@ -732,5 +801,13 @@ fn add_button(ui: &mut Ui, parent: quasar_ui::NodeId, text: &str, action: u64) {
         },
         LayoutItem::size(Length::Fill, Length::fixed(36.0)),
     )
-    .unwrap();
+    .unwrap()
+}
+
+/// Red tones for destructive choices (quit, confirm loss of progress).
+fn danger(ui: &mut Ui, button: quasar_ui::NodeId) {
+    let base = Color::rgb(92, 28, 34);
+    let colors = WidgetColors::button(base, Color::rgb(140, 40, 48), Color::rgb(176, 52, 60))
+        .with_text(Color::rgb(255, 214, 214));
+    ui.set_colors(button, Some(colors)).unwrap();
 }

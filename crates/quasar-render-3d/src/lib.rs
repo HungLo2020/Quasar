@@ -1,6 +1,7 @@
 //! Caller-owned mesh rendering using upstream wgpu types through VulkanicGAL.
 mod decals;
 mod lighting;
+mod look;
 mod math;
 #[cfg(feature = "model-assets")]
 mod model_assets;
@@ -8,18 +9,21 @@ mod outline;
 mod particles;
 mod post;
 mod primitives;
+mod screen;
 mod shadows;
 mod skinning;
 mod submission;
 mod surface;
+mod volumetric;
 pub use decals::{Decal, DecalRenderer};
 pub use lighting::{
-    Attenuation, ColorSpace, DEFAULT_LIT_FRAGMENT_SHADER, Fog, LIGHTING_WGSL, LIGHTS_BINDING,
-    Light, LightClusters, LightGrid, Lighting, LightingOptions, LitCamera3D, LitDraw3D,
-    LitMaterial, LitPassOptions, LitRenderState3D, SHADOW_RECORDS_BINDING, SHADOW_SAMPLER_BINDING,
-    SHADOW_TEXTURE_BINDING, ShadingModel, cluster_lights, empty_lighting_bytes, encode_lighting,
-    encode_lighting_with,
+    Attenuation, ColorSpace, CookiePattern, DEFAULT_LIT_FRAGMENT_SHADER, Fog, HeightFog,
+    LIGHTING_WGSL, LIGHTS_BINDING, Light, LightClusters, LightCookie, LightGrid, Lighting,
+    LightingOptions, LitCamera3D, LitDraw3D, LitMaterial, LitPassOptions, LitRenderState3D,
+    SHADOW_RECORDS_BINDING, SHADOW_SAMPLER_BINDING, SHADOW_TEXTURE_BINDING, ShadingModel,
+    ToonSettings, cluster_lights, empty_lighting_bytes, encode_lighting, encode_lighting_with,
 };
+pub use look::SceneLook;
 pub use math::Mat4;
 #[cfg(feature = "model-assets")]
 pub use model_assets::{MaterialConversion, ModelUploadOptions, UploadedModel, UploadedTexture};
@@ -34,6 +38,7 @@ pub use primitives::MeshData;
 use quasar_frame::{Gpu, GraphicsResult, RenderTarget, error, texture_2d};
 /// Shared math types and conventions (re-exported for convenience).
 pub use quasar_math;
+pub use screen::{EdgeSettings, GodRaySource, GodRays, ScreenEffects};
 pub use shadows::{
     PreparedShadows, ShadowBinding, ShadowCaster, ShadowConfig, ShadowFilter, ShadowRenderState3D,
     ShadowSettings, ShadowStats, ShadowTarget, ShadowView,
@@ -45,9 +50,10 @@ use std::collections::{BTreeMap, HashMap};
 use submission::Visibility;
 pub use submission::{RenderWork, SubmissionConfig};
 pub use surface::{
-    DEFAULT_SURFACE_FRAGMENT_SHADER, NormalMap, SurfaceDraw3D, SurfaceMaterial,
+    DEFAULT_SURFACE_FRAGMENT_SHADER, EmissiveMap, NormalMap, SurfaceDraw3D, SurfaceMaterial,
     SurfaceRenderState3D,
 };
+pub use volumetric::{VolumetricFog, VolumetricFogSettings};
 use vulkanic_gal::util::DeviceExt;
 use vulkanic_gal::*;
 #[derive(Clone, Copy, Debug)]
@@ -318,6 +324,7 @@ struct Input<'a> {
     base: &'a Material,
     lit: Option<&'a LitMaterial>,
     normal: Option<&'a NormalMap>,
+    emissive: Option<&'a EmissiveMap>,
     receives_shadows: bool,
     /// Blend override from the transparent pass; `None` derives alpha
     /// blending from `base.transparent`.
@@ -327,6 +334,7 @@ struct Batch<'a> {
     mesh: &'a Mesh,
     image: TextureView,
     normal: TextureView,
+    emissive: TextureView,
     sampler: Sampler,
     normal_sampler: Sampler,
     key: PipelineKey,
@@ -338,6 +346,7 @@ struct BindingKey {
     vertices: Buffer,
     image: TextureView,
     normal: TextureView,
+    emissive: TextureView,
     sampler: Sampler,
     normal_sampler: Sampler,
 }
@@ -358,6 +367,8 @@ struct Core3D {
     normal_sampler: Sampler,
     comparison: Sampler,
     normal: TextureView,
+    /// White: the emissive colour applies unscaled without a map.
+    emissive: TextureView,
     empty_shadow: TextureView,
     samplers: BTreeMap<TextureView, Sampler>,
     normal_samplers: BTreeMap<TextureView, Sampler>,
@@ -454,6 +465,7 @@ impl Core3D {
                 storage_entry(6, ShaderStages::FRAGMENT),
                 sampler_entry(20, false),
                 sampler_entry(21, true),
+                image_entry(22, TextureViewDimension::D2, false),
             ]);
         }
         let bindings = gpu
@@ -530,6 +542,24 @@ impl Core3D {
             },
             normal.size(),
         );
+        let white = texture_2d(
+            &gpu.device,
+            "white emissive",
+            1,
+            1,
+            TextureFormat::Rgba8Unorm,
+            TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING,
+        )?;
+        gpu.queue.write_texture(
+            white.as_image_copy(),
+            &[255; 4],
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            white.size(),
+        );
         let empty_shadow = texture_2d(
             &gpu.device,
             "unused shadow",
@@ -555,6 +585,7 @@ impl Core3D {
             normal_sampler,
             comparison,
             normal: normal.create_view(&Default::default()),
+            emissive: white.create_view(&Default::default()),
             empty_shadow: empty_shadow.create_view(&TextureViewDescriptor {
                 dimension: Some(TextureViewDimension::D2Array),
                 ..Default::default()
@@ -707,7 +738,12 @@ impl Core3D {
                             if n.flip_y { -1. } else { 1. },
                         ]
                     }));
-                    values.extend([d.mesh.vertex_base as f32, 0., 0., 0.]);
+                    values.extend([
+                        d.mesh.vertex_base as f32,
+                        f32::from(d.emissive.is_some_and(|e| e.srgb)),
+                        0.,
+                        0.,
+                    ]);
                 } else {
                     values.extend([
                         camera.light_direction[0],
@@ -718,6 +754,10 @@ impl Core3D {
                 }
                 data.extend(bytes(values));
                 let normal = d.normal.map_or(&self.normal, |n| &n.texture_view).clone();
+                let emissive = d
+                    .emissive
+                    .map_or(&self.emissive, |e| &e.texture_view)
+                    .clone();
                 let sampler = self
                     .samplers
                     .get(&d.base.texture_view)
@@ -735,6 +775,7 @@ impl Core3D {
                     && b.mesh.shares_buffers(d.mesh)
                     && b.image == d.base.texture_view
                     && b.normal == normal
+                    && b.emissive == emissive
                     && b.sampler == sampler
                     && b.normal_sampler == normal_sampler
                     && b.key == key
@@ -745,6 +786,7 @@ impl Core3D {
                         mesh: d.mesh,
                         image: d.base.texture_view.clone(),
                         normal,
+                        emissive,
                         sampler,
                         normal_sampler,
                         key,
@@ -854,6 +896,7 @@ impl Core3D {
                     vertices: b.mesh.vertices.as_ref().unwrap().clone(),
                     image: b.image.clone(),
                     normal: b.normal.clone(),
+                    emissive: b.emissive.clone(),
                     sampler: b.sampler.clone(),
                     normal_sampler: b.normal_sampler.clone(),
                 };
@@ -910,6 +953,10 @@ impl Core3D {
                         BindGroupEntry {
                             binding: 21,
                             resource: BindingResource::Sampler(&self.comparison),
+                        },
+                        BindGroupEntry {
+                            binding: 22,
+                            resource: BindingResource::TextureView(&b.emissive),
                         },
                     ]);
                 }
@@ -1033,6 +1080,7 @@ impl RenderState3D {
                 base: &d.material,
                 lit: None,
                 normal: None,
+                emissive: None,
                 receives_shadows: false,
                 blend: None,
             })

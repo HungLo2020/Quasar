@@ -191,6 +191,7 @@ fn render_screenshot(
     let (width, height) = (settings.width, settings.height);
     let gal = Gpu::headless().map_err(err)?;
     let mut graphics = render::Graphics::new(&gal).map_err(err)?;
+    graphics.set_toon(settings.toon);
     let target = OffscreenTarget::new(&gal, width, height).map_err(err)?;
     let mut prepare = Vec::new();
     let mut image = Vec::new();

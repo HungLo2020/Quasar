@@ -40,6 +40,8 @@
 //! Deterministic guarantees are limited to the state/input/hash the game
 //! supplies. Cross-CPU floating-point bitwise parity is not claimed.
 
+pub mod interp;
+pub use interp::{Blend, Interpolation};
 pub use quasar_core::Rng;
 use quasar_core::{FixedStep, FixedStepConfig};
 use std::{error::Error, fmt, time::Duration};

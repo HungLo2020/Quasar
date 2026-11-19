@@ -18,10 +18,28 @@ impl NormalMap {
         }
     }
 }
+/// A texture that scales the material's emissive colour per texel (glowing
+/// veins, lit windows, eyes). Sampled with the base texture's UVs and
+/// sampler; `srgb` decodes colour-encoded maps (glTF emissive maps are).
+#[derive(Clone, Debug)]
+pub struct EmissiveMap {
+    pub texture_view: TextureView,
+    pub srgb: bool,
+}
+impl EmissiveMap {
+    pub fn new(texture_view: &TextureView) -> Self {
+        Self {
+            texture_view: texture_view.clone(),
+            srgb: true,
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub struct SurfaceMaterial {
     pub lit: LitMaterial,
     pub normal_map: Option<NormalMap>,
+    /// Per-texel glow: `lit.emissive` times this map.
+    pub emissive_map: Option<EmissiveMap>,
     pub receives_shadows: bool,
 }
 impl From<LitMaterial> for SurfaceMaterial {
@@ -29,6 +47,7 @@ impl From<LitMaterial> for SurfaceMaterial {
         Self {
             lit,
             normal_map: None,
+            emissive_map: None,
             receives_shadows: true,
         }
     }
@@ -115,6 +134,7 @@ impl SurfaceRenderState3D {
                 base: &d.material.lit.base,
                 lit: Some(&d.material.lit),
                 normal: d.material.normal_map.as_ref(),
+                emissive: d.material.emissive_map.as_ref(),
                 receives_shadows: d.material.receives_shadows,
                 blend: None,
             })
@@ -208,6 +228,10 @@ impl SurfaceRenderState3D {
     }
     pub fn fog(&self) -> Option<Fog> {
         self.lit.fog()
+    }
+    /// See [`LitRenderState3D::set_toon`].
+    pub fn set_toon(&mut self, toon: ToonSettings) -> GraphicsResult<()> {
+        self.lit.set_toon(toon)
     }
     /// See [`LitRenderState3D::set_light_clusters`].
     pub fn set_light_clusters(&mut self, clusters: LightClusters) -> GraphicsResult<()> {

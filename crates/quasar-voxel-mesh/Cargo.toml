@@ -12,12 +12,12 @@ default = []
 jobs = ["dep:quasar-jobs"]
 
 [dependencies]
+quasar-core.workspace = true
 quasar-voxel.workspace = true
 quasar-math.workspace = true
 quasar-jobs = { workspace = true, optional = true }
 
 [dev-dependencies]
-quasar-core.workspace = true
 quasar-profile.workspace = true
 quasar-jobs.workspace = true
 

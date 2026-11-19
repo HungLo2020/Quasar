@@ -197,3 +197,31 @@ The default `CatalogModels` meshes the box (rotated with the block), and
 See [3D effects](effects-3d.md#voxels-and-meshes-on-one-scene) for
 `HybridFrame`, which orders voxel and render-3d passes on one `SceneTarget`
 and reports voxel submissions.
+
+## Bevelled blocks
+
+`BevelExtractor` (in `quasar-voxel-mesh`) meshes full-cube blocks with
+chamfered edges and chipped corners that follow the neighbourhood: only
+edges and corners whose adjoining faces are all open are cut, each lattice
+point's depth comes from a seeded hash and the largest bevel scale of the
+blocks around it (so neighbours' cuts meet), and corners stay sharp where a
+cut would expose a neighbour's face. The result is closed and outward
+facing (tests check every edge is shared). A per-block policy returns
+`None` to leave a block to another extractor, `Some(0.0)` for a flat cube
+or `Some(scale)` for a bevel; faces take block and sky light from the cell
+in front. Voxel Blocks' `--sculpted` style bevels stone and ore this way.
+
+## Dense read views
+
+`Volume::dense_view(channel, min, max)` copies one channel of a box into a
+flat array: reads are O(1) with no chunk hashing or palette unpacking, which
+suits small fixed maps queried thousands of times a tick (collision, line
+of sight, nearest-ore scans). `DenseView::refresh` re-copies only chunks
+whose revision changed, and `set` mirrors a write the game also made.
+
+## Emissive masks
+
+`MaterialDef::with_emissive_mask(colour, layer)` makes a texture-array
+layer scale a material's emission per texel (with triplanar mapping on
+smooth surfaces), so ore flecks or lava cracks glow while the rest of the
+block does not. Voxel Blocks' crystal ore uses it.

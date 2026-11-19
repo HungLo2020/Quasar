@@ -127,3 +127,11 @@ distributions contain zero samples, rather than fake zero-cost measurements.
 Configured resource-create/host-write thresholds fail explicitly when those
 measurements are unavailable; draw/upload and CPU/GPU frame thresholds remain
 available through renderer statistics and native timing.
+
+## GPU time
+
+GPU timing is opt-in: `Gpu::set_gpu_timestamps(true)` enables per-frame
+timestamp queries (when `Gpu::gpu_timestamps_supported`), after which
+`FrameReport::gpu_frame_nanos` is filled for surface frames and for
+headless `OffscreenTarget::render` benchmarks alike. `OffscreenTarget`
+reuses one readback buffer across frames and copies rows whole.

@@ -105,8 +105,9 @@ impl DriftApp {
         surface
             .reconfigure(&gal)
             .map_err(|e| DriftError::invalid(e.to_string()))?;
-        let graphics = Graphics::new(&gal)
+        let mut graphics = Graphics::new(&gal)
             .map_err(|e| DriftError::invalid(format!("create renderers: {e}")))?;
+        graphics.set_toon(self.settings.toon);
         self.surface = Some(surface);
         self.graphics = Some(graphics);
         gal.set_gpu_timestamps(self.settings.benchmark);
@@ -154,6 +155,12 @@ impl DriftApp {
             return Ok(Flow::Exit);
         }
         let input = self.input(context);
+        // C clears every particle and scorch mark.
+        if context.input.pressed(Key::KeyC)
+            && let Some(graphics) = &mut self.graphics
+        {
+            graphics.clear_effects();
+        }
         if let Some(world) = &mut self.world {
             let input = if self.settings.autoplay {
                 autoplay(world)

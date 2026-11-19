@@ -29,7 +29,10 @@ use quasar_frame::{
     Gpu, GraphicsResult, RenderTarget, error, texture_2d, validation_scope as checked,
 };
 use quasar_math::{DMat4, DVec3, IVec3, Mat4, Vec3};
-use quasar_render_3d::{Light, Lighting, LitCamera3D, ShadingModel, ShadowBinding};
+use quasar_render_3d::{
+    ColorSpace, Light, Lighting, LightingOptions, LitCamera3D, ShadingModel, ShadowBinding,
+    ToonSettings,
+};
 use quasar_voxel::{GridId, GridTransform, Layer};
 use quasar_voxel_mesh::{
     MeshBuffers, ModelVertex, PackedQuad, PackedSmoothVertex, PlaneSorter, Quad, TranslucentSorter,
@@ -176,7 +179,10 @@ pub struct VoxelShading {
     pub model: ShadingModel,
     pub specular: [f32; 3],
     pub shininess: f32,
+    /// Distance, height and scattering fog (shared with meshes).
     pub fog: Option<Fog>,
+    /// Bands for [`ShadingModel::Toon`].
+    pub toon: ToonSettings,
 }
 
 impl Default for VoxelShading {
@@ -190,6 +196,7 @@ impl Default for VoxelShading {
             specular: [0.0; 3],
             shininess: 16.0,
             fog: None,
+            toon: ToonSettings::default(),
         }
     }
 }
@@ -1206,7 +1213,17 @@ impl VoxelRenderer {
             );
             self.instances_dirty = false;
         }
-        // Lights rebased to the camera so positions stay precise.
+        // Lights rebased to the camera so positions stay precise; fog height
+        // moves with it (positions in the shader are camera-relative).
+        let camera = LitCamera3D {
+            view_projection: quasar_render_3d::Mat4::from_glam(view_projection),
+            position: [0.0; 3],
+        };
+        let options = LightingOptions {
+            fog: shading.fog.map(|f| f.rebased(origin.y as f32)),
+            toon: shading.toon,
+            ..LightingOptions::default()
+        };
         let (light_bytes, shadow_bytes) = match lighting {
             Some((lighting, shadow)) => {
                 let rebased: Vec<Light> = lighting
@@ -1237,6 +1254,7 @@ impl VoxelRenderer {
                             inner_angle,
                             outer_angle,
                             attenuation,
+                            cookie,
                         } => Light::Spot {
                             position: (DVec3::from(position.map(f64::from)) - origin)
                                 .as_vec3()
@@ -1248,21 +1266,19 @@ impl VoxelRenderer {
                             inner_angle,
                             outer_angle,
                             attenuation,
+                            cookie,
                         },
                         other => other,
                     })
                     .collect();
-                let camera = LitCamera3D {
-                    view_projection: quasar_render_3d::Mat4::from_glam(view_projection),
-                    position: [0.0; 3],
-                };
-                let lights = quasar_render_3d::encode_lighting(
+                let lights = quasar_render_3d::encode_lighting_with(
                     camera,
                     Lighting {
                         lights: &rebased,
                         ..lighting
                     },
                     self.config.max_lights,
+                    &options,
                 )?;
                 let shadows = shadow.map_or_else(
                     || f32_bytes([0.0f32; 28]),
@@ -1270,8 +1286,18 @@ impl VoxelRenderer {
                 );
                 (lights, shadows)
             }
+            // No scene lights: the header still carries fog and toon bands.
             None => (
-                quasar_render_3d::empty_lighting_bytes(),
+                quasar_render_3d::encode_lighting_with(
+                    camera,
+                    Lighting {
+                        ambient: [0.0; 3],
+                        lights: &[],
+                        output_color_space: ColorSpace::Linear,
+                    },
+                    self.config.max_lights,
+                    &options,
+                )?,
                 f32_bytes([0.0f32; 28]),
             ),
         };
@@ -1305,11 +1331,7 @@ impl VoxelRenderer {
             0,
             shadow_bytes.len() as u64,
         );
-        let model = match shading.model {
-            ShadingModel::Unlit => 0.0,
-            ShadingModel::Diffuse => 1.0,
-            ShadingModel::BlinnPhong => 2.0,
-        };
+        let model = shading.model.code();
         let fog = shading.fog;
         let mut frame: Vec<f32> = view_projection.to_cols_array().to_vec();
         frame.extend([

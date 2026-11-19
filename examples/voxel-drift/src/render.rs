@@ -10,10 +10,11 @@ use quasar_math::Vec3;
 use quasar_profile::RendererStats;
 use quasar_render_2d::{Canvas, Color, DisplayOptions, LoadOp, Rect, RenderState2D, Textures};
 use quasar_render_3d::{
-    BlendMode, ColorSpace, Decal, DecalRenderer, Light, Lighting, LitCamera3D, LitMaterial, Mat4,
-    Mesh, MeshData, OutlineDraw, OutlineRenderer, OutlineStyle, ParticleBurst, ParticleCamera,
-    ParticleSettings, ParticleSystem, PostChain, PostSettings, SceneTarget, ShadingModel,
-    SurfaceDraw3D, SurfaceMaterial, SurfaceRenderState3D,
+    BlendMode, ColorGrade, Decal, DecalRenderer, EdgeSettings, GodRaySource, GodRays, Light,
+    LitCamera3D, LitMaterial, Mat4, Mesh, MeshData, OutlineDraw, OutlineRenderer, OutlineStyle,
+    ParticleBurst, ParticleCamera, ParticleSettings, ParticleSystem, PostChain, PostSettings,
+    SceneLook, SceneTarget, ScreenEffects, ShadingModel, SurfaceDraw3D, SurfaceMaterial,
+    SurfaceRenderState3D, ToonSettings,
 };
 use quasar_render_voxel::{
     ChunkKey, ChunkPlacement, HybridFrame, MaterialDef, MaterialFilter, OverlayBox, Stage,
@@ -23,6 +24,8 @@ use quasar_render_voxel::{
 use vulkanic_gal::{CommandBuffer, Texture, TextureView};
 
 const SPACE: [f32; 3] = [0.004, 0.005, 0.012];
+/// Direction the sunlight travels.
+const SUN: [f32; 3] = [-0.55, -0.35, -0.75];
 /// Scorch marks kept on the asteroid (oldest replaced first).
 const MAX_DECALS: usize = 48;
 
@@ -30,6 +33,10 @@ pub struct Graphics {
     voxels: VoxelRenderer,
     surfaces: SurfaceRenderState3D,
     particles: ParticleSystem,
+    /// Sun shafts past the asteroid's silhouette, and ink edges.
+    screen: ScreenEffects,
+    /// The scene's sun, fill, grade and style.
+    pub look: SceneLook,
     decals: DecalRenderer,
     outlines: OutlineRenderer,
     post: PostChain,
@@ -138,12 +145,17 @@ impl Graphics {
             },
             0xd51f7,
         )?;
+        // Soft dust: puffs fade where they meet rock instead of clipping.
+        let mut particles = particles;
+        particles.set_soft_distance(1.5)?;
         let mut drone = MeshData::sphere(1.2, 10, 16);
         drone.append(&MeshData::cuboid([2.2, 0.12, 0.5]));
         Ok(Self {
             voxels,
             surfaces: SurfaceRenderState3D::new(gal, 4, 0)?,
             particles,
+            screen: ScreenEffects::new(gal)?,
+            look: look(false),
             decals: DecalRenderer::new(gal)?,
             outlines: OutlineRenderer::new(gal)?,
             post: PostChain::new(gal)?,
@@ -162,6 +174,17 @@ impl Graphics {
             pending_submissions: Vec::new(),
             prepare_micros: 0.0,
         })
+    }
+
+    /// Switches between the standard and the cel-shaded look.
+    pub fn set_toon(&mut self, toon: bool) {
+        self.look = look(toon);
+    }
+
+    /// Removes every particle and scorch mark at once.
+    pub fn clear_effects(&mut self) {
+        self.particles.clear();
+        self.scorches.clear();
     }
 
     /// Turns world events into particles and decals.
@@ -281,28 +304,26 @@ impl Graphics {
             }
             none => none.insert(SceneTarget::new(gal, target.width, target.height)?),
         };
+        let look = self.look;
+        let toon = look.edges.is_some();
+        let model = if toon {
+            ShadingModel::Toon
+        } else {
+            ShadingModel::Diffuse
+        };
         let shading = VoxelShading {
-            ao_strength: 0.55,
-            model: ShadingModel::Diffuse,
+            ao_strength: if toon { 0.25 } else { 0.55 },
+            model,
+            toon: look.toon,
             ..VoxelShading::default()
         };
-        let lights = [
-            Light::Directional {
-                direction: [-0.55, -0.35, -0.75],
-                color: [1.0, 0.96, 0.9],
-                intensity: 1.15,
-            },
-            Light::Directional {
-                direction: [0.6, 0.3, 0.7],
-                color: [0.35, 0.45, 0.7],
-                intensity: 0.18,
-            },
-        ];
-        let lighting = Lighting {
-            ambient: [0.07; 3],
-            lights: &lights,
-            output_color_space: ColorSpace::Linear,
-        };
+        // The look's sun plus a cool fill from the far side.
+        let lights = look.lights_with_sun(&[Light::Directional {
+            direction: [0.6, 0.3, 0.7],
+            color: [0.35, 0.45, 0.7],
+            intensity: 0.18,
+        }]);
+        let lighting = look.lighting(&lights);
         let mut overlays = Vec::new();
         if let Some(Target::Ship(hit)) = world.target {
             let grid = world.fleet.ships[hit.ship].grid.id;
@@ -345,7 +366,9 @@ impl Graphics {
             quasar_math::Mat4::from_translation(drone_at)
                 * quasar_math::Mat4::from_rotation_y(world.tick() as f32 * 0.02),
         );
+        self.surfaces.set_toon(look.toon)?;
         let mut drone_material = LitMaterial::textured(&self.white_view);
+        drone_material.shading = model;
         drone_material.base.tint = [0.9, 0.92, 1.0, 1.0];
         drone_material.emissive = [0.05, 0.3, 0.6];
         let drone_draw = SurfaceDraw3D {
@@ -395,6 +418,21 @@ impl Graphics {
                 1.0 / 60.0,
             )?,
         )?;
+        // Ink edges for the cel-shaded look.
+        if let Some(edges) = look.edges {
+            frame.push(
+                Stage::Effects,
+                self.screen.prepare_edges(gal, scene, lit_camera, &edges)?,
+            )?;
+        }
+        // Sunlight streaming past the rock into open space.
+        if let Some(rays) = look.sun_rays() {
+            frame.push(
+                Stage::Effects,
+                self.screen
+                    .prepare_god_rays(gal, scene, lit_camera, &rays)?,
+            )?;
+        }
         frame.push(
             Stage::Effects,
             self.outlines.prepare(
@@ -414,10 +452,7 @@ impl Graphics {
                 }],
             )?,
         )?;
-        let post = PostSettings {
-            exposure: 1.0,
-            ..PostSettings::default()
-        };
+        let post = look.post_settings();
         frame.push(
             Stage::Post,
             self.post.prepare_scene(gal, scene, target, &post)?,
@@ -470,6 +505,53 @@ impl Graphics {
         self.post.release(gal)?;
         self.scene = None;
         self.state_2d.release(gal)
+    }
+}
+
+/// The scene look: sun, ambient, grade, god rays and (for the cel-shaded
+/// style) toon bands with ink edges.
+fn look(toon: bool) -> SceneLook {
+    let base = SceneLook {
+        sun_direction: SUN,
+        sun_color: [1.0, 0.96, 0.9],
+        sun_intensity: 1.15,
+        ambient: [0.07; 3],
+        exposure: 1.0,
+        bloom: PostSettings::default().bloom,
+        god_rays: Some(GodRays {
+            source: GodRaySource::Direction(SUN),
+            color: [1.0, 0.92, 0.78],
+            intensity: 0.35,
+            ..GodRays::default()
+        }),
+        ..SceneLook::default()
+    };
+    if !toon {
+        return SceneLook {
+            tonemap: PostSettings::default().tonemap,
+            ..base
+        };
+    }
+    SceneLook {
+        toon: ToonSettings {
+            bands: 3,
+            softness: 0.06,
+            rim: 0.3,
+        },
+        ambient: [0.12, 0.12, 0.16],
+        grade: ColorGrade {
+            saturation: 1.25,
+            ..PostSettings::default().grade
+        },
+        edges: Some(EdgeSettings {
+            color: [0.01, 0.01, 0.015, 1.0],
+            width: 1.0,
+            depth_threshold: 0.05,
+            crease_threshold: 0.6,
+            fade_distance: 400.0,
+        }),
+        tonemap: PostSettings::default().tonemap,
+        ..base
     }
 }
 

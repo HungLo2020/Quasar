@@ -121,6 +121,7 @@ fn lighting_composition_suite(submission: SubmissionConfig) {
         inner_angle: 0.1,
         outer_angle: 0.3,
         attenuation: Attenuation::Smooth,
+        cookie: quasar_render_3d::LightCookie::NONE,
     };
     assert!(
         center(&render(

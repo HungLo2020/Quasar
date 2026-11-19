@@ -200,6 +200,326 @@ pub struct Border {
     pub color: Color,
 }
 
+/// One run of a [`Widget::RichText`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum RichSpan {
+    /// Words; wrapping happens at spaces.
+    Text(UiText),
+    /// An inline image of `width` x `height` logical units, drawn from the
+    /// renderer texture registered for `image` (as [`Widget::Image`]), and
+    /// centred on the text row.
+    Image {
+        image: u64,
+        source: Option<Rect>,
+        width: f32,
+        height: f32,
+    },
+    /// Text in a key-cap box, for input prompts.
+    Key(UiText),
+    /// A forced line break.
+    Break,
+}
+
+impl RichSpan {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text(UiText::literal(text.into()))
+    }
+    pub fn key(text: impl Into<String>) -> Self {
+        Self::Key(UiText::literal(text.into()))
+    }
+    pub const fn image(image: u64, width: f32, height: f32) -> Self {
+        Self::Image {
+            image,
+            source: None,
+            width,
+            height,
+        }
+    }
+}
+
+/// One positioned piece of laid-out rich text (physical units, relative
+/// to the widget's top-left corner).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RichItem {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub kind: RichKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum RichKind {
+    Text(String),
+    Key(String),
+    Image { image: u64, source: Option<Rect> },
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct RichLayout {
+    pub items: Vec<RichItem>,
+    pub size: Vec2,
+}
+
+/// Key-cap padding as a fraction of the font size.
+pub(crate) const KEY_PAD: f32 = 0.35;
+
+/// Lays out `spans` into rows no wider than `limit` (physical units).
+/// `measure` returns a text run's physical width at the widget's size.
+pub(crate) fn layout_rich(
+    spans: &[RichSpan],
+    resolve: impl Fn(&UiText) -> String,
+    measure: impl Fn(&str) -> f32,
+    font: f32,
+    scale: f32,
+    limit: f32,
+) -> RichLayout {
+    struct Piece {
+        kind: RichKind,
+        width: f32,
+        height: f32,
+        /// Whether a space precedes this piece on the same row.
+        spaced: bool,
+        /// Starts a new row.
+        breaks: bool,
+    }
+    let space = measure(" ");
+    let mut pieces: Vec<Piece> = Vec::new();
+    let mut pending_space = false;
+    let mut pending_break = false;
+    for span in spans {
+        match span {
+            RichSpan::Text(text) => {
+                let text = resolve(text);
+                let mut first = true;
+                for (index, line) in text.split('\n').enumerate() {
+                    if index > 0 {
+                        pending_break = true;
+                        pending_space = false;
+                    }
+                    let starts_with_space = line.starts_with(char::is_whitespace);
+                    for word in line.split_whitespace() {
+                        let spaced = if first && !starts_with_space {
+                            pending_space
+                        } else {
+                            pending_space || !first || starts_with_space
+                        };
+                        pieces.push(Piece {
+                            kind: RichKind::Text(word.to_owned()),
+                            width: measure(word),
+                            height: font,
+                            spaced: spaced && !pending_break,
+                            breaks: std::mem::take(&mut pending_break),
+                        });
+                        first = false;
+                        pending_space = false;
+                    }
+                    pending_space =
+                        line.ends_with(char::is_whitespace) || (first && starts_with_space);
+                }
+            }
+            RichSpan::Key(text) => {
+                let text = resolve(text);
+                pieces.push(Piece {
+                    width: measure(&text) + font * KEY_PAD * 2.0,
+                    height: font * 1.25,
+                    kind: RichKind::Key(text),
+                    spaced: pending_space && !pending_break,
+                    breaks: std::mem::take(&mut pending_break),
+                });
+                pending_space = false;
+            }
+            RichSpan::Image {
+                image,
+                source,
+                width,
+                height,
+            } => {
+                pieces.push(Piece {
+                    kind: RichKind::Image {
+                        image: *image,
+                        source: *source,
+                    },
+                    width: width.max(0.0) * scale,
+                    height: height.max(0.0) * scale,
+                    spaced: pending_space && !pending_break,
+                    breaks: std::mem::take(&mut pending_break),
+                });
+                pending_space = false;
+            }
+            RichSpan::Break => {
+                pending_break = true;
+                pending_space = false;
+            }
+        }
+    }
+    // Greedy rows; text pieces on one row merge into a single run.
+    let mut rows: Vec<Vec<(f32, Piece)>> = vec![Vec::new()];
+    let mut x = 0.0f32;
+    for piece in pieces {
+        let gap = if piece.spaced { space } else { 0.0 };
+        let row_empty = rows.last().is_none_or(Vec::is_empty);
+        if piece.breaks || (!row_empty && x + gap + piece.width > limit + 0.5) {
+            rows.push(Vec::new());
+            x = 0.0;
+        }
+        let row = rows.last_mut().expect("a row");
+        let gap = if row.is_empty() { 0.0 } else { gap };
+        if let (Some((_, last)), RichKind::Text(word)) = (row.last_mut(), &piece.kind)
+            && let RichKind::Text(run) = &mut last.kind
+        {
+            if gap > 0.0 {
+                run.push(' ');
+            }
+            run.push_str(word);
+            last.width += gap + piece.width;
+            x += gap + piece.width;
+            continue;
+        }
+        row.push((x + gap, piece));
+        x += gap + rows.last().expect("a row").last().expect("piece").1.width;
+    }
+    let mut layout = RichLayout::default();
+    let mut y = 0.0f32;
+    for row in rows {
+        let height = row.iter().map(|(_, p)| p.height).fold(font, f32::max);
+        let mut right = 0.0f32;
+        for (x, piece) in row {
+            right = right.max(x + piece.width);
+            layout.items.push(RichItem {
+                x,
+                y: y + (height - piece.height) * 0.5,
+                width: piece.width,
+                height: piece.height,
+                kind: piece.kind,
+            });
+        }
+        layout.size.x = layout.size.x.max(right);
+        y += height;
+    }
+    layout.size.y = y;
+    layout
+}
+
+/// Per-node colour overrides for a widget's own painting; `None` fields
+/// keep the theme colour. Set with [`crate::Ui::set_colors`] (or
+/// [`crate::Ui::set_text_color`] for just the text).
+///
+/// - `text`: label text of any style, and the text of buttons, checkboxes,
+///   sliders, selects, bindings and fields (for example rarity-coloured
+///   item names).
+/// - `accent`: selected values (select option, binding value, tab).
+/// - `background`, `hover`, `active`: a button's (and select's / binding's)
+///   fill at rest, hovered or focused, and pressed. A button whose
+///   [`NodeStyle`] has a background paints no theme fill at rest, so the
+///   style shows through and only hover/press tints are drawn over it.
+/// - `track`, `fill`: checkbox box and mark, slider and progress track and
+///   fill, text-field background (`track`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WidgetColors {
+    pub text: Option<Color>,
+    pub accent: Option<Color>,
+    pub background: Option<Color>,
+    pub hover: Option<Color>,
+    pub active: Option<Color>,
+    pub track: Option<Color>,
+    pub fill: Option<Color>,
+}
+
+impl WidgetColors {
+    pub const fn text(color: Color) -> Self {
+        Self {
+            text: Some(color),
+            accent: None,
+            background: None,
+            hover: None,
+            active: None,
+            track: None,
+            fill: None,
+        }
+    }
+    /// Button colours at rest, hovered and pressed.
+    pub const fn button(background: Color, hover: Color, active: Color) -> Self {
+        Self {
+            text: None,
+            accent: None,
+            background: Some(background),
+            hover: Some(hover),
+            active: Some(active),
+            track: None,
+            fill: None,
+        }
+    }
+    pub const fn with_text(mut self, color: Color) -> Self {
+        self.text = Some(color);
+        self
+    }
+    pub const fn with_track(mut self, color: Color) -> Self {
+        self.track = Some(color);
+        self
+    }
+    pub const fn with_fill(mut self, color: Color) -> Self {
+        self.fill = Some(color);
+        self
+    }
+    pub const fn with_accent(mut self, color: Color) -> Self {
+        self.accent = Some(color);
+        self
+    }
+}
+
+/// The colours one node paints with: the theme merged with the node's
+/// [`WidgetColors`] and style.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct Paint {
+    pub text: Color,
+    pub dim_text: Color,
+    pub accent: Color,
+    pub button: Color,
+    pub button_hover: Color,
+    pub button_active: Color,
+    pub track: Color,
+    pub fill: Color,
+    /// Corner radius (logical units) for widget fills.
+    pub radius: f32,
+}
+
+#[cfg_attr(not(feature = "render2d"), allow(dead_code))]
+impl Paint {
+    pub(crate) fn new(
+        theme: &crate::Theme,
+        colors: Option<&WidgetColors>,
+        style: Option<&NodeStyle>,
+    ) -> Self {
+        let c = colors.copied().unwrap_or_default();
+        let styled_background = style.is_some_and(|s| s.background.is_some());
+        Self {
+            text: c.text.unwrap_or(theme.text),
+            dim_text: c.text.unwrap_or(theme.dim_text),
+            accent: c.accent.unwrap_or(theme.accent),
+            button: c.background.unwrap_or(if styled_background {
+                Color::TRANSPARENT
+            } else {
+                theme.button
+            }),
+            button_hover: c.hover.unwrap_or(theme.button_hover),
+            button_active: c.active.unwrap_or(theme.button_active),
+            track: c.track.unwrap_or(theme.track),
+            fill: c.fill.unwrap_or(theme.fill),
+            radius: style.map_or(0.0, |s| s.radius),
+        }
+    }
+    /// Like [`crate::Theme::color`], with the node's text override.
+    pub(crate) fn color(&self, style: crate::TextStyle) -> Color {
+        match style {
+            crate::TextStyle::Body | crate::TextStyle::Heading => self.text,
+            crate::TextStyle::Small => self.dim_text,
+            crate::TextStyle::Dim => self.dim_text.with_alpha(190),
+        }
+    }
+}
+
 /// Per-node visual override.
 ///
 /// A node with a style paints exactly this background, border and corner
@@ -411,6 +731,16 @@ pub enum Widget {
         /// Line breaking. [`LabelWrap::Word`] wraps at the narrowest of the
         /// available width, a fixed/percent item width and `max_width`, and
         /// the label's height grows with its line count during layout.
+        wrap: LabelWrap,
+        /// Optional wrap limit in logical units.
+        max_width: Option<f32>,
+    },
+    /// Text with inline images and key caps (button prompts such as
+    /// "Press \[F\] to open"), laid out in rows and word-wrapped like a
+    /// label. See [`RichSpan`].
+    RichText {
+        spans: Vec<RichSpan>,
+        style: TextStyle,
         wrap: LabelWrap,
         /// Optional wrap limit in logical units.
         max_width: Option<f32>,

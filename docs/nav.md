@@ -159,3 +159,21 @@ allocation-dominated at this scale; the dominant cost is graph exploration.
   to be globally optimal, only collision-free under that predicate.
 - Navmesh generation is out of scope and delegated to `navmesh`/external tools.
 - Cost/visited limits return `LimitReached` rather than partial paths.
+
+## Moving goals and steering
+
+`DistanceField::set_goals` repairs the field in place: added goals only
+propagate outwards, removed goals invalidate just the cells whose route
+ended at them, and a goal that moves (every route invalidated) rebuilds
+into the existing buffers. Full rebuilds use a bucket queue and cached
+per-cell legal-move masks (rebuilt only when the grid changes), then pick
+each parent exactly as the binary-heap search would, so distances and
+`next_cell` match a fresh `distance_field` bit for bit (tests compare
+against a reference Dijkstra). On a 120x1x120 cave following a moving goal,
+a rebuild went from 1.5 ms to 0.9 ms.
+
+`Steering` is the horde rule on top of a field: an agent that can see its
+goal walks straight at it; otherwise it heads for the furthest of the next
+few cells along the field that it can see. The game supplies both
+visibility tests (or uses `steer_on_grid` with `Grid::line_of_sight`).
+Nightwatch's zombies share one field to the player and steer with it.

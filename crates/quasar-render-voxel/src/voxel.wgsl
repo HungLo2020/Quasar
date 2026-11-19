@@ -27,7 +27,8 @@ struct Frame {
     shading: vec4<f32>,
     // rgb: specular, a: shininess
     specular: vec4<f32>,
-    // rgb: fog colour, a: fog enabled
+    // rgb: fog colour, a: fog enabled (fog itself is applied from the
+    // shared lighting header)
     fog_color: vec4<f32>,
     // x: fog start, y: fog end, z: minimum light, w: reserved
     fog_range: vec4<f32>,
@@ -141,6 +142,27 @@ fn triplanar(material: u32, local: vec3<f32>, normal: vec3<f32>) -> vec4<f32> {
     return (x * w.x + y * w.y + z * w.z) * record.tint;
 }
 
+// Per-texel emission: `emissive.rgb` scaled by the mask layer when one is
+// set (`emissive.w` = layer + 1). Explicit-level sampling keeps it legal in
+// non-uniform control flow.
+fn emission(material: u32, uv: vec2<f32>, local: vec3<f32>, normal: vec3<f32>, smooth_surface: bool) -> vec3<f32> {
+    let record = materials[material];
+    if (record.emissive.w < 0.5) {
+        return record.emissive.rgb;
+    }
+    let layer = i32(record.emissive.w - 0.5);
+    if (!smooth_surface) {
+        return record.emissive.rgb * textureSampleLevel(material_images, material_sampler, uv, layer, 0.0).rgb;
+    }
+    let p = local * record.scale;
+    var w = abs(normal);
+    w = w / max(w.x + w.y + w.z, 1e-5);
+    let x = textureSampleLevel(material_images, material_sampler, p.zy, layer, 0.0).rgb;
+    let y = textureSampleLevel(material_images, material_sampler, p.xz, layer, 0.0).rgb;
+    let z = textureSampleLevel(material_images, material_sampler, p.xy, layer, 0.0).rgb;
+    return record.emissive.rgb * (x * w.x + y * w.y + z * w.z);
+}
+
 @fragment
 fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     var n = normalize(in.normal);
@@ -164,12 +186,8 @@ fn fs_main(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0)
     }
     let base = albedo.rgb * ao * brightness;
     var result = lit_color(base, n, n, in.position, frame.shading.w, frame.specular, true);
-    result += record.emissive.rgb;
-    if (frame.fog_color.a > 0.5) {
-        let distance = length(in.position);
-        let f = clamp((distance - frame.fog_range.x) / max(frame.fog_range.y - frame.fog_range.x, 1e-3), 0.0, 1.0);
-        result = mix(result, frame.fog_color.rgb, f);
-    }
+    result += emission(in.material0, in.uv, in.local, n, in.smooth_surface == 1u);
+    result = apply_fog(result, in.position);
     if (output_srgb()) { result = encode_srgb(result); }
     var alpha = albedo.a;
     if (LAYER < 1.5) { alpha = 1.0; }

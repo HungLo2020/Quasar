@@ -40,6 +40,7 @@ mod jobs;
 pub mod navmesh_support;
 #[cfg(feature = "physics3d")]
 pub mod physics3d;
+mod steer;
 #[cfg(feature = "tilemap")]
 mod tilemap;
 #[cfg(feature = "voxel")]
@@ -53,6 +54,7 @@ pub use graph::{
 pub use grid::{Grid, GridCell};
 #[cfg(feature = "jobs")]
 pub use jobs::spawn_grid_path;
+pub use steer::{Steer, Steering};
 #[cfg(feature = "tilemap")]
 pub use tilemap::grid_from_tilemap;
 

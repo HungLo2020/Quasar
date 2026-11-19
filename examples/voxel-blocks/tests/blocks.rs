@@ -309,3 +309,51 @@ fn player_edit_sequences_keep_light_exact() {
         "removed={removed} placed={placed}"
     );
 }
+
+#[test]
+fn sculpted_worlds_bevel_stone_and_seam_glowing_ore() {
+    use voxel_blocks::content::Content;
+    let mut classic = BlockWorld::new(0xb10c, 2, 2);
+    let mut sculpted = BlockWorld::with_content(Content::sculpted(), 0xb10c, 2, 2);
+    for world in [&mut classic, &mut sculpted] {
+        world.sync_meshing = true;
+        world.settle();
+    }
+    // Same blocks either way; only meshing differs.
+    assert_eq!(classic.state_hash(), sculpted.state_hash());
+    let count = |world: &mut BlockWorld| {
+        let updates = world.take_mesh_updates();
+        let quads: usize = updates
+            .upload
+            .iter()
+            .map(|(_, mesh)| {
+                mesh.layers
+                    .iter()
+                    .map(|(_, l)| l.quads.len())
+                    .sum::<usize>()
+            })
+            .sum();
+        let bevelled = updates
+            .upload
+            .iter()
+            .flat_map(|(_, mesh)| mesh.layers.iter().flat_map(|(_, l)| l.quads.iter()))
+            .filter(|q| q.face.is_none())
+            .count();
+        (quads, bevelled)
+    };
+    let (plain, plain_bevels) = count(&mut classic);
+    let (rounded, bevels) = count(&mut sculpted);
+    assert!(rounded > plain, "chamfers add quads: {plain} -> {rounded}");
+    assert!(bevels > plain_bevels + 100, "{plain_bevels} -> {bevels}");
+    // Ore seams exist below the surface: scan a dense copy of the deep
+    // layer instead of hashing chunks per read.
+    let ore = sculpted.content.blocks.ore;
+    let (min, max) = (IVec3::new(-16, 2, -16), IVec3::new(32, 18, 32));
+    let view = sculpted.volume.dense_view(sculpted.ch.block, min, max);
+    let found = view.values().iter().filter(|b| **b == ore).count();
+    assert!(found > 20, "ore seams: {found}");
+    assert_eq!(
+        view.get(IVec3::new(0, 10, 0)),
+        sculpted.volume.get(sculpted.ch.block, IVec3::new(0, 10, 0))
+    );
+}

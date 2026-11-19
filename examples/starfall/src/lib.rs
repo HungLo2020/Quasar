@@ -4,7 +4,9 @@
 //! the shared-GAL renderer. Native/headless entry points live in `main` and the
 //! optional `desktop` module.
 
+pub mod console;
 pub mod content;
+pub mod feel;
 pub mod menu;
 pub mod render;
 pub mod session;

@@ -23,6 +23,9 @@ struct View {
     right: vec4<f32>,
     // xyz camera up, w 1 when a sprite texture is bound
     up: vec4<f32>,
+    inverse_view_projection: mat4x4<f32>,
+    // x soft fade distance (0 = hard), yz target size in pixels
+    soft: vec4<f32>,
 };
 
 // --- simulate ---
@@ -51,6 +54,13 @@ fn simulate(@builtin(global_invocation_id) id: vec3<u32>) {
 @group(0) @binding(2) var<uniform> view: View;
 @group(0) @binding(3) var sprite: texture_2d<f32>;
 @group(0) @binding(4) var sprite_sampler: sampler;
+@group(0) @binding(5) var scene_depth: texture_depth_2d;
+
+fn world_from(pixel: vec2<f32>, depth: f32) -> vec3<f32> {
+    let uv = pixel / view.soft.yz;
+    let world = view.inverse_view_projection * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    return world.xyz / world.w;
+}
 
 struct VertexOutput {
     @builtin(position) clip: vec4<f32>,
@@ -92,7 +102,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         shape = clamp(1.0 - r2, 0.0, 1.0);
         shape = shape * shape;
     }
-    let alpha = in.color.a * shape;
+    var alpha = in.color.a * shape;
+    if (view.soft.x > 0.0) {
+        // Fade where the quad nears the geometry behind it.
+        let scene = textureLoad(scene_depth, vec2<i32>(in.clip.xy), 0);
+        let gap = distance(world_from(in.clip.xy, scene), world_from(in.clip.xy, in.clip.z));
+        alpha *= clamp(gap / view.soft.x, 0.0, 1.0);
+    }
     if (alpha <= 0.002) {
         discard;
     }

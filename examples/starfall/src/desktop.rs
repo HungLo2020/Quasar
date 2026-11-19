@@ -12,8 +12,8 @@ use quasar_input::{Binding, Bindings, GamepadButton, Key};
 use quasar_profile::{FrameProfiler, FrameSample};
 use quasar_text::{FontData, FontStack};
 use quasar_ui::{
-    Rect, ShapedTextMeasure, TextRenderer, TextRendererOptions, UiBindings, UiTextStyles,
-    from_frame_input,
+    Edges, Layer, LayoutItem, PanelLayout, Rect, ShapedTextMeasure, StackDirection, TextRenderer,
+    TextRendererOptions, UiBindings, UiTextStyles, Widget, from_frame_input,
 };
 use quasar_window::{DesktopConfig, WindowConfig, winit::event::WindowEvent};
 use starfall::{
@@ -148,6 +148,13 @@ struct StarfallApp {
     /// Game actions as rebound on the controls screen.
     game_bindings: Bindings,
     pending_bindings: Option<Bindings>,
+    /// Hit-stop, camera shake and render interpolation.
+    feel: starfall::feel::Feel,
+    interpolation: f32,
+    /// Developer console (backquote), with its own per-frame UI.
+    console: Option<quasar_ui::console::Console>,
+    console_ui: Option<quasar_ui::Ui>,
+    console_commands: quasar_ui::console::CommandSet<starfall::console::ConsoleState>,
 }
 impl StarfallApp {
     fn new(
@@ -206,6 +213,11 @@ impl StarfallApp {
             player_name,
             game_bindings,
             pending_bindings: None,
+            feel: starfall::feel::Feel::new(),
+            interpolation: 0.0,
+            console: None,
+            console_ui: None,
+            console_commands: starfall::console::commands(),
         }
     }
     fn initialize(&mut self, context: &mut AppContext<'_>) -> Result<(), GameError> {
@@ -306,6 +318,11 @@ impl StarfallApp {
         if self.exit_after_render {
             return Ok(Flow::Exit);
         }
+        // `elapsed` is the wall time since the previous frame.
+        let dt = context.elapsed.as_secs_f32();
+        if !self.menu.is_open() {
+            self.feel.frame(dt.min(0.1));
+        }
         if context.focus_changed == Some(false)
             && self.interactive
             && self.playing
@@ -323,9 +340,14 @@ impl StarfallApp {
             let viewport = Rect::new(0.0, 0.0, context.size.0 as f32, context.size.1 as f32);
             let scale = context.scale_factor.max(0.5) as f32;
             let action = if self.menu.is_capturing() {
-                // A controls row waits for a key: offer raw presses instead of
-                // UI navigation.
-                self.menu.capture(&context.input.pressed_buttons())?
+                // A controls row waits for a key (or, for analogue rows, a
+                // stick): offer raw presses and axes instead of navigation.
+                let axes = quasar_input::GamepadAxis::ALL
+                    .map(|axis| (axis, context.input.gamepad_axis(axis)));
+                match self.menu.capture(&context.input.pressed_buttons())? {
+                    MenuAction::None => self.menu.capture_axes(&axes)?,
+                    action => action,
+                }
             } else {
                 let input = from_frame_input(context.input, &UiBindings::default());
                 self.menu.update(
@@ -344,6 +366,89 @@ impl StarfallApp {
             }
             return Ok(Flow::Continue);
         }
+        if self.interactive && self.playing && context.input.pressed(Key::Backquote) {
+            self.console = match self.console.take() {
+                Some(_) => None,
+                None => {
+                    let mut console = quasar_ui::console::Console::new();
+                    console.print(
+                        "Developer console. Tab completes; /help lists commands.",
+                        quasar_ui::console::LogKind::Info,
+                    );
+                    Some(console)
+                }
+            };
+            context.input.consume_all();
+            return Ok(Flow::Continue);
+        }
+        if let Some(console) = &mut self.console {
+            let input = from_frame_input(context.input, &UiBindings::default());
+            let state = starfall::console::ConsoleState {
+                volume: self.settings.audio_volume,
+                shake: 1.0,
+                hit_stop: self.feel.hit_stop.enabled(),
+            };
+            let outcome =
+                console.handle(&self.console_commands, &state, &input, &self.text_measure);
+            context.input.consume_all();
+            match outcome {
+                quasar_ui::console::ConsoleOutcome::Close => self.console = None,
+                quasar_ui::console::ConsoleOutcome::Command(matched) => {
+                    use starfall::console::ConsoleCommand;
+                    match starfall::console::interpret(&matched) {
+                        ConsoleCommand::Help => {
+                            for line in self.console_commands.help() {
+                                console.print(line, quasar_ui::console::LogKind::Info);
+                            }
+                        }
+                        ConsoleCommand::Restart => {
+                            console.print("Restarting.", quasar_ui::console::LogKind::Info);
+                            self.restart_session()?;
+                        }
+                        ConsoleCommand::Volume(volume) => {
+                            self.settings.audio_volume = volume;
+                            if let Some(audio) = &self.audio {
+                                let _ = audio.set_master_volume(volume);
+                            }
+                        }
+                        ConsoleCommand::Shake(scale) => self.feel.shake.set_scale(scale),
+                        ConsoleCommand::HitStop(on) => self.feel.hit_stop.set_enabled(on),
+                    }
+                }
+                quasar_ui::console::ConsoleOutcome::None => {}
+            }
+            // Rebuild the overlay for this frame (the console owns its state).
+            if let Some(console) = &self.console {
+                let mut ui = quasar_ui::Ui::new(quasar_ui::Theme::modern());
+                let root = ui.add_root(
+                    Widget::Panel {
+                        layout: PanelLayout::Stack {
+                            direction: StackDirection::Vertical,
+                            gap: 0.0,
+                        },
+                        padding: Edges::all(12.0),
+                        clip: false,
+                        scrollable: false,
+                    },
+                    LayoutItem::fill(),
+                    Layer::Overlay,
+                    false,
+                );
+                ui.set_style(root, Some(quasar_ui::NodeStyle::transparent()))
+                    .map_err(|e| GameError::invalid(e.to_string()))?;
+                console
+                    .build(&mut ui, root, &self.text_measure)
+                    .map_err(|e| GameError::invalid(e.to_string()))?;
+                let viewport = Rect::new(0.0, 0.0, context.size.0 as f32, context.size.1 as f32);
+                let scale = context.scale_factor.max(0.5) as f32;
+                ui.layout(viewport, scale, Edges::ZERO, &self.text_measure);
+                self.console_ui = Some(ui);
+            } else {
+                self.console_ui = None;
+            }
+            return Ok(Flow::Continue);
+        }
+        self.console_ui = None;
         if self.interactive && context.input.pressed(Key::Escape) {
             self.playing = false;
             self.menu.open_pause();
@@ -360,12 +465,18 @@ impl StarfallApp {
         if self.exit_after_render {
             return Ok(Flow::Exit);
         }
-        if self.menu.is_open() {
+        if self.menu.is_open() || self.console.is_some() {
+            return Ok(Flow::Deferred);
+        }
+        // Hit-stop: hold the simulation for a beat (interactive play only,
+        // so headless runs and recordings are unchanged).
+        if self.interactive && self.feel.frozen() {
             return Ok(Flow::Deferred);
         }
         let Some(session) = &mut self.session else {
             return Ok(Flow::Continue);
         };
+        self.feel.record(session.world());
         if session.is_replay() {
             if session.step(GameInput::default())? == StepResult::Exhausted {
                 self.diagnostics
@@ -384,6 +495,9 @@ impl StarfallApp {
             session.step(input)?;
         }
         let events = session.world().events.clone();
+        if self.interactive {
+            self.feel.on_events(&events);
+        }
         self.play_events(&events);
         Ok(Flow::Continue)
     }
@@ -505,10 +619,11 @@ impl StarfallApp {
             }
         }
     }
-    fn render(&mut self, _context: &mut AppContext<'_>) -> Result<(), GameError> {
+    fn render(&mut self, context: &mut AppContext<'_>) -> Result<(), GameError> {
         if self.exit_after_render {
             return Ok(());
         }
+        self.interpolation = context.interpolation as f32;
         let Some(session) = &self.session else {
             return Ok(());
         };
@@ -519,10 +634,13 @@ impl StarfallApp {
         ) else {
             return Ok(());
         };
-        let menu = self.menu.ui();
+        let menu = self.menu.ui().or(self.console_ui.as_ref());
+        // Draw between ticks, with the camera shaken by recent hits.
+        let shown = self.feel.shown(session.world(), self.interpolation);
+        graphics.camera_shake = self.feel.camera_shake();
         let report = surface
             .render(gal, CompletionPolicy::Poll, |gal, target| {
-                graphics.commands(gal, target, session.world(), menu)
+                graphics.commands(gal, target, &shown, menu)
             })
             .map_err(|error| GameError::invalid(format!("render: {error}")))?;
         if let Some(report) = report {

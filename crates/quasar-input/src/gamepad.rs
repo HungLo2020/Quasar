@@ -100,6 +100,19 @@ pub enum GamepadAxis {
     RightTrigger,
 }
 
+impl GamepadAxis {
+    /// Every axis, for example to sample a gamepad's processed axes when
+    /// capturing an analogue rebind.
+    pub const ALL: [Self; 6] = [
+        Self::LeftStickX,
+        Self::LeftStickY,
+        Self::RightStickX,
+        Self::RightStickY,
+        Self::LeftTrigger,
+        Self::RightTrigger,
+    ];
+}
+
 /// Stable per-device identity used for persisted player preferences.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

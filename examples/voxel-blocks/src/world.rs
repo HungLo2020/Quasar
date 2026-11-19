@@ -10,8 +10,8 @@ use quasar_voxel::{
     Volume, codec,
 };
 use quasar_voxel_mesh::{
-    CatalogFaces, CatalogLayers, CatalogModels, CulledInput, CulledModelExtractor, MeshBuffers,
-    RemeshQueue, VertexShade,
+    BevelExtractor, BevelInput, BevelOptions, CatalogFaces, CatalogLayers, CatalogModels,
+    CulledInput, CulledModelExtractor, MeshBuffers, RemeshQueue, VertexShade,
 };
 use quasar_voxel_view::{
     ChunkFrustum, FrustumPolicy, StreamBudget, StreamingPlanner, Viewer, VisibilityGraph,
@@ -199,7 +199,12 @@ fn key(c: IVec3) -> (i32, i32, i32) {
 impl BlockWorld {
     /// `workers` meshing/generation threads (0 = available parallelism).
     pub fn new(seed: u64, view_radius: i32, workers: usize) -> Self {
-        let content = Arc::new(Content::new());
+        Self::with_content(Content::new(), seed, view_radius, workers)
+    }
+
+    /// A world meshed with `content` (for example [`Content::sculpted`]).
+    pub fn with_content(content: Content, seed: u64, view_radius: i32, workers: usize) -> Self {
+        let content = Arc::new(content);
         let mut schema = Schema::new();
         let block = schema.channel("block", StorageKind::Paletted, AIR);
         let orientation = schema.channel("orientation", StorageKind::Paletted, 0u8);
@@ -874,6 +879,32 @@ impl BlockWorld {
 
 fn mesh_chunk(content: &Content, job: &MeshJob) -> MeshBuffers {
     let mut out = MeshBuffers::new();
+    let bevel = |b: u16| {
+        if content.sculpted {
+            content.bevel.get(b as usize).copied().flatten()
+        } else {
+            None
+        }
+    };
+    if content.sculpted {
+        // Stone and ore: chamfered, chipped edges that follow the
+        // neighbourhood; everything else keeps its classic model below.
+        BevelExtractor::new(BevelOptions {
+            radius: 0.1,
+            seed: 0xb10c,
+            ..BevelOptions::default()
+        })
+        .extract(
+            BevelInput {
+                block_light: Some(&job.block_light),
+                sky_light: Some(&job.sky_light),
+                ..BevelInput::new(&job.blocks, &content.opaque)
+            },
+            &content.catalog,
+            bevel,
+            &mut out,
+        );
+    }
     CulledModelExtractor::default().extract(
         CulledInput {
             blocks: &job.blocks,
@@ -889,7 +920,7 @@ fn mesh_chunk(content: &Content, job: &MeshJob) -> MeshBuffers {
         &CatalogFaces(&content.catalog),
         &VertexShade::default(),
         &CatalogLayers(&content.catalog),
-        |_| true,
+        |b| bevel(b).is_none(),
         &mut out,
     );
     out

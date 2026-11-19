@@ -408,6 +408,7 @@ fn surface_suite(submission: SubmissionConfig) {
         inner_angle: 0.5,
         outer_angle: 0.75,
         attenuation: Attenuation::Smooth,
+        cookie: quasar_render_3d::LightCookie::NONE,
     }];
     let vp = Mat4::perspective(1.5, 1., 0.1, 12.).unwrap()
         * Mat4::look_at([2., 0., 4.], [0., 0., 0.], [0., 1., 0.]).unwrap();

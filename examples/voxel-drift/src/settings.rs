@@ -13,6 +13,8 @@ pub struct Settings {
     pub workers: usize,
     pub screenshot: Option<PathBuf>,
     pub autoplay: bool,
+    /// Cel-shaded look: toon bands and ink edges.
+    pub toon: bool,
     pub benchmark: bool,
     pub benchmark_frames: usize,
     pub benchmark_file: Option<PathBuf>,
@@ -30,6 +32,7 @@ impl Default for Settings {
             workers: 0,
             screenshot: None,
             autoplay: false,
+            toon: false,
             benchmark: false,
             benchmark_frames: 240,
             benchmark_file: None,
@@ -68,6 +71,7 @@ impl Settings {
                     std::process::exit(0);
                 }
                 "--headless" => settings.headless = true,
+                "--toon" => settings.toon = true,
                 "--autoplay" => settings.autoplay = true,
                 "--benchmark" => settings.benchmark = true,
                 "--ticks" => settings.ticks = number(&mut arguments, "--ticks")?,
@@ -121,6 +125,7 @@ OPTIONS:
     --autoplay                 Drive the scripted pilot (dig, fill, build, cut the ship)
     --width N --height N       Window or screenshot dimensions
     --screenshot PATH          Write a PNG after the run
+    --toon                     Cel-shaded look (toon bands, ink edges)
     --benchmark                Native: collect frame data, then exit
     --benchmark-frames N       Frames to keep before exiting (default 240)
     --benchmark-file PATH      Write machine-readable JSON (native and headless)

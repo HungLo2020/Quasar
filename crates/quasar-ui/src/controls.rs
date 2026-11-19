@@ -11,6 +11,14 @@
 //! Select) cancels a capture.
 //!
 //! Axis bindings (`A / D`) capture two presses: negative, then positive.
+//! Analogue rows (a [`Binding::GamepadAxis`] such as the left stick) ignore
+//! buttons and capture a stick or trigger deflection instead: feed
+//! [`ControlsScreen::capture_axes`] the gamepad's processed axes (for
+//! example `GamepadAxis::ALL.map(|a| (a, state.processed_axis(a)))`). The
+//! player pushes the control in its positive direction; pushing the other
+//! way binds it inverted. The reset button's layout is set with
+//! [`ControlsScreen::with_reset_item`] and its node is
+//! [`ControlsScreen::reset_node`], for styling it like surrounding menus.
 //! With the `controls-file` feature, [`save_bindings`] and [`load_bindings`]
 //! persist the result as TOML or JSON, merging saved files over the current
 //! defaults so new actions added by an update get their default bindings.
@@ -19,8 +27,15 @@ use crate::{
     StackDirection, TextStyle, Ui, UiEvent, UiResult, UiText, Widget,
 };
 use quasar_input::{
-    Binding, BindingConflict, Bindings, Button, DeviceFamily, GamepadButton, InputDevice, Key,
+    Binding, BindingConflict, Bindings, Button, DeviceFamily, GamepadAxis, GamepadButton,
+    InputDevice, Key,
 };
+
+/// Deflection that counts as an analogue capture.
+pub const AXIS_CAPTURE_THRESHOLD: f32 = 0.6;
+/// Every axis must first rest below this before a capture can trigger, so a
+/// stick still held from menu navigation is not captured.
+const AXIS_REST: f32 = 0.3;
 
 /// One listed action.
 #[derive(Clone, Debug, PartialEq)]
@@ -62,6 +77,16 @@ pub enum ControlsOutcome {
 struct Capture {
     row: usize,
     first: Option<Button>,
+    /// For analogue rows: axes have returned to rest since the capture began.
+    armed: bool,
+}
+
+/// The kind of binding a row edits on the current device.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RowKind {
+    Button,
+    ButtonAxis,
+    Analog { scale: f32 },
 }
 
 pub struct ControlsScreen {
@@ -73,6 +98,8 @@ pub struct ControlsScreen {
     rows: Vec<NodeId>,
     notice: Option<NodeId>,
     reset: Option<ActionId>,
+    reset_item: LayoutItem,
+    reset_node: Option<NodeId>,
     capture: Option<Capture>,
 }
 
@@ -89,8 +116,27 @@ impl ControlsScreen {
             rows: Vec::new(),
             notice: None,
             reset: None,
+            reset_item: LayoutItem::auto(),
+            reset_node: None,
             capture: None,
         }
+    }
+
+    /// Lays out the reset button with `item` (for example
+    /// `LayoutItem::size(Length::Fill, Length::fixed(40.0))` to match
+    /// full-width menu buttons). Call before [`Self::build`].
+    pub fn with_reset_item(mut self, item: LayoutItem) -> Self {
+        self.reset_item = item;
+        self
+    }
+    /// The reset button's node after [`Self::build`], for
+    /// [`Ui::set_style`] or [`Ui::set_colors`].
+    pub fn reset_node(&self) -> Option<NodeId> {
+        self.reset_node
+    }
+    /// Row nodes in entry order after [`Self::build`].
+    pub fn row_nodes(&self) -> &[NodeId] {
+        &self.rows
     }
 
     pub fn bindings(&self) -> &Bindings {
@@ -149,14 +195,14 @@ impl ControlsScreen {
             },
             LayoutItem::size(Length::Fill, Length::Auto),
         )?);
-        ui.add_child(
+        self.reset_node = Some(ui.add_child(
             panel,
             Widget::Button {
                 text: UiText::keyed("controls.reset", "Reset to defaults"),
                 action: Some(reset),
             },
-            LayoutItem::auto(),
-        )?;
+            self.reset_item,
+        )?);
         self.reset = Some(reset);
         self.refresh(ui)?;
         Ok(panel)
@@ -267,7 +313,11 @@ impl ControlsScreen {
                 let Some(row) = self.rows.iter().position(|r| r == id) else {
                     return Ok(ControlsOutcome::None);
                 };
-                self.capture = Some(Capture { row, first: None });
+                self.capture = Some(Capture {
+                    row,
+                    first: None,
+                    armed: false,
+                });
                 self.refresh(ui)?;
                 Ok(ControlsOutcome::Capturing {
                     action: self.entries[row].action.clone(),
@@ -311,35 +361,111 @@ impl ControlsScreen {
             return Ok(ControlsOutcome::None);
         };
         let action = self.entries[capture.row].action.clone();
-        let existing_axis = self
-            .bindings
-            .actions
-            .get(&action)
-            .into_iter()
-            .flatten()
-            .find(|b| b.device() == Some(self.device))
-            .is_some_and(|b| matches!(b, Binding::Axis { .. }));
-        let binding = match (existing_axis, capture.first) {
-            (true, None) => {
+        let binding = match (self.row_kind(&action), capture.first) {
+            // Analogue rows take a stick deflection (see `capture_axes`).
+            (RowKind::Analog { .. }, _) => return Ok(ControlsOutcome::None),
+            (RowKind::ButtonAxis, None) => {
                 self.capture = Some(Capture {
-                    row: capture.row,
                     first: Some(button),
+                    ..capture
                 });
                 return Ok(ControlsOutcome::CapturingSecond { action });
             }
-            (true, Some(negative)) if negative != button => Binding::Axis {
+            (RowKind::ButtonAxis, Some(negative)) if negative != button => Binding::Axis {
                 negative,
                 positive: button,
             },
-            (true, Some(_)) => return Ok(ControlsOutcome::None),
-            (false, _) => Binding::Button { button },
+            (RowKind::ButtonAxis, Some(_)) => return Ok(ControlsOutcome::None),
+            (RowKind::Button, _) => Binding::Button { button },
         };
+        self.finish(ui, action, binding)
+    }
+
+    /// Offers this frame's processed gamepad axes (stick and trigger values)
+    /// to an active capture of an analogue row. The strongest deflection
+    /// past [`AXIS_CAPTURE_THRESHOLD`] is bound, inverted when pushed in the
+    /// negative direction. Other rows ignore axes.
+    pub fn capture_axes(
+        &mut self,
+        ui: &mut Ui,
+        axes: &[(GamepadAxis, f32)],
+    ) -> UiResult<ControlsOutcome> {
+        let Some(capture) = self.capture.clone() else {
+            return Ok(ControlsOutcome::None);
+        };
+        if self.device == InputDevice::KeyboardMouse {
+            return Ok(ControlsOutcome::None);
+        }
+        let action = self.entries[capture.row].action.clone();
+        let RowKind::Analog { scale } = self.row_kind(&action) else {
+            return Ok(ControlsOutcome::None);
+        };
+        if !capture.armed {
+            if axes
+                .iter()
+                .all(|(_, v)| !v.is_finite() || v.abs() < AXIS_REST)
+            {
+                self.capture = Some(Capture {
+                    armed: true,
+                    ..capture
+                });
+            }
+            return Ok(ControlsOutcome::None);
+        }
+        let Some(&(axis, value)) = axes
+            .iter()
+            .filter(|(_, v)| v.is_finite() && v.abs() >= AXIS_CAPTURE_THRESHOLD)
+            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+        else {
+            return Ok(ControlsOutcome::None);
+        };
+        let magnitude = if scale.abs() > 0.0 { scale.abs() } else { 1.0 };
+        let binding = Binding::GamepadAxis {
+            axis,
+            scale: magnitude.copysign(value),
+        };
+        self.finish(ui, action, binding)
+    }
+
+    fn finish(
+        &mut self,
+        ui: &mut Ui,
+        action: String,
+        binding: Binding,
+    ) -> UiResult<ControlsOutcome> {
         self.bindings
             .rebind(&action, self.device, 0, binding.clone());
         self.capture = None;
         ui.finish_rebind(binding.display_name(self.family));
         self.refresh(ui)?;
         Ok(ControlsOutcome::Rebound { action, binding })
+    }
+
+    /// What a capture on `action` edits for the current device: its first
+    /// binding there decides (analogue axis, two-button axis or button).
+    fn row_kind(&self, action: &str) -> RowKind {
+        match self
+            .bindings
+            .actions
+            .get(action)
+            .into_iter()
+            .flatten()
+            .find(|b| b.device() == Some(self.device))
+        {
+            Some(Binding::GamepadAxis { scale, .. }) => RowKind::Analog { scale: *scale },
+            Some(Binding::Axis { .. }) => RowKind::ButtonAxis,
+            _ => RowKind::Button,
+        }
+    }
+
+    /// Whether the active capture wants an analogue input.
+    pub fn wants_axis(&self) -> bool {
+        self.capture.as_ref().is_some_and(|c| {
+            matches!(
+                self.row_kind(&self.entries[c.row].action),
+                RowKind::Analog { .. }
+            )
+        })
     }
 }
 

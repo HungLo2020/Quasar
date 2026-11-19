@@ -278,3 +278,70 @@ fn face_policies_and_mirrored_transforms_match_authored_materials() {
 
     gal.wait().unwrap();
 }
+
+#[test]
+#[ignore = "requires GPU"]
+fn emissive_maps_glow_per_texel() {
+    let gal = gal();
+    let mut data = model([0, 0, 0, 255], true);
+    // A dark material whose emissive map lights only the left half red.
+    // (The map shares the base texture's sampler, so keep each half two
+    // texels wide and sample inside it.)
+    data.images.push(ModelImage {
+        width: 4,
+        height: 1,
+        rgba: [
+            [255, 0, 0, 255],
+            [255, 0, 0, 255],
+            [0, 0, 0, 255],
+            [0, 0, 0, 255],
+        ]
+        .concat(),
+    });
+    data.textures.push(ModelTexture {
+        image: 1,
+        sampler: ModelSampler {
+            mag: TextureFilter::Nearest,
+            min: TextureFilter::Nearest,
+            mip: None,
+            ..ModelSampler::default()
+        },
+    });
+    data.materials[0].emissive = [1., 1., 1.];
+    data.materials[0].emissive_texture = Some(1);
+    let uploaded = UploadedModel::upload(&gal, &data, ModelUploadOptions::default()).unwrap();
+    let mut renderer = SurfaceRenderState3D::new(&gal, 0, 0).unwrap();
+    uploaded.bind_samplers(&gal, &mut renderer).unwrap();
+    let target = OffscreenTarget::new(&gal, 64, 64).unwrap();
+    let image = target
+        .render(&gal, |gal, target| {
+            Ok(vec![
+                renderer
+                    .prepare(
+                        gal,
+                        target,
+                        camera(),
+                        Lighting::default(),
+                        &uploaded.draws(Mat4::IDENTITY),
+                        None,
+                        PassOptions::default(),
+                    )?
+                    .commands,
+            ])
+        })
+        .unwrap()
+        .rgba;
+    let at = |x: usize| -> [u8; 4] {
+        image[(32 * 64 + x) * 4..(32 * 64 + x) * 4 + 4]
+            .try_into()
+            .unwrap()
+    };
+    assert_eq!(at(16), [255, 0, 0, 255], "glowing texels");
+    assert_eq!(at(48), [0, 0, 0, 255], "dark texels");
+    // Emissive maps must share the base texture's UVs.
+    let mut bad = data.clone();
+    bad.materials[0].emissive_uv.scale = [2., 2.];
+    assert!(UploadedModel::upload(&gal, &bad, ModelUploadOptions::default()).is_err());
+    renderer.release(&gal).unwrap();
+    gal.wait().unwrap();
+}

@@ -450,3 +450,39 @@ fn sound_tables_validate_ranges_and_cue_references() {
     }
     assert!(bank.for_event(Restart).is_none());
 }
+
+#[test]
+fn feel_blends_between_ticks_and_reacts_to_hits() {
+    use starfall::feel::Feel;
+    use starfall::world::GameEvent;
+    let mut world = GameWorld::new(level(), GameRules::default()).unwrap();
+    let mut feel = Feel::new();
+    feel.record(&world);
+    let before = world.player;
+    world.update(GameInput {
+        forward: 1.0,
+        ..GameInput::default()
+    });
+    let after = world.player;
+    assert_ne!(before, after);
+    let half = feel.shown(&world, 0.5).player;
+    assert!((half.x - (before.x + after.x) * 0.5).abs() < 1e-5);
+    assert_eq!(feel.shown(&world, 1.0).player, after);
+    // The simulated world is untouched.
+    assert_eq!(world.player, after);
+    // Damage freezes briefly and shakes the camera.
+    assert_eq!(feel.camera_shake(), [0.0; 3]);
+    feel.on_events(&[GameEvent::Damage]);
+    assert!(feel.frozen());
+    feel.frame(1.0 / 60.0);
+    assert_ne!(feel.camera_shake(), [0.0; 3]);
+    feel.frame(0.2);
+    assert!(!feel.frozen());
+    feel.on_events(&[GameEvent::Restart]);
+    assert_eq!(feel.camera_shake(), [0.0; 3]);
+    assert_eq!(
+        feel.shown(&world, 0.5).player,
+        after,
+        "restart forgets the snapshot"
+    );
+}

@@ -170,6 +170,34 @@ impl<T: ContentRecord> ContentTable<T> {
     /// Parses and validates `source`. Cross-table references are checked by
     /// [`ContentRegistry`] (or [`Self::check_references`]).
     pub fn parse(name: &str, source: &str, format: ContentFormat) -> Result<Self, ContentErrors> {
+        let outcome = Self::parse_outcome(name, source, format);
+        match outcome.table {
+            Some(table) => Ok(table),
+            None => Err(ContentErrors(outcome.errors)),
+        }
+    }
+
+    /// Parses as far as possible: even when some records fail, the ids and
+    /// references of the records that did deserialise are kept so the
+    /// registry can report dangling references in the same pass.
+    fn parse_outcome(name: &str, source: &str, format: ContentFormat) -> ParseOutcome<T> {
+        let document_failed = |errors: ContentErrors| ParseOutcome {
+            table: None,
+            ids: None,
+            references: Vec::new(),
+            errors: errors.0,
+        };
+        match Self::parse_records(name, source, format) {
+            Ok(outcome) => outcome,
+            Err(errors) => document_failed(errors),
+        }
+    }
+
+    fn parse_records(
+        name: &str,
+        source: &str,
+        format: ContentFormat,
+    ) -> Result<ParseOutcome<T>, ContentErrors> {
         let fail = |message: String| {
             ContentErrors(vec![ContentError {
                 table: name.to_owned(),
@@ -216,11 +244,15 @@ impl<T: ContentRecord> ContentTable<T> {
         let mut records = Vec::with_capacity(raw.len());
         let mut index = BTreeMap::new();
         let mut references = Vec::new();
+        // Ids of every record, including ones that failed to deserialise
+        // but carry a string id, so they are not reported as dangling.
+        let mut ids = BTreeSet::new();
         for (position, value) in raw.into_iter().enumerate() {
-            let label = value
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map_or_else(|| format!("#{position}"), str::to_owned);
+            let raw_id = value.get("id").and_then(|v| v.as_str()).map(str::to_owned);
+            if let Some(id) = &raw_id {
+                ids.insert(id.clone());
+            }
+            let label = raw_id.unwrap_or_else(|| format!("#{position}"));
             let record: T = match serde_json::from_value(value) {
                 Ok(record) => record,
                 Err(e) => {
@@ -249,33 +281,68 @@ impl<T: ContentRecord> ContentTable<T> {
             for (field, table, target) in validator.references {
                 references.push((id.clone(), field, table, target));
             }
+            ids.insert(id);
             records.push(record);
         }
         if errors.is_empty() {
-            Ok(Self {
-                name: name.to_owned(),
-                records,
-                index,
-                references,
+            Ok(ParseOutcome {
+                ids: Some(ids),
+                references: references.clone(),
+                table: Some(Self {
+                    name: name.to_owned(),
+                    records,
+                    index,
+                    references,
+                }),
+                errors,
             })
         } else {
-            Err(ContentErrors(errors))
+            Ok(ParseOutcome {
+                table: None,
+                ids: Some(ids),
+                references,
+                errors,
+            })
         }
     }
 
     /// Dangling references, given every table's id set.
     pub fn check_references(&self, ids: &BTreeMap<String, BTreeSet<String>>) -> Vec<ContentError> {
-        self.references
-            .iter()
-            .filter(|(_, _, table, target)| !ids.get(table).is_some_and(|set| set.contains(target)))
-            .map(|(record, field, table, target)| ContentError {
-                table: self.name.clone(),
-                record: Some(record.clone()),
-                field: Some(field.clone()),
-                message: format!("unknown {table} id `{target}`"),
-            })
-            .collect()
+        dangling(&self.name, &self.references, ids, &BTreeSet::new())
     }
+}
+
+/// `(record, field, table, target)` reference rows.
+type References = Vec<(String, String, String, String)>;
+
+struct ParseOutcome<T> {
+    table: Option<ContentTable<T>>,
+    /// `None` when the document itself failed to parse.
+    ids: Option<BTreeSet<String>>,
+    references: References,
+    errors: Vec<ContentError>,
+}
+
+/// References whose target id is missing. Targets in `unknown` tables
+/// (which failed to parse, so their ids are not known) are skipped.
+fn dangling(
+    name: &str,
+    references: &References,
+    ids: &BTreeMap<String, BTreeSet<String>>,
+    unknown: &BTreeSet<String>,
+) -> Vec<ContentError> {
+    references
+        .iter()
+        .filter(|(_, _, table, target)| {
+            !unknown.contains(table) && !ids.get(table).is_some_and(|set| set.contains(target))
+        })
+        .map(|(record, field, table, target)| ContentError {
+            table: name.to_owned(),
+            record: Some(record.clone()),
+            field: Some(field.clone()),
+            message: format!("unknown {table} id `{target}`"),
+        })
+        .collect()
 }
 
 impl<T> ContentTable<T> {
@@ -304,10 +371,21 @@ impl<T> ContentTable<T> {
 }
 
 type Parsed = Arc<dyn Any + Send + Sync>;
-type ParseFn = dyn Fn(&str, ContentFormat) -> Result<(Parsed, BTreeSet<String>, RefCheck), ContentErrors>
+type ParseFn = dyn Fn(&str, ContentFormat) -> Result<(Parsed, BTreeSet<String>, RefCheck), Failed>
     + Send
     + Sync;
-type RefCheck = Arc<dyn Fn(&BTreeMap<String, BTreeSet<String>>) -> Vec<ContentError> + Send + Sync>;
+
+/// A table that failed: its errors, plus (when the document parsed) the ids
+/// and reference rows of the records that did.
+struct Failed {
+    errors: Vec<ContentError>,
+    partial: Option<(BTreeSet<String>, References)>,
+}
+type RefCheck = Arc<
+    dyn Fn(&BTreeMap<String, BTreeSet<String>>, &BTreeSet<String>) -> Vec<ContentError>
+        + Send
+        + Sync,
+>;
 
 #[derive(Clone)]
 struct Entry {
@@ -367,11 +445,19 @@ impl ContentRegistry {
     pub fn register<T: ContentRecord>(&mut self, name: &str) -> &mut Self {
         let table = name.to_owned();
         let parse: Arc<ParseFn> = Arc::new(move |source, format| {
-            let parsed = ContentTable::<T>::parse(&table, source, format)?;
+            let outcome = ContentTable::<T>::parse_outcome(&table, source, format);
+            let Some(parsed) = outcome.table else {
+                return Err(Failed {
+                    errors: outcome.errors,
+                    partial: outcome.ids.map(|ids| (ids, outcome.references)),
+                });
+            };
             let ids = parsed.ids().map(str::to_owned).collect();
             let parsed = Arc::new(parsed);
             let checker = parsed.clone();
-            let references: RefCheck = Arc::new(move |ids| checker.check_references(ids));
+            let references: RefCheck = Arc::new(move |ids, unknown| {
+                dangling(&checker.name, &checker.references, ids, unknown)
+            });
             Ok((parsed as Parsed, ids, references))
         });
         self.parsers.insert(name.to_owned(), parse);
@@ -389,6 +475,9 @@ impl ContentRegistry {
         let base = self.snapshot();
         let mut tables = base.tables.clone();
         let mut errors = Vec::new();
+        // Failed tables: their partial ids/references, or `None` when the
+        // document did not parse (its ids are unknown).
+        let mut failed: BTreeMap<String, Option<(BTreeSet<String>, References)>> = BTreeMap::new();
         for (name, source, format) in sources {
             let Some(parse) = self.parsers.get(*name) else {
                 errors.push(ContentError {
@@ -410,16 +499,36 @@ impl ContentRegistry {
                         },
                     );
                 }
-                Err(mut e) => errors.append(&mut e.0),
+                Err(mut e) => {
+                    errors.append(&mut e.errors);
+                    tables.remove(*name);
+                    failed.insert((*name).to_owned(), e.partial);
+                }
             }
         }
-        if errors.is_empty() {
-            let ids: BTreeMap<String, BTreeSet<String>> = tables
-                .iter()
-                .map(|(name, entry)| (name.clone(), entry.ids.clone()))
-                .collect();
-            for entry in tables.values() {
-                errors.extend((entry.references)(&ids));
+        // Check references even when some records failed, so one pass
+        // reports bad fields and dangling ids together.
+        let mut ids: BTreeMap<String, BTreeSet<String>> = tables
+            .iter()
+            .map(|(name, entry)| (name.clone(), entry.ids.clone()))
+            .collect();
+        let mut unknown = BTreeSet::new();
+        for (name, partial) in &failed {
+            match partial {
+                Some((partial_ids, _)) => {
+                    ids.insert(name.clone(), partial_ids.clone());
+                }
+                None => {
+                    unknown.insert(name.clone());
+                }
+            }
+        }
+        for entry in tables.values() {
+            errors.extend((entry.references)(&ids, &unknown));
+        }
+        for (name, partial) in &failed {
+            if let Some((_, references)) = partial {
+                errors.extend(dangling(name, references, &ids, &unknown));
             }
         }
         if !errors.is_empty() {

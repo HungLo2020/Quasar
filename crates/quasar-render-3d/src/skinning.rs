@@ -584,6 +584,26 @@ fn read_buffer_vertices(
 pub struct SkinningPass {
     pipeline: ComputePipeline,
     layout: BindGroupLayout,
+    /// Reused, persistently mapped upload chunks for palettes. Chunks return
+    /// to the belt once the command buffer that copies from them is done.
+    belt: vulkanic_gal::util::StagingBelt,
+    /// Reused CPU staging for the bytes copied into the belt.
+    scratch: Vec<u8>,
+}
+
+/// Default staging chunk: a 1,000-instance crowd of 32 joints fits twice.
+const PALETTE_CHUNK: u64 = 4 << 20;
+
+/// Writes `matrices` as native-endian f32 columns into `out`
+/// (64 bytes each) without per-float iterator overhead.
+fn write_matrices(out: &mut [u8], matrices: &[Mat4]) {
+    for (dst, matrix) in out.chunks_exact_mut(64).zip(matrices) {
+        for (column, values) in dst.chunks_exact_mut(16).zip(&matrix.0) {
+            for (bytes, value) in column.chunks_exact_mut(4).zip(values) {
+                bytes.copy_from_slice(&value.to_ne_bytes());
+            }
+        }
+    }
 }
 
 impl SkinningPass {
@@ -641,7 +661,12 @@ impl SkinningPass {
                     cache: None,
                 })
         })?;
-        Ok(Self { pipeline, layout })
+        Ok(Self {
+            pipeline,
+            layout,
+            belt: vulkanic_gal::util::StagingBelt::new(gpu.device.clone(), PALETTE_CHUNK),
+            scratch: Vec::new(),
+        })
     }
 
     /// Uploads `palette` (one matrix per joint) and records the dispatch
@@ -661,9 +686,16 @@ impl SkinningPass {
             .vertices
             .clone()
             .ok_or_else(|| error("released skinned mesh"))?;
-        let data = bytes(palette.iter().flat_map(|m| m.0.into_iter().flatten()));
-        let upload = quasar_frame::staging_buffer(gpu, "skinning palette upload", &data);
-        encoder.copy_buffer_to_buffer(&upload, 0, &mesh.palette, 0, data.len() as u64);
+        let size = palette.len() as u64 * 64;
+        if let Some(size) = BufferSize::new(size) {
+            self.scratch.clear();
+            self.scratch.resize(size.get() as usize, 0);
+            write_matrices(&mut self.scratch, palette);
+            self.belt
+                .write_buffer(encoder, &mesh.palette, 0, size)
+                .copy_from_slice(&self.scratch);
+        }
+        self.belt.finish_and_recall_on_submit(encoder);
         if mesh.group.is_none() {
             mesh.group = Some(gpu.device.create_bind_group(&BindGroupDescriptor {
                 label: Some("skinning"),
@@ -724,23 +756,31 @@ impl SkinningPass {
         if palettes.is_empty() {
             return Ok(());
         }
-        let mut data = Vec::with_capacity(16 + palettes.len() * crowd.joint_count as usize * 64);
-        for value in [
+        let stride = crowd.joint_count as usize * 64;
+        let total = 16 + palettes.len() * stride;
+        self.scratch.clear();
+        self.scratch.resize(total, 0);
+        for (bytes, value) in self.scratch[..16].chunks_exact_mut(4).zip([
             crowd.vertex_count,
             crowd.joint_count,
             palettes.len() as u32,
-            0,
-        ] {
-            data.extend(value.to_ne_bytes());
+            0u32,
+        ]) {
+            bytes.copy_from_slice(&value.to_ne_bytes());
         }
-        for palette in palettes {
-            data.extend(bytes(
-                palette.iter().flat_map(|m| m.0.into_iter().flatten()),
-            ));
+        for (dst, palette) in self.scratch[16..].chunks_exact_mut(stride).zip(palettes) {
+            write_matrices(dst, palette);
         }
-        let upload = quasar_frame::staging_buffer(gpu, "crowd palette upload", &data);
-        encoder.copy_buffer_to_buffer(&upload, 0, &crowd.params, 0, 16);
-        encoder.copy_buffer_to_buffer(&upload, 16, &crowd.palette, 0, data.len() as u64 - 16);
+        let header = BufferSize::new(16).expect("non-zero");
+        self.belt
+            .write_buffer(encoder, &crowd.params, 0, header)
+            .copy_from_slice(&self.scratch[..16]);
+        if let Some(size) = BufferSize::new((total - 16) as u64) {
+            self.belt
+                .write_buffer(encoder, &crowd.palette, 0, size)
+                .copy_from_slice(&self.scratch[16..]);
+        }
+        self.belt.finish_and_recall_on_submit(encoder);
         if crowd.group.is_none() {
             crowd.group = Some(gpu.device.create_bind_group(&BindGroupDescriptor {
                 label: Some("skinned crowd"),

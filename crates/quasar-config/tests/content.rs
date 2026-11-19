@@ -169,3 +169,62 @@ fn file_backed_tables_reload_when_their_paths_change() {
         "broken edits keep content"
     );
 }
+
+#[test]
+fn field_errors_and_dangling_references_are_reported_together() {
+    let registry = registry();
+    // One bad field (damage 0) and one dangling reference (ammo "rocket")
+    // in different records, plus a reference from a valid record: all in one
+    // pass.
+    let weapons = "[[weapons]]\nid = \"laser\"\ndamage = 0\nrate = 6.0\nammo = \"cell\"\n\
+                   [[weapons]]\nid = \"launcher\"\ndamage = 9\nrate = 1.0\nammo = \"rocket\"\n";
+    let errors = registry
+        .load_all(&[
+            ("ammo", AMMO, ContentFormat::Toml),
+            ("weapons", weapons, ContentFormat::Toml),
+        ])
+        .unwrap_err();
+    let messages: Vec<String> = errors.0.iter().map(|e| e.to_string()).collect();
+    assert_eq!(errors.0.len(), 2, "{messages:?}");
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("laser") && m.contains("damage"))
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("launcher") && m.contains("rocket"))
+    );
+
+    // A record that fails to deserialise still counts as an id, so a
+    // reference to it is not reported as dangling on top of its own error.
+    let ammo = "[[ammo]]\nid = \"cell\"\nstack = \"many\"\n";
+    let errors = registry
+        .load_all(&[
+            ("ammo", ammo, ContentFormat::Toml),
+            ("weapons", WEAPONS, ContentFormat::Toml),
+        ])
+        .unwrap_err();
+    assert_eq!(errors.0.len(), 1, "{:?}", errors.0);
+    assert_eq!(errors.0[0].table, "ammo");
+
+    // A table whose document does not parse has unknown ids: references to
+    // it are not guessed at.
+    let errors = registry
+        .load_all(&[
+            ("ammo", "[[ammo]\nbroken", ContentFormat::Toml),
+            ("weapons", weapons, ContentFormat::Toml),
+        ])
+        .unwrap_err();
+    assert_eq!(errors.0.len(), 2, "{:?}", errors.0);
+    assert!(errors.0.iter().any(|e| e.table == "ammo"));
+    assert!(
+        errors
+            .0
+            .iter()
+            .any(|e| e.record.as_deref() == Some("laser"))
+    );
+    // Nothing was committed.
+    assert_eq!(registry.snapshot().revision(), 0);
+}

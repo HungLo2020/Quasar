@@ -230,6 +230,7 @@ impl LitRenderState3D {
                 base: &materials[index].base,
                 lit: Some(&materials[index]),
                 normal: None,
+                emissive: None,
                 receives_shadows: false,
                 blend: Some(draws[index].blend),
             })
@@ -324,6 +325,7 @@ impl SurfaceRenderState3D {
                 base: &materials[index].lit.base,
                 lit: Some(&materials[index].lit),
                 normal: materials[index].normal_map.as_ref(),
+                emissive: materials[index].emissive_map.as_ref(),
                 receives_shadows: materials[index].receives_shadows,
                 blend: Some(draws[index].blend),
             })

@@ -265,12 +265,27 @@ impl GltfLoader {
             let pbr = material.pbr_metallic_roughness();
             let base = pbr.base_color_texture();
             let normal = material.normal_texture();
+            let emissive = material.emissive_texture();
             if base.as_ref().is_some_and(|t| t.tex_coord() != 0)
                 || normal.as_ref().is_some_and(|t| t.tex_coord() != 0)
+                || emissive.as_ref().is_some_and(|t| t.tex_coord() != 0)
             {
                 return Err(error("only TEXCOORD_0 is supported"));
             }
             let base_uv = if let Some(t) = base.as_ref().and_then(|t| t.texture_transform()) {
+                if t.tex_coord().is_some_and(|set| set != 0) {
+                    return Err(error("texture transform requires TEXCOORD_0"));
+                }
+                UvTransform {
+                    offset: t.offset(),
+                    scale: t.scale(),
+                    rotation: t.rotation(),
+                }
+            } else {
+                UvTransform::default()
+            };
+            let emissive_uv = if let Some(t) = emissive.as_ref().and_then(|t| t.texture_transform())
+            {
                 if t.tex_coord().is_some_and(|set| set != 0) {
                     return Err(error("texture transform requires TEXCOORD_0"));
                 }
@@ -310,7 +325,8 @@ impl GltfLoader {
                 metallic_roughness_texture: pbr
                     .metallic_roughness_texture()
                     .map(|t| t.texture().index()),
-                emissive_texture: material.emissive_texture().map(|t| t.texture().index()),
+                emissive_texture: emissive.map(|t| t.texture().index()),
+                emissive_uv,
                 occlusion_texture: material.occlusion_texture().map(|t| t.texture().index()),
             };
             m.validate()?;

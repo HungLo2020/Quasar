@@ -234,6 +234,8 @@ impl UvTransform {
 pub struct ModelMaterial {
     pub base_uv: UvTransform,
     pub normal_uv: UvTransform,
+    /// UV transform of `emissive_texture` (KHR_texture_transform).
+    pub emissive_uv: UvTransform,
     pub metallic_roughness_texture: Option<usize>,
     pub emissive_texture: Option<usize>,
     pub occlusion_texture: Option<usize>,
@@ -267,7 +269,13 @@ impl ModelMaterial {
                 .chain(&self.base_uv.scale)
                 .chain(&self.normal_uv.offset)
                 .chain(&self.normal_uv.scale)
-                .chain([&self.base_uv.rotation, &self.normal_uv.rotation])
+                .chain(&self.emissive_uv.offset)
+                .chain(&self.emissive_uv.scale)
+                .chain([
+                    &self.base_uv.rotation,
+                    &self.normal_uv.rotation,
+                    &self.emissive_uv.rotation,
+                ])
                 .all(|v| v.is_finite())
         {
             return Err(AssetError::new(
@@ -283,6 +291,7 @@ impl Default for ModelMaterial {
         Self {
             base_uv: UvTransform::default(),
             normal_uv: UvTransform::default(),
+            emissive_uv: UvTransform::default(),
             metallic_roughness_texture: None,
             emissive_texture: None,
             occlusion_texture: None,

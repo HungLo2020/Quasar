@@ -177,18 +177,22 @@ impl UploadedModel {
                     "choose ClassicApproximation explicitly to render PBR model materials",
                 ));
             }
-            if m.metallic_roughness_texture.is_some()
-                || m.emissive_texture.is_some()
-                || m.occlusion_texture.is_some()
-            {
+            if m.metallic_roughness_texture.is_some() || m.occlusion_texture.is_some() {
                 return Err(error(
-                    "classic materials do not support PBR/emissive/occlusion texture maps",
+                    "classic materials do not support PBR metal-roughness/occlusion texture maps",
                 ));
             }
             if m.normal_texture.is_some() && m.normal_uv != m.base_uv {
                 return Err(error("base and normal texture UV transforms must agree"));
             }
-            for t in [m.base_texture, m.normal_texture].into_iter().flatten() {
+            // Emissive maps share the base texture's UVs.
+            if m.emissive_texture.is_some() && m.emissive_uv != m.base_uv {
+                return Err(error("base and emissive texture UV transforms must agree"));
+            }
+            for t in [m.base_texture, m.normal_texture, m.emissive_texture]
+                .into_iter()
+                .flatten()
+            {
                 if t >= model.textures.len() || model.textures[t].image >= model.images.len() {
                     return Err(error("invalid model texture/image index"));
                 }
@@ -215,7 +219,12 @@ impl UploadedModel {
                 if !used.contains(&index) {
                     continue;
                 }
-                for (t, normal) in [(m.base_texture, false), (m.normal_texture, true)] {
+                // Emissive maps are colour data: uploaded like base textures.
+                for (t, normal) in [
+                    (m.base_texture, false),
+                    (m.normal_texture, true),
+                    (m.emissive_texture, false),
+                ] {
                     if let Some(t) = t
                         && !images.contains_key(&(t, normal))
                     {
@@ -296,6 +305,11 @@ impl UploadedModel {
                     strength: m.normal_scale,
                     ..NormalMap::new(result.textures[images[&(t, true)]].view())
                 });
+                // Colour textures upload as UNORM and decode in the shader,
+                // like the base texture (`texture_color_space` sRGB).
+                material.emissive_map = m
+                    .emissive_texture
+                    .map(|t| EmissiveMap::new(result.textures[images[&(t, false)]].view()));
                 let vertices: Vec<_> = p
                     .vertices
                     .iter()

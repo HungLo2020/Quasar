@@ -126,12 +126,18 @@ impl Graphics {
             cell_size: 4.,
             dims: [16, 4, 16],
         })?;
-        // Night haze in the clear colour, so the far walls fade like the sky.
-        world.set_fog(Some(Fog {
-            color: CLEAR.map(srgb_to_linear),
-            start: 12.,
-            end: 44.,
-        }))?;
+        // Night haze in the clear colour, so the far walls fade like the sky,
+        // plus ground mist pooled below knee height that the flashlight and
+        // lanterns light up (height fog with light scattering).
+        world.set_fog(Some(
+            Fog::distance(CLEAR.map(srgb_to_linear), 12., 44.)
+                .with_height(HeightFog {
+                    base: 0.,
+                    density: 0.06,
+                    falloff: 1.4,
+                })
+                .with_scattering(1.0),
+        ))?;
         let weapon = SurfaceRenderState3D::with_submission(gal, 8, 2, submission)?;
         let hud = RenderState2D::new(gal)?;
         let (vertices, indices) = geometry::cube();
@@ -306,6 +312,8 @@ impl Graphics {
                 inner_angle: 0.20,
                 outer_angle: 0.48,
                 attenuation: Attenuation::Smooth,
+                // A reflector torch: faint rings across the beam.
+                cookie: LightCookie::new(CookiePattern::Rings, 3, 0.35),
             });
         }
         if w.muzzle_ticks > 0 {

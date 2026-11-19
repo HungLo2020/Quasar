@@ -187,3 +187,112 @@ fn bindings_round_trip_through_toml_files() {
     std::fs::write(&path, "not = [valid").unwrap();
     assert!(quasar_ui::load_bindings(&path, &defaults()).is_err());
 }
+
+#[test]
+fn analogue_rows_capture_a_stick_deflection_not_a_button() {
+    use quasar_input::GamepadAxis;
+    let mut defaults = defaults();
+    defaults.bind(
+        "move_x",
+        Binding::GamepadAxis {
+            axis: GamepadAxis::LeftStickX,
+            scale: 1.0,
+        },
+    );
+    let mut ui = Ui::new(Theme::modern());
+    let root = ui.add_root(
+        Widget::Panel {
+            layout: PanelLayout::Stack {
+                direction: StackDirection::Vertical,
+                gap: 0.,
+            },
+            padding: Edges::ZERO,
+            clip: false,
+            scrollable: false,
+        },
+        LayoutItem::fill(),
+        Layer::Normal,
+        false,
+    );
+    let full = LayoutItem::size(quasar_ui::Length::Fill, quasar_ui::Length::fixed(40.0));
+    let mut screen = ControlsScreen::new(
+        vec![ControlEntry::new("move_x", UiText::literal("Move"))],
+        &Bindings::default(),
+        defaults,
+    )
+    .with_reset_item(full);
+    let panel = screen.build(&mut ui, root, ActionId::new(99)).unwrap();
+    ui.layout(
+        Rect::new(0., 0., 640., 480.),
+        1.,
+        Edges::ZERO,
+        &MonospaceMeasure,
+    );
+    // The reset button takes the requested layout and is exposed for styling.
+    let reset = screen.reset_node().unwrap();
+    assert_eq!(ui.node(reset).unwrap().item, full);
+    let rect = |id| {
+        ui.layout_entries()
+            .iter()
+            .find(|e| e.id == id)
+            .unwrap()
+            .rect
+    };
+    let (reset_rect, panel_rect) = (rect(reset), rect(panel));
+    assert_eq!(reset_rect.width, panel_rect.width, "full-width reset");
+
+    screen
+        .set_device(&mut ui, InputDevice::Gamepad, DeviceFamily::Xbox)
+        .unwrap();
+    let row = screen.row_nodes()[0];
+    request(&mut ui, &mut screen, row);
+    assert!(screen.wants_axis());
+    // Buttons never replace the stick.
+    let outcome = screen
+        .capture(&mut ui, &[Button::Gamepad(GamepadButton::South)])
+        .unwrap();
+    assert_eq!(outcome, ControlsOutcome::None);
+    // A stick still held from navigation is ignored until it rests.
+    let held = [(GamepadAxis::LeftStickY, 0.9)];
+    assert_eq!(
+        screen.capture_axes(&mut ui, &held).unwrap(),
+        ControlsOutcome::None
+    );
+    assert_eq!(
+        screen.capture_axes(&mut ui, &held).unwrap(),
+        ControlsOutcome::None
+    );
+    let rest = [
+        (GamepadAxis::LeftStickY, 0.05),
+        (GamepadAxis::RightStickX, 0.0),
+    ];
+    assert_eq!(
+        screen.capture_axes(&mut ui, &rest).unwrap(),
+        ControlsOutcome::None
+    );
+    // Push the right stick left: bound inverted.
+    let push = [
+        (GamepadAxis::LeftStickY, 0.2),
+        (GamepadAxis::RightStickX, -0.8),
+    ];
+    let outcome = screen.capture_axes(&mut ui, &push).unwrap();
+    let expected = Binding::GamepadAxis {
+        axis: GamepadAxis::RightStickX,
+        scale: -1.0,
+    };
+    assert_eq!(
+        outcome,
+        ControlsOutcome::Rebound {
+            action: "move_x".into(),
+            binding: expected.clone()
+        }
+    );
+    assert!(!screen.is_capturing());
+    let gamepad: Vec<&Binding> = screen.bindings().actions["move_x"]
+        .iter()
+        .filter(|b| b.device() == Some(InputDevice::Gamepad))
+        .collect();
+    assert_eq!(gamepad, vec![&expected]);
+    // Keyboard bindings are untouched.
+    assert!(screen.bindings().actions["move_x"].contains(&Binding::axis(Key::KeyA, Key::KeyD)));
+}

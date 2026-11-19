@@ -147,3 +147,14 @@ cargo run -p quasar-sim --example replay
   error; `Divergence` and `ReplaySummary` are the machine-readable reports.
 - No rollback networking implementation; only optional job-based replay offload
   is included.
+
+## Render interpolation
+
+`quasar_sim::interp::Interpolation` records entity values (any `Blend`
+type: floats, arrays, tuples) before each fixed tick and returns them part
+of the way to the current tick at draw time, using the clock's
+interpolation factor. New entities, stale snapshots and teleports (a
+`with_snap` test) draw their current value, and the simulation itself is
+never changed, so recordings and replays are unaffected. `blend_angle`
+blends headings the short way. Starfall draws its craft and drones this
+way.

@@ -928,3 +928,124 @@ fn every_stream_layer_and_cull_path_draws_at_any_arena_offset() {
     }
     assert_eq!(combinations, 54);
 }
+
+#[test]
+#[ignore = "requires Vulkan"]
+fn emissive_masks_glow_per_texel_and_height_fog_follows_world_height() {
+    use quasar_render_3d::{Fog, HeightFog};
+    let gpu = Gpu::headless().unwrap();
+    // Layer 3: mask lit on its left half. Layer 4: black.
+    let mask: Vec<u8> = (0..16)
+        .flat_map(|i| {
+            if i % 4 < 2 {
+                [255u8; 4]
+            } else {
+                [0, 0, 0, 255]
+            }
+        })
+        .collect();
+    let ore = MaterialDef::layer(4).with_emissive_mask([0.0, 1.0, 0.0], 3);
+    let materials = VoxelMaterials::new(
+        &gpu,
+        4,
+        &[
+            [255, 0, 0, 255].repeat(16),
+            [255, 255, 255, 255].repeat(16),
+            [0, 255, 0, 255].repeat(16),
+            mask,
+            [0, 0, 0, 255].repeat(16),
+        ],
+        &[
+            MaterialDef::layer(0),
+            MaterialDef::layer(1),
+            MaterialDef::layer(2),
+            ore,
+        ],
+        MaterialFilter::Nearest,
+    )
+    .unwrap();
+    assert!(
+        VoxelMaterials::new(
+            &gpu,
+            4,
+            &[[0u8; 64].to_vec()],
+            &[MaterialDef::layer(0).with_emissive_mask([1.0; 3], 7)],
+            MaterialFilter::Nearest,
+        )
+        .is_err(),
+        "mask layers must exist"
+    );
+    let mut b = blocks();
+    b.catalog.add(BlockDef::cube("ore", 3));
+    // A 4x4x4 ore cube far from the origin, to exercise camera rebasing.
+    let base = IVec3::new(4, 10_004, 4);
+    for x in 0..4 {
+        for y in 0..4 {
+            for z in 0..4 {
+                b.volume.set(b.block, base + IVec3::new(x, y, z), 4);
+            }
+        }
+    }
+    let chunk = IVec3::new(0, 10_004 / 16, 0);
+    let mut renderer = VoxelRenderer::new(&gpu, materials, VoxelRendererConfig::default()).unwrap();
+    renderer.set_grid(GRID, GridTransform::default(), 1.0);
+    let mesh = greedy_mesh(&b, chunk);
+    renderer
+        .upload(
+            &gpu,
+            ChunkKey::new(GRID, chunk),
+            ChunkPlacement::new(chunk * 16),
+            &mesh,
+        )
+        .unwrap();
+    // Looking straight down at the cube's top face.
+    let top = DVec3::new(6.0, 10_008.0, 6.0);
+    let cam = camera(top + DVec3::new(0.0, 8.0, 0.001), top);
+    let row = |rgba: &[u8]| -> Vec<[u8; 4]> { (20..44).map(|x| pixel(rgba, x, 32)).collect() };
+    let (rgba, _) = render(
+        &gpu,
+        &mut renderer,
+        &cam,
+        &unlit(),
+        &VoxelPassOptions::default(),
+        &[],
+    );
+    let row0 = row(&rgba);
+    assert!(
+        row0.iter().any(|p| p[1] > 200 && p[0] < 20),
+        "glowing texels: {row0:?}"
+    );
+    assert!(row0.iter().any(|p| p[1] < 20), "dark texels: {row0:?}");
+    // Height fog whose base sits at the cube top: the top face is in thick
+    // haze. Moved 30 m lower, the top face is clear again.
+    let haze = |base_height: f32| VoxelShading {
+        fog: Some(Fog::height(
+            [0.0, 0.0, 1.0],
+            HeightFog {
+                base: base_height,
+                density: 0.8,
+                falloff: 0.5,
+            },
+        )),
+        ..unlit()
+    };
+    let (fogged, _) = render(
+        &gpu,
+        &mut renderer,
+        &cam,
+        &haze(10_008.0),
+        &VoxelPassOptions::default(),
+        &[],
+    );
+    let (clear, _) = render(
+        &gpu,
+        &mut renderer,
+        &cam,
+        &haze(9_978.0),
+        &VoxelPassOptions::default(),
+        &[],
+    );
+    let blue = |rgba: &[u8]| row(rgba).iter().map(|p| u32::from(p[2])).sum::<u32>() / 24;
+    assert!(blue(&fogged) > 150, "in the haze: {}", blue(&fogged));
+    assert!(blue(&clear) < 10, "above the haze: {}", blue(&clear));
+}

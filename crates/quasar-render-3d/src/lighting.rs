@@ -25,23 +25,138 @@ pub const SHADOW_RECORDS_BINDING: u32 = 6;
 /// Group-0 binding of the shadow comparison sampler.
 pub const SHADOW_SAMPLER_BINDING: u32 = 21;
 
-/// Distance fog towards the eye. Colours are linear; distances are metres
-/// from the camera position the lighting was encoded with.
+/// Fog shared by meshes and voxels: distance fog towards the eye, optional
+/// exponential height fog, and optional light scattering. Colours are
+/// linear; distances are metres from the camera position the lighting was
+/// encoded with.
+///
+/// - Distance fog blends from `start` to `end` metres (`end` infinite turns
+///   it off, for height-only fog).
+/// - [`HeightFog`] adds haze whose density falls off with world height, so
+///   it pools on floors and thins over high ground. It is integrated
+///   analytically along each view ray, so it shows from a top-down camera
+///   where distance fog cannot.
+/// - `scattering` (0 = off) adds light scattered by the fog: point and
+///   spot lights glow through it (their cones and cookies included) and
+///   directional lights brighten it. It is single scattering with an
+///   isotropic phase function, proportional to the local fog density, so 1
+///   is physically plausible and larger values stylise. `shafts` > 0
+///   ray-marches that many shadow-map samples along each view ray for
+///   directional lights, so light through openings forms volumetric
+///   shafts. Positional lights are taken from the fragment's light cell.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Fog {
     /// Linear RGB.
     pub color: [f32; 3],
     pub start: f32,
     pub end: f32,
+    pub height: Option<HeightFog>,
+    pub scattering: f32,
+    pub shafts: u32,
+}
+
+/// Exponential height fog: `density` (per metre) at world height `base`,
+/// multiplied by `exp(-falloff * metres above base)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeightFog {
+    pub base: f32,
+    pub density: f32,
+    pub falloff: f32,
 }
 
 impl Fog {
+    /// Plain distance fog.
+    pub const fn distance(color: [f32; 3], start: f32, end: f32) -> Self {
+        Self {
+            color,
+            start,
+            end,
+            height: None,
+            scattering: 0.,
+            shafts: 0,
+        }
+    }
+    /// Height fog only (no distance fog).
+    pub const fn height(color: [f32; 3], height: HeightFog) -> Self {
+        Self {
+            color,
+            start: 0.,
+            end: f32::INFINITY,
+            height: Some(height),
+            scattering: 0.,
+            shafts: 0,
+        }
+    }
+    pub const fn with_height(mut self, height: HeightFog) -> Self {
+        self.height = Some(height);
+        self
+    }
+    /// Light scattering strength (1 = physically plausible).
+    pub const fn with_scattering(mut self, scattering: f32) -> Self {
+        self.scattering = scattering;
+        self
+    }
+    /// Shadow-map samples per view ray for directional-light shafts
+    /// (8 to 24 is typical; 0 = off). Needs scattering.
+    pub const fn with_shafts(mut self, steps: u32) -> Self {
+        self.shafts = steps;
+        self
+    }
+    /// Rebased for camera-relative positions (for example voxel rendering
+    /// around `origin`): the height base moves with the camera height.
+    pub fn rebased(mut self, origin_height: f32) -> Self {
+        if let Some(height) = &mut self.height {
+            height.base -= origin_height;
+        }
+        self
+    }
     fn valid(&self) -> bool {
+        let height_ok = self.height.is_none_or(|h| {
+            h.base.is_finite()
+                && h.density.is_finite()
+                && h.density >= 0.
+                && h.falloff.is_finite()
+                && h.falloff >= 0.
+        });
         positive_rgb(self.color)
             && self.start.is_finite()
-            && self.end.is_finite()
+            && !self.end.is_nan()
             && self.start >= 0.
             && self.end > self.start
+            && height_ok
+            && self.scattering.is_finite()
+            && self.scattering >= 0.
+            && self.shafts <= 64
+    }
+}
+
+/// Toon (cel) shading settings for [`ShadingModel::Toon`] materials.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToonSettings {
+    /// Light bands (2 to 4 is typical).
+    pub bands: u32,
+    /// Band edge softness, 0 (hard) to 1.
+    pub softness: f32,
+    /// Rim light strength at silhouettes (0 = off).
+    pub rim: f32,
+}
+
+impl Default for ToonSettings {
+    fn default() -> Self {
+        Self {
+            bands: 3,
+            softness: 0.08,
+            rim: 0.25,
+        }
+    }
+}
+
+impl ToonSettings {
+    fn valid(&self) -> bool {
+        (1..=16).contains(&self.bands)
+            && (0. ..=1.).contains(&self.softness)
+            && self.rim.is_finite()
+            && self.rim >= 0.
     }
 }
 
@@ -94,6 +209,8 @@ impl LightClusters {
 pub struct LightingOptions {
     pub fog: Option<Fog>,
     pub clusters: LightClusters,
+    /// Band settings for [`ShadingModel::Toon`] materials in this pass.
+    pub toon: ToonSettings,
 }
 
 /// CPU light grid built by [`cluster_lights`]: the exact lists the shader
@@ -236,7 +353,7 @@ pub fn encode_lighting(
 }
 
 /// Floats in the lights header before the light array.
-const LIGHT_HEADER_FLOATS: usize = 28;
+const LIGHT_HEADER_FLOATS: usize = 36;
 
 /// [`encode_lighting`] with explicit fog and clustering options.
 pub fn encode_lighting_with(
@@ -253,7 +370,12 @@ pub fn encode_lighting_with(
     }
     if options.fog.is_some_and(|f| !f.valid()) {
         return Err(error(
-            "fog needs a non-negative colour and 0 <= start < end",
+            "fog needs a non-negative colour, 0 <= start < end, non-negative height density/falloff and scattering, and at most 64 shaft steps",
+        ));
+    }
+    if !options.toon.valid() {
+        return Err(error(
+            "toon shading needs 1..=16 bands, softness 0..=1 and rim >= 0",
         ));
     }
     let grid = cluster_lights(lighting.lights, camera.position, &options.clusters)?;
@@ -278,9 +400,32 @@ pub fn encode_lighting_with(
         fog_color[2],
         f32::from(fog.is_some()),
         fog.map_or(0., |f| f.start),
-        fog.map_or(1., |f| f.end),
+        fog.map_or(1., |f| {
+            if f.end.is_finite() {
+                f.end
+            } else {
+                f.start + 1.
+            }
+        }),
+        f32::from(fog.is_some_and(|f| f.end.is_finite())),
         0.,
-        0.,
+    ]);
+    let height = fog.and_then(|f| f.height);
+    values.extend([
+        height.map_or(0., |h| h.base),
+        height.map_or(0., |h| h.density),
+        height.map_or(0., |h| h.falloff),
+        fog.map_or(0., |f| f.scattering),
+        options.toon.bands as f32,
+        options.toon.softness,
+        options.toon.rim,
+        fog.map_or(0., |f| {
+            if f.scattering > 0. {
+                f.shafts as f32
+            } else {
+                0.
+            }
+        }),
     ]);
     match &grid {
         Some(grid) => values.extend([
@@ -337,12 +482,145 @@ pub enum ShadingModel {
     Diffuse,
     #[default]
     BlinnPhong,
+    /// Cel shading: light quantised into [`ToonSettings::bands`] with a
+    /// hard specular highlight and an optional rim.
+    Toon,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+
+impl ShadingModel {
+    /// The value lit shaders read (0 unlit, 1 diffuse, 2 Blinn-Phong,
+    /// 3 toon).
+    pub const fn code(self) -> f32 {
+        match self {
+            Self::Unlit => 0.,
+            Self::Diffuse => 1.,
+            Self::BlinnPhong => 2.,
+            Self::Toon => 3.,
+        }
+    }
+}
+
+/// How positional light falls off towards its range.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Attenuation {
+    /// `(1 - d²/range²)²`.
     #[default]
     Smooth,
+    /// Physically based `1/d²`, windowed to the range.
     InverseSquare,
+    /// `(1 - d/range)^exponent`: 1 is linear, larger values hug the light
+    /// (a flare), smaller ones spread an even pool (a lantern).
+    Curve { exponent: f32 },
+}
+
+/// A procedural pattern projected by a spot light (a "cookie"), for
+/// headlamps with rings, grates, star flares and dappled light. Animate it
+/// by changing `rotation` or the light's intensity each frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LightCookie {
+    pub pattern: CookiePattern,
+    /// Rings, bars or spokes across the cone (1 to 255), or the dapple
+    /// noise frequency.
+    pub count: u8,
+    /// 0 (no pattern) to 1 (pattern fully dark between features).
+    pub contrast: f32,
+    /// Pattern rotation about the spot axis, in radians.
+    pub rotation: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CookiePattern {
+    #[default]
+    None,
+    /// Concentric rings (a reflector headlamp).
+    Rings,
+    /// Parallel bars (a grate or window).
+    Bars,
+    /// Radial spokes (a star flare).
+    Spokes,
+    /// Smooth noise (light through leaves).
+    Dapple,
+}
+
+impl LightCookie {
+    pub const NONE: Self = Self {
+        pattern: CookiePattern::None,
+        count: 0,
+        contrast: 0.,
+        rotation: 0.,
+    };
+    pub const fn new(pattern: CookiePattern, count: u8, contrast: f32) -> Self {
+        Self {
+            pattern,
+            count,
+            contrast,
+            rotation: 0.,
+        }
+    }
+    pub const fn with_rotation(mut self, rotation: f32) -> Self {
+        self.rotation = rotation;
+        self
+    }
+    fn valid(&self) -> bool {
+        self.contrast.is_finite()
+            && (0. ..=1.).contains(&self.contrast)
+            && self.rotation.is_finite()
+    }
+    /// Packed into the light record: pattern (4 bits), count (8), contrast
+    /// (8), rotation (12).
+    fn packed(&self) -> u32 {
+        let pattern = match self.pattern {
+            CookiePattern::None => return 0,
+            CookiePattern::Rings => 1,
+            CookiePattern::Bars => 2,
+            CookiePattern::Spokes => 3,
+            CookiePattern::Dapple => 4,
+        };
+        if self.contrast <= 0. {
+            return 0;
+        }
+        let contrast = (self.contrast * 255.).round() as u32;
+        let turns = self.rotation.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
+        let rotation = ((turns * 4096.) as u32).min(4095);
+        pattern | u32::from(self.count) << 4 | contrast << 12 | rotation << 20
+    }
+    /// The cookie's light multiplier at `uv` (the cone's cross-section,
+    /// `[-1, 1]` from axis to edge), matching the shader.
+    pub fn sample(&self, uv: [f32; 2]) -> f32 {
+        let packed = self.packed();
+        if packed == 0 {
+            return 1.;
+        }
+        let count = f32::from(self.count);
+        let contrast = ((packed >> 12) & 255) as f32 / 255.;
+        let angle = (packed >> 20) as f32 / 4096. * std::f32::consts::TAU;
+        let (s, c) = angle.sin_cos();
+        let uv = [uv[0] * c - uv[1] * s, uv[0] * s + uv[1] * c];
+        let tau = std::f32::consts::TAU;
+        let pattern = match packed & 15 {
+            1 => 0.5 + 0.5 * ((uv[0] * uv[0] + uv[1] * uv[1]).sqrt() * count * tau).cos(),
+            2 => 0.5 + 0.5 * (uv[0] * count * std::f32::consts::PI).cos(),
+            3 => 0.5 + 0.5 * (uv[1].atan2(uv[0]) * count).cos(),
+            _ => dapple([uv[0] * count, uv[1] * count]),
+        };
+        1. - contrast + contrast * pattern
+    }
+}
+
+fn dapple(p: [f32; 2]) -> f32 {
+    let hash = |x: f32, y: f32| {
+        let h = (x * 127.1 + y * 311.7).sin() * 43_758.547;
+        h - h.floor()
+    };
+    let (ix, iy) = (p[0].floor(), p[1].floor());
+    let (fx, fy) = (p[0] - ix, p[1] - iy);
+    let (sx, sy) = (fx * fx * (3. - 2. * fx), fy * fy * (3. - 2. * fy));
+    let a = hash(ix, iy);
+    let b = hash(ix + 1., iy);
+    let c = hash(ix, iy + 1.);
+    let d = hash(ix + 1., iy + 1.);
+    let top = a + (b - a) * sx;
+    top + (c + (d - c) * sx - top) * sy
 }
 
 /// Directions point along emitted light rays. Colors/intensities are linear.
@@ -369,10 +647,13 @@ pub enum Light {
         inner_angle: f32,
         outer_angle: f32,
         attenuation: Attenuation,
+        /// Projected pattern; [`LightCookie::NONE`] for a plain cone.
+        cookie: LightCookie,
     },
 }
 impl Light {
     pub(crate) fn encoded(self) -> GraphicsResult<[f32; 16]> {
+        let mut cookie = LightCookie::NONE;
         let (position, kind, direction, range, color, intensity, inner, outer, attenuation) =
             match self {
                 Self::Directional {
@@ -416,7 +697,12 @@ impl Light {
                     inner_angle,
                     outer_angle,
                     attenuation,
+                    cookie: spot_cookie,
                 } => {
+                    if !spot_cookie.valid() {
+                        return Err(error("spot cookie needs 0 <= contrast <= 1"));
+                    }
+                    cookie = spot_cookie;
                     if !inner_angle.is_finite()
                         || !outer_angle.is_finite()
                         || inner_angle < 0.
@@ -452,6 +738,11 @@ impl Light {
                 "invalid light position/direction/color/intensity/range",
             ));
         }
+        if let Attenuation::Curve { exponent } = attenuation
+            && !(exponent.is_finite() && (0.01..=64.).contains(&exponent))
+        {
+            return Err(error("attenuation curve exponent must be in 0.01..=64"));
+        }
         Ok([
             position[0],
             position[1],
@@ -467,12 +758,12 @@ impl Light {
             intensity,
             inner,
             outer,
-            if attenuation == Attenuation::Smooth {
-                0.
-            } else {
-                1.
+            match attenuation {
+                Attenuation::Smooth => 0.,
+                Attenuation::InverseSquare => 1.,
+                Attenuation::Curve { exponent } => 2. + exponent,
             },
-            0.,
+            f32::from_bits(cookie.packed()),
         ])
     }
 }
@@ -559,11 +850,7 @@ impl LitMaterial {
             self.emissive[1],
             self.emissive[2],
             self.alpha_cutoff,
-            match self.shading {
-                ShadingModel::Unlit => 0.,
-                ShadingModel::Diffuse => 1.,
-                ShadingModel::BlinnPhong => 2.,
-            },
+            self.shading.code(),
             if self.texture_color_space == ColorSpace::Srgb {
                 1.
             } else {
@@ -641,7 +928,8 @@ mod tests {
                 range: 5.,
                 inner_angle: 0.5,
                 outer_angle: 0.4,
-                attenuation: Attenuation::Smooth
+                attenuation: Attenuation::Smooth,
+                cookie: LightCookie::NONE,
             }
             .encoded()
             .is_err()
@@ -713,17 +1001,30 @@ impl LitRenderState3D {
     ) -> GraphicsResult<Vec<u8>> {
         encode_lighting_with(camera, lighting, self.max_lights, &self.options)
     }
-    /// Distance fog for every later pass of this state (opaque and
-    /// transparent). Matches the voxel renderer's fog so meshes fade into
-    /// the same colour as distant blocks.
+    /// Fog for every later pass of this state (opaque and transparent):
+    /// distance, height and scattering (see [`Fog`]). Matches the voxel
+    /// renderer's fog so meshes fade into the same haze as blocks.
     pub fn set_fog(&mut self, fog: Option<Fog>) -> GraphicsResult<()> {
         if fog.is_some_and(|f| !f.valid()) {
             return Err(error(
-                "fog needs a non-negative colour and 0 <= start < end",
+                "fog needs a non-negative colour, 0 <= start < end, valid height fog and scattering",
             ));
         }
         self.options.fog = fog;
         Ok(())
+    }
+    /// Band settings for [`ShadingModel::Toon`] materials.
+    pub fn set_toon(&mut self, toon: ToonSettings) -> GraphicsResult<()> {
+        if !toon.valid() {
+            return Err(error(
+                "toon shading needs 1..=16 bands, softness 0..=1 and rim >= 0",
+            ));
+        }
+        self.options.toon = toon;
+        Ok(())
+    }
+    pub fn toon(&self) -> ToonSettings {
+        self.options.toon
     }
     pub fn fog(&self) -> Option<Fog> {
         self.options.fog
@@ -767,6 +1068,7 @@ impl LitRenderState3D {
                 base: &d.material.base,
                 lit: Some(&d.material),
                 normal: None,
+                emissive: None,
                 receives_shadows: false,
                 blend: None,
             })

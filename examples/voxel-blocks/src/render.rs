@@ -5,7 +5,7 @@ use quasar_frame::{Gpu, GraphicsResult, RenderTarget};
 use quasar_math::{Mat4, Vec3};
 use quasar_profile::RendererStats;
 use quasar_render_2d::{Canvas, Color, DisplayOptions, LoadOp, Rect, RenderState2D, Textures};
-use quasar_render_3d::{ColorSpace, Light, Lighting, ShadingModel};
+use quasar_render_3d::{ColorSpace, HeightFog, Light, Lighting, ShadingModel};
 use quasar_render_voxel::{
     ChunkKey, ChunkPlacement, Fog, MaterialDef, MaterialFilter, OverlayBox, VoxelCamera,
     VoxelMaterials, VoxelPassOptions, VoxelRenderer, VoxelRendererConfig, VoxelShading, VoxelStats,
@@ -28,6 +28,8 @@ pub struct Graphics {
     pub prepare_micros: f64,
     /// Skip chunks hidden behind terrain (connectivity culling).
     pub occlusion: bool,
+    /// Height fog pooling in valleys below the hills, lit by lamps.
+    pub mist: bool,
 }
 
 fn materials(gal: &Gpu) -> GraphicsResult<VoxelMaterials> {
@@ -35,6 +37,10 @@ fn materials(gal: &Gpu) -> GraphicsResult<VoxelMaterials> {
         .map(|layer| match layer {
             tex::LEAVES => MaterialDef::layer(layer).with_alpha_test(0.5),
             tex::LAMP => MaterialDef::layer(layer).with_emissive([0.55, 0.42, 0.2]),
+            // Only the crystal flecks glow (emissive mask layer).
+            tex::ORE => {
+                MaterialDef::layer(layer).with_emissive_mask([0.25, 0.9, 0.75], tex::ORE_GLOW)
+            }
             _ => MaterialDef::layer(layer),
         })
         .collect();
@@ -62,6 +68,7 @@ impl Graphics {
             pending_submission: None,
             prepare_micros: 0.0,
             occlusion: true,
+            mist: false,
         })
     }
 
@@ -137,10 +144,19 @@ impl Graphics {
             sky_brightness: 1.0,
             min_light: 0.05,
             model: ShadingModel::Diffuse,
-            fog: Some(Fog {
-                color: fog_color,
-                start: far * 0.55,
-                end: far * 0.95,
+            fog: Some({
+                let fog = Fog::distance(fog_color, far * 0.55, far * 0.95);
+                if self.mist {
+                    // Morning mist settling at sea level, lamps glowing in it.
+                    fog.with_height(HeightFog {
+                        base: 26.0,
+                        density: 0.06,
+                        falloff: 0.3,
+                    })
+                    .with_scattering(1.2)
+                } else {
+                    fog
+                }
             }),
             ..VoxelShading::default()
         };

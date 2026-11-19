@@ -315,18 +315,84 @@ mod gpu {
                         self.glyphs.warm(&mut engine, &layout);
                     }
                 }
+                // Rich text draws one run per row segment; warm those runs.
+                if let Widget::RichText { style, wrap, .. } = &node.widget {
+                    let size = theme.size(*style) * scale;
+                    let limit = match wrap {
+                        crate::LabelWrap::None => f32::INFINITY,
+                        crate::LabelWrap::Word => entry.rect.width,
+                    };
+                    let rich = ui.rich_layout(node, &self.measure, limit, scale);
+                    for item in &rich.items {
+                        if let crate::widget::RichKind::Text(run)
+                        | crate::widget::RichKind::Key(run) = &item.kind
+                            && let Some(layout) = self.layout(run, *style, size)
+                        {
+                            let mut engine = self.engine.borrow_mut();
+                            self.glyphs.warm(&mut engine, &layout);
+                        }
+                    }
+                }
             }
             self.gpu.sync(state, gal, textures, self.glyphs.atlas_mut())
         }
 
+        /// Whether shaped glyphs can be drawn (an atlas page exists).
+        pub(crate) fn ready(&self) -> bool {
+            self.gpu.page_count() > 0
+        }
+
+        /// Draws one shaped run with its top-left at `(x, y)`, centred
+        /// horizontally in `width` when given. Returns the run width.
+        #[allow(clippy::too_many_arguments)]
+        pub(crate) fn draw_run(
+            &mut self,
+            canvas: &mut Canvas,
+            text: &str,
+            style: TextStyle,
+            size: f32,
+            x: f32,
+            y: f32,
+            center_in: Option<(f32, f32)>,
+            color: Color,
+        ) {
+            let Some(layout) = self.layout(text, style, size) else {
+                return;
+            };
+            let (x, y) = match center_in {
+                Some((width, height)) => (
+                    x + (width - layout.width()).max(0.0) * 0.5,
+                    y + (height - layout.height()).max(0.0) * 0.5,
+                ),
+                None => (x, y),
+            };
+            self.draw_layout(canvas, &layout, x, y, color);
+        }
+
         /// Draws all text belonging to one widget. Returns false for widgets
         /// without text so the caller can use its bitmap path.
+        /// Appends one widget's glyphs and decorations; `false` when the
+        /// renderer has no atlas yet (the caller falls back to the bitmap
+        /// font). Uses the node's [`crate::WidgetColors`].
         pub fn draw_widget(
             &mut self,
             canvas: &mut Canvas,
             ui: &Ui,
             node: &UiNode,
             entry: &LayoutEntry,
+        ) -> bool {
+            let paint =
+                crate::widget::Paint::new(ui.theme(), node.colors.as_ref(), node.style.as_ref());
+            self.draw_widget_with(canvas, ui, node, entry, &paint)
+        }
+
+        pub(crate) fn draw_widget_with(
+            &mut self,
+            canvas: &mut Canvas,
+            ui: &Ui,
+            node: &UiNode,
+            entry: &LayoutEntry,
+            paint: &crate::widget::Paint,
         ) -> bool {
             if self.gpu.page_count() == 0 {
                 return false;
@@ -355,18 +421,18 @@ mod gpu {
                         return true;
                     };
                     let y = rect.y + (rect.height - layout.height()).max(0.0) * 0.5;
-                    self.draw_layout(canvas, &layout, rect.x, y, theme.color(*style));
+                    self.draw_layout(canvas, &layout, rect.x, y, paint.color(*style));
                     true
                 }
                 Widget::Button { text, .. } => {
                     let fill = if node.state.pressed {
-                        theme.button_active
+                        paint.button_active
                     } else if node.state.hovered || node.state.focus_t > 0.5 {
-                        theme.button_hover
+                        paint.button_hover
                     } else {
-                        theme.button
+                        paint.button
                     };
-                    canvas.rect(rect, render_color(fill));
+                    crate::render2d::fill_rounded(canvas, entry.rect, fill, paint.radius * scale);
                     let Some(layout) = self.layout(ui.resolve_text(text), TextStyle::Body, font)
                     else {
                         return true;
@@ -379,7 +445,7 @@ mod gpu {
                         x,
                         y,
                         if node.enabled {
-                            theme.text
+                            paint.text
                         } else {
                             theme.disabled
                         },
@@ -408,7 +474,7 @@ mod gpu {
                         inner.width,
                         4.0 * scale,
                     );
-                    canvas.rect(track, render_color(theme.track));
+                    canvas.rect(track, render_color(paint.track));
                     let fraction = if *max > *min {
                         ((*value - *min) / (*max - *min)).clamp(0.0, 1.0)
                     } else {
@@ -416,7 +482,7 @@ mod gpu {
                     };
                     canvas.rect(
                         RenderRect::new(track.x, track.y, track.width * fraction, track.height),
-                        render_color(theme.fill),
+                        render_color(paint.fill),
                     );
                     let knob = 6.0 * scale;
                     canvas.rect(
@@ -429,13 +495,13 @@ mod gpu {
                         render_color(if node.state.focus_t > 0.5 {
                             theme.focus
                         } else {
-                            theme.accent
+                            paint.accent
                         }),
                     );
                     if let Some(layout) =
                         self.layout(ui.resolve_text(label), TextStyle::Small, small)
                     {
-                        self.draw_layout(canvas, &layout, inner.x, inner.y, theme.dim_text);
+                        self.draw_layout(canvas, &layout, inner.x, inner.y, paint.dim_text);
                     }
                     let value_text = format_slider_value(*value, *step);
                     if let Some(layout) = self.layout(&value_text, TextStyle::Small, small) {
@@ -444,7 +510,7 @@ mod gpu {
                             &layout,
                             inner.x + inner.width - layout.width(),
                             inner.y,
-                            theme.text,
+                            paint.text,
                         );
                     }
                     let _ = (min, max);
@@ -457,7 +523,7 @@ mod gpu {
                     let box_size = (rect.height - 4.0 * scale).max(8.0);
                     let box_rect =
                         RenderRect::new(rect.x, rect.y + 2.0 * scale, box_size, box_size);
-                    canvas.rect(box_rect, render_color(theme.track));
+                    canvas.rect(box_rect, render_color(paint.track));
                     if *checked {
                         canvas.rect(
                             RenderRect::new(
@@ -466,14 +532,14 @@ mod gpu {
                                 (box_size - 6.0 * scale).max(1.0),
                                 (box_size - 6.0 * scale).max(1.0),
                             ),
-                            render_color(theme.fill),
+                            render_color(paint.fill),
                         );
                     }
                     if let Some(layout) = self.layout(ui.resolve_text(label), TextStyle::Body, font)
                     {
                         let x = rect.x + box_size + 6.0 * scale;
                         let y = rect.y + (rect.height - layout.height()).max(0.0) * 0.5;
-                        self.draw_layout(canvas, &layout, x, y, theme.text);
+                        self.draw_layout(canvas, &layout, x, y, paint.text);
                     }
                     if node.state.focus_t > 0.01 {
                         focus_border(canvas, rect, theme.focus, theme.focus_width * scale);
@@ -486,7 +552,12 @@ mod gpu {
                     selected,
                     ..
                 } => {
-                    canvas.rect(rect, render_color(theme.button));
+                    crate::render2d::fill_rounded(
+                        canvas,
+                        entry.rect,
+                        paint.button,
+                        paint.radius * scale,
+                    );
                     if let Some(layout) = self.layout(ui.resolve_text(label), TextStyle::Body, font)
                     {
                         self.draw_layout(
@@ -494,7 +565,7 @@ mod gpu {
                             &layout,
                             rect.x + padding,
                             rect.y + padding,
-                            theme.text,
+                            paint.text,
                         );
                     }
                     if let Some(option) = options.get(*selected)
@@ -506,7 +577,7 @@ mod gpu {
                             &layout,
                             rect.x + rect.width - layout.width() - padding,
                             rect.y + padding,
-                            theme.accent,
+                            paint.accent,
                         );
                     }
                     if node.state.focus_t > 0.01 {
@@ -538,9 +609,9 @@ mod gpu {
                             x,
                             y,
                             if index == *selected {
-                                theme.accent
+                                paint.accent
                             } else {
-                                theme.dim_text
+                                paint.dim_text
                             },
                         );
                     }
@@ -557,7 +628,7 @@ mod gpu {
                     password,
                     ..
                 } => {
-                    canvas.rect(rect, render_color(theme.track));
+                    canvas.rect(rect, render_color(paint.track));
                     let empty = text.is_empty();
                     let value = if empty {
                         ui.resolve_text(placeholder).to_owned()
@@ -579,7 +650,7 @@ mod gpu {
                     let scroll = node.text_scroll;
                     let origin_x = inner.x - scroll;
                     let origin_y = rect.y + (rect.height - layout.height()).max(0.0) * 0.5;
-                    let color = if empty { theme.dim_text } else { theme.text };
+                    let color = if empty { paint.dim_text } else { paint.text };
                     if !empty && node.state.focus_t > 0.01 {
                         for selection in layout.selection_rects(*anchor, *cursor) {
                             canvas.rect(
@@ -619,7 +690,7 @@ mod gpu {
                             && let Some(preedit) = self.layout(&node.preedit, TextStyle::Body, font)
                         {
                             let x = origin_x + caret.x;
-                            self.draw_layout(canvas, &preedit, x, origin_y, theme.accent);
+                            self.draw_layout(canvas, &preedit, x, origin_y, paint.accent);
                             canvas.rect(
                                 RenderRect::new(
                                     x,
@@ -627,7 +698,7 @@ mod gpu {
                                     preedit.width(),
                                     1.0,
                                 ),
-                                RenderColor([theme.accent.r, theme.accent.g, theme.accent.b, 220]),
+                                RenderColor([paint.accent.r, paint.accent.g, paint.accent.b, 220]),
                             );
                         }
                     }
@@ -638,7 +709,7 @@ mod gpu {
                     true
                 }
                 Widget::Progress { label, value, max } => {
-                    canvas.rect(rect, render_color(theme.track));
+                    canvas.rect(rect, render_color(paint.track));
                     let fraction = if *max > 0.0 {
                         (*value / *max).clamp(0.0, 1.0)
                     } else {
@@ -646,7 +717,7 @@ mod gpu {
                     };
                     canvas.rect(
                         RenderRect::new(rect.x, rect.y, rect.width * fraction, rect.height),
-                        render_color(theme.fill),
+                        render_color(paint.fill),
                     );
                     if let Some(layout) =
                         self.layout(ui.resolve_text(label), TextStyle::Small, small)
@@ -656,7 +727,7 @@ mod gpu {
                             &layout,
                             rect.x + padding,
                             rect.y + padding,
-                            theme.text,
+                            paint.text,
                         );
                     }
                     true
@@ -691,9 +762,9 @@ mod gpu {
                                 rect.x + padding,
                                 y,
                                 if index == *selected {
-                                    theme.accent
+                                    paint.accent
                                 } else {
-                                    theme.text
+                                    paint.text
                                 },
                             );
                         }
@@ -704,7 +775,12 @@ mod gpu {
                     true
                 }
                 Widget::Binding { label, value, .. } => {
-                    canvas.rect(rect, render_color(theme.button));
+                    crate::render2d::fill_rounded(
+                        canvas,
+                        entry.rect,
+                        paint.button,
+                        paint.radius * scale,
+                    );
                     if let Some(layout) = self.layout(ui.resolve_text(label), TextStyle::Body, font)
                     {
                         self.draw_layout(
@@ -712,7 +788,7 @@ mod gpu {
                             &layout,
                             rect.x + padding,
                             rect.y + padding,
-                            theme.text,
+                            paint.text,
                         );
                     }
                     if let Some(layout) = self.layout(value, TextStyle::Body, font) {
@@ -721,7 +797,7 @@ mod gpu {
                             &layout,
                             rect.x + rect.width - layout.width() - padding,
                             rect.y + padding,
-                            theme.accent,
+                            paint.accent,
                         );
                     }
                     if node.state.focus_t > 0.01 {

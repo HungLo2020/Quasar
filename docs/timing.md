@@ -134,3 +134,22 @@ Limitations:
 - `Duration` has nanosecond resolution; exact rational rates below one
   nanosecond per step are rejected or rounded by the existing constructor.
 - No GPU/presentation timing or wall-clock sampling is performed by `FixedStep`.
+
+## Game feel: hit-stop and camera shake
+
+`quasar_core::feel::HitStop` freezes the simulation for a beat on big hits
+(with an optional slow-motion tail and a cooldown so rapid hits never stall
+the game): skip ticks while `frozen()`, or scale `dt` with `scale_dt`.
+`Trauma` is trauma camera shake: events add trauma, it decays linearly, and
+the shake is smooth seeded noise scaled by `trauma^exponent`, as a camera
+offset and rotation. Starfall uses both (interactive play only, so headless
+recordings are unchanged).
+
+## Noise and hashes
+
+`quasar_core::noise` adds stateless coordinate hashes (`hash2`, `hash3`,
+`unit_f32`) and seeded value and Perlin noise in 2D and 3D with fractal
+sums (`Noise`, `Fractal`), all golden-tested like `Rng`.
+`Rng::weighted_index_u32` picks by integer weights with one
+`range_u32`-compatible draw, matching the common hand-written loop so games
+can switch without changing seeded runs.

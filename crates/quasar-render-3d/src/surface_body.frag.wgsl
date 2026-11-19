@@ -9,6 +9,7 @@ struct Instances { items: array<InstanceData> }
 @group(0) @binding(16) var image_sampler: sampler;
 @group(0) @binding(4) var normal_image: texture_2d<f32>;
 @group(0) @binding(20) var normal_sampler: sampler;
+@group(0) @binding(22) var emissive_image: texture_2d<f32>;
 @group(0) @binding(7) var<storage,read> instanceData: Instances;
 fn material_normal(n:vec3<f32>,uv:vec2<f32>,position:vec3<f32>,draw:InstanceData)->vec3<f32> {
     if draw.options.w<0.5 || draw.normalMap.z<=0. {return n;}
@@ -34,6 +35,7 @@ fn material_normal(n:vec3<f32>,uv:vec2<f32>,position:vec3<f32>,draw:InstanceData
     if draw.options.x>0.5 {n=material_normal(geometric_normal,uv,position,draw);}
     let receives=fract(draw.options.z/2.)*2.>=0.5;
     var result=lit_color(base.rgb,n,geometric_normal,position,draw.options.x,draw.specularShininess,receives);
-    result+=draw.emissiveCutoff.rgb;result=apply_fog(result,position);if output_srgb() {result=encode_srgb(result);}
+    var glow=textureSample(emissive_image,image_sampler,uv).rgb;if draw.extra.y>0.5 {glow=decode_srgb(glow);}
+    result+=draw.emissiveCutoff.rgb*glow;result=apply_fog(result,position);if output_srgb() {result=encode_srgb(result);}
     return vec4<f32>(result,base.a);
 }

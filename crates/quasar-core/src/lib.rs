@@ -1,8 +1,13 @@
-//! Device-independent timing utilities and deterministic random numbers. No
-//! window, renderer, or application loop required.
+//! Device-independent timing utilities, deterministic random numbers,
+//! coordinate hashes and noise, and game-feel helpers. No window, renderer,
+//! or application loop required.
+pub mod feel;
+pub mod noise;
 mod rng;
 mod viewport;
 
+pub use feel::{HitStop, Trauma, TraumaSettings};
+pub use noise::{Fractal, Noise};
 pub use rng::{Rng, ZeroStateError, splitmix64};
 use std::time::Duration;
 pub use viewport::{DisplayOptions, Filter, Scaling, Viewport};

@@ -13,6 +13,11 @@ pub struct MaterialDef {
     pub tint: [f32; 4],
     /// Linear emitted colour added after lighting.
     pub emissive: [f32; 3],
+    /// Optional emissive mask: a texture array layer whose colour scales
+    /// `emissive` per texel, so ore veins, lava cracks and lit windows glow
+    /// on their own while the rest of the block does not. Sampled with the
+    /// same UVs (or triplanar mapping) as `layer`.
+    pub emissive_layer: Option<u32>,
     /// Discard fragments with alpha below `cutoff` (cutout layers).
     pub alpha_test: bool,
     pub cutoff: f32,
@@ -26,6 +31,7 @@ impl MaterialDef {
             layer,
             tint: [1.0; 4],
             emissive: [0.0; 3],
+            emissive_layer: None,
             alpha_test: false,
             cutoff: 0.5,
             triplanar_scale: 0.25,
@@ -37,6 +43,12 @@ impl MaterialDef {
     }
     pub fn with_emissive(mut self, emissive: [f32; 3]) -> Self {
         self.emissive = emissive;
+        self
+    }
+    /// Glows `emissive` scaled by the colour of texture layer `layer`.
+    pub fn with_emissive_mask(mut self, emissive: [f32; 3], layer: u32) -> Self {
+        self.emissive = emissive;
+        self.emissive_layer = Some(layer);
         self
     }
     pub fn with_alpha_test(mut self, cutoff: f32) -> Self {
@@ -82,7 +94,12 @@ impl VoxelMaterials {
                 "material layers must be non-empty size×size RGBA8 images",
             ));
         }
-        if defs.is_empty() || defs.iter().any(|d| d.layer as usize >= layers.len()) {
+        if defs.is_empty()
+            || defs.iter().any(|d| {
+                d.layer as usize >= layers.len()
+                    || d.emissive_layer.is_some_and(|l| l as usize >= layers.len())
+            })
+        {
             return Err(error("materials must reference existing texture layers"));
         }
         let texture = gpu.device.create_texture(&TextureDescriptor {
@@ -154,7 +171,10 @@ impl VoxelMaterials {
                 d.emissive[0].to_bits(),
                 d.emissive[1].to_bits(),
                 d.emissive[2].to_bits(),
-                0,
+                // Emissive mask layer + 1 (0 = none), read as a float.
+                d.emissive_layer
+                    .map_or(0.0f32, |l| (l + 1) as f32)
+                    .to_bits(),
             ];
             bytes.extend(values.iter().flat_map(|v| v.to_ne_bytes()));
         }

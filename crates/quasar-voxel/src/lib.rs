@@ -43,6 +43,7 @@ mod chunk;
 pub mod codec;
 pub mod conformance;
 mod connect;
+mod dense;
 mod edit;
 mod grid;
 mod layout;
@@ -58,6 +59,7 @@ pub use catalog::{
 };
 pub use chunk::{ChannelData, ChannelDef, ChannelId, Chunk, RawKind, Schema};
 pub use connect::{Components, components, split_check};
+pub use dense::DenseView;
 pub use edit::{
     Brush, BrushOp, BrushShape, Change, DENSITY_SCALE, EditBatch, EditOp, EditOptions, EditResult,
     quantize_density,

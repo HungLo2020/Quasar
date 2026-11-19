@@ -14,6 +14,7 @@
 //! Output encodes to compact GPU formats ([`PackedQuad`], [`ModelVertex`],
 //! [`PackedSmoothVertex`]) with matching WGSL decoders in [`WGSL_FORMATS`];
 //! translucent quads sort with a [`TranslucentSorter`].
+mod bevel;
 mod culled;
 mod format;
 mod greedy;
@@ -23,6 +24,7 @@ mod queue;
 mod smooth;
 mod sort;
 
+pub use bevel::{BevelExtractor, BevelInput, BevelOptions};
 pub use culled::{
     CatalogFaces, CatalogLayers, CatalogModels, CellInfo, CulledInput, CulledModelExtractor,
     ExtractStats, FacePolicy, IterationOrder, LayerRouter, ModelLibrary, ModelQuad, ModelSource,

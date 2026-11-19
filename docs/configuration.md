@@ -117,3 +117,9 @@ before swapping it in, so a broken edit keeps the running game on the
 previous content. Holders of older snapshots stay consistent until they
 fetch a new one (`ContentSnapshot::revision`). Starfall loads its sounds and
 event cues this way.
+
+Field errors and dangling references are reported in one pass: a table
+whose records fail validation still contributes the ids and references of
+the records that parsed (records with a string id count even when they
+fail), so a load lists both kinds of problem together. References into a
+table whose document failed to parse are not guessed at.

@@ -3,7 +3,7 @@ use crate::{
     collision::Scene,
     props::{self, Prop, SKIN},
 };
-use quasar_nav::{GridCell, SearchOptions, SearchOutcome};
+use quasar_nav::{DistanceField, FieldOptions, Steer, Steering};
 use quasar_physics::{
     dim3::{CollisionWorld, RayHit, ShapeError3},
     rapier3d::pipeline::QueryFilter,
@@ -55,8 +55,6 @@ pub struct Zombie {
     pub gait: f32,
     pub hit_ticks: u32,
     pub dead_ticks: u32,
-    path: Vec<GridCell<2>>,
-    waypoint: usize,
     attack_cooldown: u32,
 }
 impl Zombie {
@@ -97,6 +95,9 @@ pub struct World {
     rng: u64,
     cooldown: u32,
     next_wave: u32,
+    /// One flow field towards the player shared by the whole horde,
+    /// repaired in place when the player moves.
+    horde: Option<DistanceField<2>>,
 }
 impl World {
     pub fn new(seed: u64) -> Self {
@@ -128,6 +129,7 @@ impl World {
             rng: seed.max(1),
             cooldown: 0,
             next_wave: 0,
+            horde: None,
         };
         for position in [
             [-6., -8.],
@@ -154,10 +156,7 @@ impl World {
     pub fn set_props(&mut self, props: Vec<Prop>) -> Result<(), ShapeError3> {
         let scene = Scene::new(props)?;
         self.scene = scene;
-        for z in &mut self.zombies {
-            z.path.clear();
-            z.waypoint = 0;
-        }
+        self.horde = None;
         Ok(())
     }
     pub fn raycast_world(
@@ -319,8 +318,6 @@ impl World {
             gait: 0.,
             hit_ticks: 0,
             dead_ticks: 0,
-            path: vec![],
-            waypoint: 0,
             attack_cooldown: 0,
         });
     }
@@ -369,7 +366,25 @@ impl World {
         let Some(goal) = self.scene.nav.nearest_free(self.scene.nav.cell(player)) else {
             return;
         };
-        for (i, z) in self.zombies.iter_mut().enumerate() {
+        // The horde shares one distance field to the player's cell; moving
+        // the goal repairs it in place instead of a search per zombie.
+        let grid = self.scene.nav.grid();
+        match &mut self.horde {
+            Some(field) if !field.is_stale(grid) => {
+                if field.goals() != [goal] {
+                    let _ = field.set_goals(grid, &[goal]);
+                }
+            }
+            horde => *horde = grid.distance_field(&[goal], &FieldOptions::default()).ok(),
+        }
+        let Some(field) = self.horde.as_ref() else {
+            return;
+        };
+        let scene = &self.scene;
+        let steering = Steering::new(5);
+        let wave = self.wave;
+        let mut hits = 0u32;
+        for z in self.zombies.iter_mut() {
             z.hit_ticks = z.hit_ticks.saturating_sub(1);
             z.attack_cooldown = z.attack_cooldown.saturating_sub(1);
             if !z.alive() {
@@ -377,70 +392,51 @@ impl World {
                 continue;
             }
             let gap = distance(z.position, player);
-            if (self.tick + i as u64 * 7).is_multiple_of(40) || z.path.is_empty() {
-                let Some(start) = self.scene.nav.nearest_reachable(
-                    &self.scene.world,
-                    &self.scene.zombie,
-                    [z.position[0], z.feet_y, z.position[1]],
-                    QueryFilter::default(),
-                ) else {
-                    continue;
-                };
-                if let SearchOutcome::Found(path) = self.scene.nav.find_path(
-                    start,
-                    goal,
-                    SearchOptions {
-                        max_visited: 8192,
-                        ..SearchOptions::default()
-                    },
-                ) {
-                    z.path = path.nodes;
-                    z.waypoint = 1;
-                }
-            }
             let feet = [z.position[0], z.feet_y, z.position[1]];
-            let direct = self.scene.zombie.clear_segment(
-                &self.scene.world,
+            let direct = scene.zombie.clear_segment(
+                &scene.world,
                 feet,
                 [player[0], z.feet_y, player[1]],
                 QueryFilter::default(),
             );
-            while z.waypoint + 1 < z.path.len() {
-                let point = self.scene.nav.point(z.path[z.waypoint + 1]);
-                if !self.scene.zombie.clear_segment(
-                    &self.scene.world,
-                    feet,
-                    point,
-                    QueryFilter::default(),
-                ) {
-                    break;
-                }
-                z.waypoint += 1;
+            let mut cell = scene.nav.cell(z.position);
+            if field.distance(cell).is_none()
+                && let Some(free) = scene.nav.nearest_free(cell)
+            {
+                cell = free;
             }
-            let target = if direct {
-                player
-            } else {
-                z.path
-                    .get(z.waypoint)
-                    .copied()
-                    .map(|cell| {
-                        let p = self.scene.nav.point(cell);
-                        [p[0], p[2]]
-                    })
-                    .unwrap_or(z.position)
+            // Walk straight at a visible player; otherwise head for the
+            // furthest visible cell a few steps down the field.
+            let steer = steering.steer(
+                field,
+                grid,
+                cell,
+                || direct,
+                |ahead| {
+                    scene.zombie.clear_segment(
+                        &scene.world,
+                        feet,
+                        scene.nav.point(ahead),
+                        QueryFilter::default(),
+                    )
+                },
+            );
+            let target = match steer {
+                Steer::Goal | Steer::Arrived => player,
+                Steer::Toward(next) => {
+                    let p = scene.nav.point(next);
+                    [p[0], p[2]]
+                }
+                Steer::Stuck => z.position,
             };
             let delta = [target[0] - z.position[0], target[1] - z.position[1]];
             let len = distance(z.position, target);
-            if len < 0.2 {
-                z.waypoint = (z.waypoint + 1).min(z.path.len());
-            }
             if len > 0.05 && gap > 0.85 {
-                let speed = (0.75 + self.wave as f32 * 0.08).min(1.9);
-                let motion = self
-                    .scene
+                let speed = (0.75 + wave as f32 * 0.08).min(1.9);
+                let motion = scene
                     .zombie
                     .move_feet(
-                        &self.scene.world,
+                        &scene.world,
                         feet,
                         [
                             delta[0] / len * speed * DT,
@@ -458,9 +454,12 @@ impl World {
             }
             if gap < 1.05 && direct && z.attack_cooldown == 0 {
                 z.attack_cooldown = 55;
-                self.health = (self.health - 10.).max(0.);
-                self.hurt_ticks = 20;
+                hits += 1;
             }
+        }
+        if hits > 0 {
+            self.health = (self.health - 10. * hits as f32).max(0.);
+            self.hurt_ticks = 20;
         }
     }
     /// Deterministic within the same floating-point platform; covers gameplay state.
@@ -511,12 +510,7 @@ impl World {
             write(z.yaw.to_bits() as u64);
             write(z.hit_ticks as u64);
             write(z.dead_ticks as u64);
-            write(z.waypoint as u64);
             write(z.attack_cooldown as u64);
-            for cell in &z.path {
-                write(cell.coords[0] as u64);
-                write(cell.coords[1] as u64);
-            }
         }
         if let Some(shot) = self.shot {
             write(1);

@@ -325,7 +325,12 @@ With the `input` feature, `ControlsScreen` lists named actions as
 row starts a capture; `ControlsScreen::capture` takes this frame's pressed
 buttons (`InputState::pressed_buttons` / `FrameInput::pressed_buttons`).
 Axis bindings take two presses, buttons of the other device are ignored, and
-Escape or Select cancels. Buttons bound to two listed actions are reported by
+Escape or Select cancels. Analogue rows (a `Binding::GamepadAxis`, such as a
+stick) ignore buttons: `ControlsScreen::capture_axes` takes the gamepad's
+processed axes and binds the strongest deflection, inverted when pushed the
+negative way; a stick still held from menu navigation must return to rest
+first. `with_reset_item` lays out the reset button (for example full width,
+like the menu's other buttons) and `reset_node` exposes it for styling. Buttons bound to two listed actions are reported by
 `conflicts()`, marked with the theme's danger border and listed in a notice;
 the reset button restores defaults. With `controls-file`, `save_bindings`
 and `load_bindings` persist TOML or JSON, merging saved files over the
@@ -348,3 +353,54 @@ Desktop apps install changed bindings through
 - `quasar_ui::TextWrap` is now `LabelWrap` (the old name is a deprecated
   alias) so it no longer collides with `quasar_text::TextWrap`; `From`
   converts between them.
+
+## Per-widget colours and styles
+
+`Ui::set_colors(node, Some(WidgetColors { .. }))` overrides the colours a
+widget paints with: text (labels of any style and control text), accent,
+a button's fill at rest, hovered and pressed, and track/fill for checkboxes,
+sliders, progress bars and fields. `Ui::set_text_color` sets just the text,
+for example rarity-coloured item names. A node's `NodeStyle` background now
+paints beneath the widget and its border above it, so a coloured button
+border is always visible; a button whose style has a background paints no
+theme fill at rest, so the style shows through with hover and press tints
+drawn over it (rounded with the style's radius).
+
+## Auto layout with fixed sizes
+
+Auto-sized panels measure each child by its fixed `LayoutItem` size when it
+has one, so empty panels, spacers, image holders and fixed-width buttons
+count at their real size rather than their content.
+
+## Rich text
+
+`Widget::RichText { spans, style, wrap, max_width }` lays out words,
+key caps (`RichSpan::Key`, for prompts such as "Press [F]"), inline images
+(`RichSpan::Image`, drawn from `UiRenderer` textures like `Widget::Image`) and
+forced breaks in rows, word-wrapped like a label and measured with the
+active text measure (shaped text included). Keyed spans are localised and
+reported by `missing_keys`.
+
+## Line editing without a persistent tree
+
+`LineEditor` is the editing of `Widget::TextInput` as a value the game owns:
+apply a frame's `UiInput` to get typing, IME commits, grapheme-aware cursor
+movement, Home/End, Shift selection, select-all, Backspace and Delete, plus
+the Enter/Escape/Up/Down/Tab keys it saw. `caret_x`, `selection_x` and
+`index_at` use the text measure, so carets are exact on proportional fonts.
+UIs that rebuild their widgets every frame use it instead of a `TextInput`.
+`TextInput` now holds exactly `max_len` characters (it stopped one short)
+and truncates over-long pastes instead of rejecting them.
+
+## Developer consoles
+
+`quasar_ui::console` provides a command grammar and an overlay.
+`CommandSet` takes syntax strings (`give <item> [count]`) whose argument
+kinds are registered as choice lists (which may depend on the game and the
+earlier arguments), number ranges or free words. `parse` validates a line
+and names the problem in the command that matched furthest; `suggest` lists
+completions for the word being typed plus the usage of every command the
+line still matches. `Console` keeps the line (a `LineEditor`), a log,
+history (Up/Down on an empty line), suggestion selection and Tab
+completion, and `build`s its widgets into any `Ui` each frame. Starfall's
+backquote console uses it.

@@ -49,9 +49,36 @@ pub struct DistanceField<const N: usize> {
     /// Index of the neighbour each cell steps to, or `NO_PARENT`.
     parents: Vec<u32>,
     grid_version: u64,
+    /// Reused search queue (empty between calls).
+    heap: BinaryHeap<Open>,
+    /// Reused bucket queue for full rebuilds.
+    buckets: Vec<Vec<Open>>,
+    /// Cells whose distance changed during an incremental goal change.
+    touched: Vec<u32>,
+    record_touched: bool,
+    /// Boundary masks for `dimensions` (see `side_masks`).
+    sides: std::sync::Arc<[u64]>,
+    /// Legal-move masks for the grid version they were built from.
+    legal: Option<std::sync::Arc<LegalMasks>>,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+/// Per cell, which of the (at most 32) moves are legal: `into` bit `m` is
+/// set when `cell + offset[m]` may step into `cell`; `out` bit `m` when
+/// `cell` may step to `cell + offset[m]`. Cached per grid version so
+/// repeated goal changes on unchanged terrain skip every bounds, blocking
+/// and corner test.
+#[derive(Debug)]
+struct LegalMasks {
+    version: u64,
+    len: usize,
+    into: Vec<u32>,
+    out: Vec<u32>,
+}
+
+/// Grids up to this many cells cache legal-move masks (8 bytes per cell).
+const LEGAL_MASK_CELLS: usize = 1 << 21;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Open {
     cost: f32,
     index: u32,
@@ -93,6 +120,81 @@ fn offsets<const N: usize>() -> Vec<([i32; N], usize)> {
     out
 }
 
+/// One legal move direction with its precomputed linear index delta.
+#[derive(Clone, Copy)]
+struct Move<const N: usize> {
+    /// `index(cell + offset) - index(cell)`.
+    linear: isize,
+    /// 1 or √2.
+    multiplier: f32,
+    /// Linear deltas from the move's source to the cells whose corner it
+    /// cuts (only when corner cutting is off).
+    corners: [isize; N],
+    corner_count: u8,
+    /// Boundary bits a cell must not have for this move to stay in bounds
+    /// (see [`side_masks`]).
+    sides: u64,
+}
+
+fn strides<const N: usize>(dimensions: [u32; N]) -> [isize; N] {
+    let mut strides = [0isize; N];
+    let mut stride = 1isize;
+    for axis in 0..N {
+        strides[axis] = stride;
+        stride *= dimensions[axis] as isize;
+    }
+    strides
+}
+
+/// Neighbour moves in `offsets` order, without directions that can never be
+/// legal on `grid` (diagonals when disabled, steps along a size-1 axis).
+fn moves<const N: usize>(grid: &Grid<N>) -> Vec<Move<N>> {
+    assert!(N <= 32, "distance fields support at most 32 dimensions");
+    let dimensions = grid.dimensions();
+    let strides = strides(dimensions);
+    offsets::<N>()
+        .into_iter()
+        .filter(|(offset, nonzero)| {
+            (*nonzero == 1 || grid.diagonal_enabled())
+                && (0..N).all(|axis| offset[axis] == 0 || dimensions[axis] > 1)
+        })
+        .map(|(offset, nonzero)| {
+            let linear = (0..N)
+                .map(|axis| offset[axis] as isize * strides[axis])
+                .sum();
+            let mut corners = [0isize; N];
+            let mut corner_count = 0u8;
+            if nonzero > 1 && !grid.corner_cutting_enabled() {
+                for axis in 0..N {
+                    if offset[axis] != 0 {
+                        corners[corner_count as usize] = offset[axis] as isize * strides[axis];
+                        corner_count += 1;
+                    }
+                }
+            }
+            let mut sides = 0u64;
+            for (axis, value) in offset.iter().enumerate() {
+                match value {
+                    -1 => sides |= 1 << (2 * axis),
+                    1 => sides |= 1 << (2 * axis + 1),
+                    _ => {}
+                }
+            }
+            Move {
+                linear,
+                sides,
+                multiplier: if nonzero > 1 {
+                    std::f32::consts::SQRT_2
+                } else {
+                    1.0
+                },
+                corners,
+                corner_count,
+            }
+        })
+        .collect()
+}
+
 impl<const N: usize> Grid<N> {
     /// Multi-source Dijkstra from `goals`. Blocked or out-of-bounds goals are
     /// ignored; with no usable goal every cell is unreachable.
@@ -114,53 +216,15 @@ impl<const N: usize> Grid<N> {
             distances: vec![f32::INFINITY; self.len()],
             parents: vec![NO_PARENT; self.len()],
             grid_version: self.version(),
+            heap: BinaryHeap::new(),
+            buckets: Vec::new(),
+            touched: Vec::new(),
+            record_touched: false,
+            sides: std::sync::Arc::from(Vec::new()),
+            legal: None,
         };
-        let mut heap = BinaryHeap::new();
-        field.seed_goals(self, None, &mut heap);
-        field.propagate(self, heap);
+        field.rebuild(self);
         Ok(field)
-    }
-
-    /// Cost of the move from `from` by `offset`, mirroring
-    /// `neighbors_into`: `None` when the target is out of bounds or blocked,
-    /// the move is diagonal and diagonals are off, or it cuts a blocked
-    /// corner.
-    fn step_cost(
-        &self,
-        from: GridCell<N>,
-        offset: &[i32; N],
-        nonzero: usize,
-    ) -> Option<(usize, f32)> {
-        if nonzero > 1 && !self.diagonal_enabled() {
-            return None;
-        }
-        let mut target = from.coords;
-        for axis in 0..N {
-            target[axis] += offset[axis];
-        }
-        let target_index = self.index(GridCell::new(target)).ok()?;
-        if self.blocked_at(target_index) {
-            return None;
-        }
-        if nonzero > 1 && !self.corner_cutting_enabled() {
-            let cut = (0..N).any(|axis| {
-                if offset[axis] == 0 {
-                    return false;
-                }
-                let mut intermediate = from.coords;
-                intermediate[axis] += offset[axis];
-                self.is_blocked(GridCell::new(intermediate))
-            });
-            if cut {
-                return None;
-            }
-        }
-        let step = if nonzero > 1 {
-            std::f32::consts::SQRT_2
-        } else {
-            1.0
-        };
-        Some((target_index, self.cost_at(target_index) * step))
     }
 }
 
@@ -254,11 +318,467 @@ impl<const N: usize> DistanceField<N> {
         path
     }
 
-    /// Replaces the goal set and rebuilds. Use [`Self::update_region`] for
-    /// terrain edits that keep the goals.
+    /// Replaces the goal set, repairing the field in place.
+    ///
+    /// Added goals only lower distances, so they propagate outwards from the
+    /// new goals; removed goals invalidate just the cells whose route ended
+    /// at them, which are then re-settled from the surrounding cells (a full
+    /// in-place search when most of the field is affected, for example when
+    /// a single goal moves). Buffers are reused either way. Distances equal
+    /// a fresh [`Grid::distance_field`]; where two routes tie,
+    /// [`Self::next_cell`] may pick a different (equally short) neighbour.
+    /// A stale field (the grid changed since it was built) is rebuilt.
     pub fn set_goals(&mut self, grid: &Grid<N>, goals: &[GridCell<N>]) -> NavResult<()> {
-        *self = grid.distance_field(goals, &self.options)?;
+        if grid.len() > NO_PARENT as usize {
+            return Err(NavError::InvalidDimensions);
+        }
+        if self.is_stale(grid) || self.distances.len() != grid.len() {
+            self.goals = goals.to_vec();
+            self.rebuild(grid);
+            return Ok(());
+        }
+        let valid = |cell: &GridCell<N>| grid.index(*cell).ok().filter(|i| !grid.blocked_at(*i));
+        let old: Vec<usize> = self.goals.iter().filter_map(valid).collect();
+        let new: Vec<usize> = goals.iter().filter_map(valid).collect();
+        self.goals = goals.to_vec();
+        let removed: Vec<usize> = old.iter().copied().filter(|i| !new.contains(i)).collect();
+        let mut heap = std::mem::take(&mut self.heap);
+        heap.clear();
+        self.touched.clear();
+        if old.is_empty() {
+            // Nothing was reachable: a plain rebuild is cheapest.
+            self.heap = heap;
+            self.rebuild(grid);
+            return Ok(());
+        }
+        if removed.is_empty() {
+            // Only additions: distances can only fall.
+            self.record_touched = true;
+            self.seed_goals(grid, None, &mut heap);
+            self.propagate(grid, heap);
+            self.record_touched = false;
+            self.settle_touched(grid);
+            return Ok(());
+        }
+        if removed.len() == old.len() {
+            // Every route ended at a removed goal: nothing survives.
+            self.heap = heap;
+            self.rebuild(grid);
+            return Ok(());
+        }
+        // Invalidate the route trees rooted at removed goals.
+        let len = self.distances.len();
+        let moves = moves(grid);
+        let sides = self.side_table(grid);
+        let mut invalid = vec![false; len];
+        let mut stack: Vec<usize> = Vec::new();
+        for &goal in &removed {
+            if !invalid[goal] {
+                invalid[goal] = true;
+                stack.push(goal);
+            }
+        }
+        let mut count = stack.len();
+        while let Some(index) = stack.pop() {
+            for m in &moves {
+                let Some(neighbor) = step(&sides, index, m) else {
+                    continue;
+                };
+                if self.parents[neighbor] == index as u32 && !invalid[neighbor] {
+                    invalid[neighbor] = true;
+                    count += 1;
+                    stack.push(neighbor);
+                }
+            }
+        }
+        if count * 2 > len {
+            self.heap = heap;
+            self.rebuild(grid);
+            return Ok(());
+        }
+        self.record_touched = true;
+        for (index, bad) in invalid.iter().enumerate() {
+            if *bad {
+                self.distances[index] = f32::INFINITY;
+                self.parents[index] = NO_PARENT;
+                self.touched.push(index as u32);
+            }
+        }
+        self.seed_goals(grid, None, &mut heap);
+        let mut offered = vec![false; len];
+        for index in (0..len).filter(|index| invalid[*index]) {
+            for m in &moves {
+                let Some(neighbor) = step(&sides, index, m) else {
+                    continue;
+                };
+                if !invalid[neighbor] && !offered[neighbor] && self.distances[neighbor].is_finite()
+                {
+                    offered[neighbor] = true;
+                    heap.push(Open {
+                        cost: self.distances[neighbor],
+                        index: neighbor as u32,
+                    });
+                }
+            }
+        }
+        self.propagate(grid, heap);
+        self.record_touched = false;
+        self.settle_touched(grid);
         Ok(())
+    }
+
+    /// Re-picks parents canonically for touched cells and every cell that
+    /// can step into one, so incremental changes match a rebuild exactly.
+    fn settle_touched(&mut self, grid: &Grid<N>) {
+        let moves = moves(grid);
+        let sides = self.side_table(grid);
+        let mut cells = std::mem::take(&mut self.touched);
+        let direct = cells.len();
+        for i in 0..direct {
+            let index = cells[i] as usize;
+            for m in &moves {
+                if let Some(from) = step(&sides, index, m) {
+                    cells.push(from as u32);
+                }
+            }
+        }
+        cells.sort_unstable();
+        cells.dedup();
+        self.canonical_parents(grid, cells.iter().map(|&c| c as usize));
+        cells.clear();
+        self.touched = cells;
+    }
+
+    /// Recomputes every cell in place, reusing the buffers.
+    fn rebuild(&mut self, grid: &Grid<N>) {
+        self.dimensions = grid.dimensions();
+        self.distances.clear();
+        self.distances.resize(grid.len(), f32::INFINITY);
+        self.parents.clear();
+        self.parents.resize(grid.len(), NO_PARENT);
+        self.grid_version = grid.version();
+        let mut heap = std::mem::take(&mut self.heap);
+        heap.clear();
+        self.seed_goals(grid, None, &mut heap);
+        match bucket_plan(grid) {
+            Some((width, slots)) => {
+                // Dial's bucket queue: O(1) queue operations instead of a
+                // binary heap. Processing order inside a bucket differs from
+                // the heap's, so parents are then chosen canonically, which
+                // reproduces the heap search exactly.
+                let seeds: Vec<Open> = heap.drain().collect();
+                self.heap = heap;
+                if let Some(legal) = self.legal_masks(grid) {
+                    self.propagate_masked(grid, &legal, &seeds, width, slots);
+                    self.canonical_parents_masked(grid, &legal);
+                } else {
+                    self.propagate_buckets(grid, &seeds, width, slots);
+                    let len = self.distances.len();
+                    self.canonical_parents(grid, 0..len);
+                }
+            }
+            None => {
+                self.propagate(grid, heap);
+            }
+        }
+    }
+
+    /// Label-correcting search over a circular bucket queue of `slots`
+    /// buckets `width` wide (width <= the cheapest move, so a bucket's cells
+    /// cannot improve each other). Sets distances only.
+    fn propagate_buckets(&mut self, grid: &Grid<N>, seeds: &[Open], width: f32, slots: usize) {
+        let moves = moves(grid);
+        let sides = self.side_table(grid);
+        let max_cost = self.options.max_cost;
+        let inverse = 1.0 / width;
+        let mut buckets = std::mem::take(&mut self.buckets);
+        if buckets.len() < slots {
+            buckets.resize_with(slots, Vec::new);
+        }
+        for bucket in &mut buckets {
+            bucket.clear();
+        }
+        let mut queued = 0usize;
+        for seed in seeds {
+            buckets[0].push(*seed);
+            queued += 1;
+        }
+        let mut slot = 0usize;
+        let mut scratch: Vec<Open> = Vec::new();
+        while queued > 0 {
+            if buckets[slot].is_empty() {
+                slot = (slot + 1) & (slots - 1);
+                continue;
+            }
+            std::mem::swap(&mut scratch, &mut buckets[slot]);
+            while let Some(Open { cost, index }) = scratch.pop() {
+                queued -= 1;
+                let index = index as usize;
+                if cost > self.distances[index] {
+                    continue;
+                }
+                let enter = grid.cost_at(index);
+                for m in &moves {
+                    let Some(from) = step(&sides, index, m) else {
+                        continue;
+                    };
+                    if grid.blocked_at(from) {
+                        continue;
+                    }
+                    let candidate = cost + enter * m.multiplier;
+                    if candidate > max_cost || candidate >= self.distances[from] {
+                        continue;
+                    }
+                    if m.corner_count > 0
+                        && m.corners[..m.corner_count as usize]
+                            .iter()
+                            .any(|delta| grid.blocked_at((from as isize - delta) as usize))
+                    {
+                        continue;
+                    }
+                    self.distances[from] = candidate;
+                    let target = (candidate * inverse) as usize & (slots - 1);
+                    let entry = Open {
+                        cost: candidate,
+                        index: from as u32,
+                    };
+                    if target == slot {
+                        scratch.push(entry);
+                    } else {
+                        buckets[target].push(entry);
+                    }
+                    queued += 1;
+                }
+            }
+            std::mem::swap(&mut scratch, &mut buckets[slot]);
+        }
+        self.buckets = buckets;
+    }
+
+    /// Picks each cell's parent as the binary-heap search would: the legal
+    /// neighbour minimising `(distance + step, neighbour distance, index)`.
+    fn canonical_parents(&mut self, grid: &Grid<N>, cells: impl IntoIterator<Item = usize>) {
+        let moves = moves(grid);
+        let sides = self.side_table(grid);
+        for cell in cells {
+            let distance = self.distances[cell];
+            if !distance.is_finite() || grid.blocked_at(cell) {
+                self.parents[cell] = NO_PARENT;
+                continue;
+            }
+            if distance == 0.0 && self.is_goal(grid, cell) {
+                self.parents[cell] = NO_PARENT;
+                continue;
+            }
+            let mut best = (f32::INFINITY, f32::INFINITY, NO_PARENT);
+            for m in &moves {
+                // Forward move cell -> cell + offset.
+                let Some(next) = step(&sides, cell, m) else {
+                    continue;
+                };
+                if grid.blocked_at(next) {
+                    continue;
+                }
+                let base = self.distances[next];
+                if !base.is_finite() {
+                    continue;
+                }
+                if m.corner_count > 0
+                    && m.corners[..m.corner_count as usize]
+                        .iter()
+                        .any(|delta| grid.blocked_at((cell as isize + delta) as usize))
+                {
+                    continue;
+                }
+                let candidate = base + grid.cost_at(next) * m.multiplier;
+                let key = (candidate, base, next as u32);
+                if key.0 < best.0
+                    || (key.0 == best.0 && (key.1 < best.1 || (key.1 == best.1 && key.2 < best.2)))
+                {
+                    best = key;
+                }
+            }
+            self.parents[cell] = best.2;
+        }
+    }
+
+    /// Boundary masks for `grid`, rebuilt only when its size changes.
+    fn side_table(&mut self, grid: &Grid<N>) -> std::sync::Arc<[u64]> {
+        if self.sides.len() != grid.len() || self.dimensions != grid.dimensions() {
+            let mut masks = Vec::new();
+            side_masks(grid.dimensions(), &mut masks);
+            self.sides = std::sync::Arc::from(masks);
+        }
+        self.sides.clone()
+    }
+
+    /// Legal-move masks for `grid`, rebuilt when the grid changed; `None`
+    /// for grids too large to cache or with more than 32 moves.
+    fn legal_masks(&mut self, grid: &Grid<N>) -> Option<std::sync::Arc<LegalMasks>> {
+        let len = grid.len();
+        if len > LEGAL_MASK_CELLS {
+            return None;
+        }
+        if let Some(legal) = &self.legal
+            && legal.version == grid.version()
+            && legal.len == len
+        {
+            return Some(legal.clone());
+        }
+        let moves = moves(grid);
+        if moves.len() > 32 {
+            return None;
+        }
+        let sides = self.side_table(grid);
+        let mut out = vec![0u32; len];
+        for (cell, slot) in out.iter_mut().enumerate() {
+            if grid.blocked_at(cell) {
+                continue;
+            }
+            let mut bits = 0u32;
+            for (bit, m) in moves.iter().enumerate() {
+                let Some(next) = step(&sides, cell, m) else {
+                    continue;
+                };
+                if grid.blocked_at(next) {
+                    continue;
+                }
+                if m.corner_count > 0
+                    && m.corners[..m.corner_count as usize]
+                        .iter()
+                        .any(|delta| grid.blocked_at((cell as isize + delta) as usize))
+                {
+                    continue;
+                }
+                bits |= 1 << bit;
+            }
+            *slot = bits;
+        }
+        // Moves are symmetric, so move `m` into a cell is the opposite move
+        // (`count - 1 - m`) out of its neighbour.
+        let count = moves.len();
+        let mut into = vec![0u32; len];
+        for (cell, &mask) in out.iter().enumerate() {
+            let mut bits = mask;
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let next = (cell as isize + moves[bit].linear) as usize;
+                into[next] |= 1 << (count - 1 - bit);
+            }
+        }
+        let legal = std::sync::Arc::new(LegalMasks {
+            version: grid.version(),
+            len,
+            into,
+            out,
+        });
+        self.legal = Some(legal.clone());
+        Some(legal)
+    }
+
+    /// [`Self::propagate_buckets`] driven by cached legal-move masks.
+    fn propagate_masked(
+        &mut self,
+        grid: &Grid<N>,
+        legal: &LegalMasks,
+        seeds: &[Open],
+        width: f32,
+        slots: usize,
+    ) {
+        let moves = moves(grid);
+        let max_cost = self.options.max_cost;
+        let inverse = 1.0 / width;
+        let mut buckets = std::mem::take(&mut self.buckets);
+        if buckets.len() < slots {
+            buckets.resize_with(slots, Vec::new);
+        }
+        for bucket in &mut buckets {
+            bucket.clear();
+        }
+        let mut queued = seeds.len();
+        buckets[0].extend_from_slice(seeds);
+        let mut slot = 0usize;
+        let mut scratch: Vec<Open> = Vec::new();
+        let distances = &mut self.distances;
+        while queued > 0 {
+            if buckets[slot].is_empty() {
+                slot = (slot + 1) & (slots - 1);
+                continue;
+            }
+            std::mem::swap(&mut scratch, &mut buckets[slot]);
+            while let Some(Open { cost, index }) = scratch.pop() {
+                queued -= 1;
+                let index = index as usize;
+                if cost > distances[index] {
+                    continue;
+                }
+                let enter = grid.cost_at(index);
+                let mut bits = legal.into[index];
+                while bits != 0 {
+                    let m = &moves[bits.trailing_zeros() as usize];
+                    bits &= bits - 1;
+                    let from = (index as isize + m.linear) as usize;
+                    let candidate = cost + enter * m.multiplier;
+                    if candidate > max_cost || candidate >= distances[from] {
+                        continue;
+                    }
+                    distances[from] = candidate;
+                    let target = (candidate * inverse) as usize & (slots - 1);
+                    let entry = Open {
+                        cost: candidate,
+                        index: from as u32,
+                    };
+                    if target == slot {
+                        scratch.push(entry);
+                    } else {
+                        buckets[target].push(entry);
+                    }
+                    queued += 1;
+                }
+            }
+            std::mem::swap(&mut scratch, &mut buckets[slot]);
+        }
+        self.buckets = buckets;
+    }
+
+    /// [`Self::canonical_parents`] for every cell, using legal-move masks.
+    fn canonical_parents_masked(&mut self, grid: &Grid<N>, legal: &LegalMasks) {
+        let moves = moves(grid);
+        let goals: Vec<usize> = self
+            .goals
+            .iter()
+            .filter_map(|goal| grid.index(*goal).ok())
+            .collect();
+        for cell in 0..self.distances.len() {
+            let distance = self.distances[cell];
+            if !distance.is_finite() || (distance == 0.0 && goals.contains(&cell)) {
+                self.parents[cell] = NO_PARENT;
+                continue;
+            }
+            let mut best = (f32::INFINITY, f32::INFINITY, NO_PARENT);
+            let mut bits = legal.out[cell];
+            while bits != 0 {
+                let m = &moves[bits.trailing_zeros() as usize];
+                bits &= bits - 1;
+                let next = (cell as isize + m.linear) as usize;
+                let base = self.distances[next];
+                let candidate = base + grid.cost_at(next) * m.multiplier;
+                if candidate < best.0
+                    || (candidate == best.0
+                        && (base < best.1 || (base == best.1 && (next as u32) < best.2)))
+                {
+                    best = (candidate, base, next as u32);
+                }
+            }
+            self.parents[cell] = best.2;
+        }
+    }
+
+    fn is_goal(&self, grid: &Grid<N>, cell: usize) -> bool {
+        self.goals
+            .iter()
+            .any(|goal| grid.index(*goal).ok() == Some(cell))
     }
 
     fn seed_goals(&mut self, grid: &Grid<N>, only: Option<&[bool]>, heap: &mut BinaryHeap<Open>) {
@@ -272,6 +792,9 @@ impl<const N: usize> DistanceField<N> {
             if self.distances[index] > 0.0 {
                 self.distances[index] = 0.0;
                 self.parents[index] = NO_PARENT;
+                if self.record_touched {
+                    self.touched.push(index as u32);
+                }
                 heap.push(Open {
                     cost: 0.0,
                     index: index as u32,
@@ -281,9 +804,11 @@ impl<const N: usize> DistanceField<N> {
     }
 
     /// Reverse Dijkstra: a popped cell `n` offers `dist[n] + cost(c -> n)` to
-    /// every cell `c` that may step into it.
+    /// every cell `c` that may step into it. Moves are precomputed as linear
+    /// index deltas; the queue is handed back to `self.heap` for reuse.
     fn propagate(&mut self, grid: &Grid<N>, mut heap: BinaryHeap<Open>) -> usize {
-        let offsets = offsets::<N>();
+        let moves = moves(grid);
+        let sides = self.side_table(grid);
         let mut settled = 0;
         let max_cost = self.options.max_cost;
         while let Some(Open { cost, index }) = heap.pop() {
@@ -292,40 +817,42 @@ impl<const N: usize> DistanceField<N> {
                 continue;
             }
             settled += 1;
-            // Every cell `c` with a legal move into `index` is a geometric
-            // neighbour; test the move from `c` itself because corner rules
-            // are not symmetric in 3D.
-            let Some(cell) = grid.cell(index) else {
-                continue;
-            };
-            for (offset, nonzero) in &offsets {
-                let mut coords = cell.coords;
-                for axis in 0..N {
-                    coords[axis] += offset[axis];
-                }
-                let from = GridCell::new(coords);
-                let Ok(neighbor) = grid.index(from) else {
+            // Entering `index` costs its cell cost (times √2 diagonally),
+            // whichever neighbour the move starts from.
+            let enter = grid.cost_at(index);
+            for m in &moves {
+                // `from = index + offset` steps back by `-offset` into
+                // `index`; test the move from `from` because corner rules
+                // are not symmetric in 3D.
+                let Some(from) = step(&sides, index, m) else {
                     continue;
                 };
-                if grid.blocked_at(neighbor) {
+                if grid.blocked_at(from) {
                     continue;
                 }
-                let back = offset.map(|value| -value);
-                let Some((_, step)) = grid.step_cost(from, &back, *nonzero) else {
-                    continue;
-                };
-                let candidate = cost + step;
-                if candidate > max_cost || candidate >= self.distances[neighbor] {
+                let candidate = cost + enter * m.multiplier;
+                if candidate > max_cost || candidate >= self.distances[from] {
                     continue;
                 }
-                self.distances[neighbor] = candidate;
-                self.parents[neighbor] = index as u32;
+                if m.corner_count > 0
+                    && m.corners[..m.corner_count as usize]
+                        .iter()
+                        .any(|delta| grid.blocked_at((from as isize - delta) as usize))
+                {
+                    continue;
+                }
+                self.distances[from] = candidate;
+                self.parents[from] = index as u32;
+                if self.record_touched {
+                    self.touched.push(from as u32);
+                }
                 heap.push(Open {
                     cost: candidate,
-                    index: neighbor as u32,
+                    index: from as u32,
                 });
             }
         }
+        self.heap = heap;
         settled
     }
 
@@ -414,4 +941,71 @@ impl<const N: usize> DistanceField<N> {
         self.grid_version = grid.version();
         Ok(settled)
     }
+}
+
+/// Per cell, bit `2a` is set on the low face of axis `a` and bit `2a + 1` on
+/// its high face, so a move stays in bounds when `sides[cell] & move.sides`
+/// is zero. Built without divisions by walking the coordinates.
+fn side_masks<const N: usize>(dimensions: [u32; N], out: &mut Vec<u64>) {
+    let len: usize = dimensions.iter().map(|&d| d as usize).product();
+    out.clear();
+    out.reserve(len);
+    let mut coords = [0u32; N];
+    for _ in 0..len {
+        let mut mask = 0u64;
+        for axis in 0..N {
+            if coords[axis] == 0 {
+                mask |= 1 << (2 * axis);
+            }
+            if coords[axis] + 1 >= dimensions[axis] {
+                mask |= 1 << (2 * axis + 1);
+            }
+        }
+        out.push(mask);
+        for axis in 0..N {
+            coords[axis] += 1;
+            if coords[axis] < dimensions[axis] {
+                break;
+            }
+            coords[axis] = 0;
+        }
+    }
+}
+
+/// `index + move.offset` when it stays inside the grid.
+#[inline(always)]
+fn step<const N: usize>(sides: &[u64], index: usize, m: &Move<N>) -> Option<usize> {
+    if sides[index] & m.sides != 0 {
+        None
+    } else {
+        Some((index as isize + m.linear) as usize)
+    }
+}
+
+/// `(width, slots)` for a bucket-queue rebuild, or `None` when a binary heap
+/// is needed (zero-cost cells, or costs spread too widely for few buckets).
+fn bucket_plan<const N: usize>(grid: &Grid<N>) -> Option<(f32, usize)> {
+    let (mut low, mut high) = (f32::INFINITY, 0.0f32);
+    for index in 0..grid.len() {
+        if !grid.blocked_at(index) {
+            let cost = grid.cost_at(index);
+            low = low.min(cost);
+            high = high.max(cost);
+        }
+    }
+    if !(low > 0.0 && high.is_finite()) {
+        return None;
+    }
+    let widest = high
+        * if grid.diagonal_enabled() {
+            3f32.sqrt()
+        } else {
+            1.0
+        };
+    // Slightly narrower than the cheapest move so rounding never lets a
+    // bucket's cells improve each other more than the label-correcting
+    // search tolerates.
+    let width = low * 0.999;
+    let slots = ((widest / width).ceil() as usize + 2).next_power_of_two();
+    (slots <= 4096).then_some((width, slots))
 }

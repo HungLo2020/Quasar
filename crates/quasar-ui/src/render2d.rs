@@ -65,10 +65,6 @@ impl UiRenderer {
     pub fn draw(&mut self, canvas: &mut Canvas, ui: &Ui) {
         let theme = ui.theme();
         let scale = ui.scale();
-        let font = theme.font_size * scale;
-        let small = theme.small_size * scale;
-        let heading = theme.heading_size * scale;
-        let padding = theme.padding * scale;
         for entry in ui.layout_entries() {
             let Some(node) = ui.node(entry.id) else {
                 continue;
@@ -77,16 +73,42 @@ impl UiRenderer {
                 continue;
             }
             canvas.set_clip(Some(to_rect(entry.clip)));
-            let rect = to_rect(entry.rect);
             if let Some(style) = &node.style {
                 paint_style(canvas, entry.rect, style, scale);
             }
-            #[cfg(feature = "text-render2d")]
-            if let Some(text) = &mut self.text
-                && text.draw_widget(canvas, ui, node, entry)
-            {
-                continue;
+            let paint = crate::widget::Paint::new(theme, node.colors.as_ref(), node.style.as_ref());
+            self.draw_widget(canvas, ui, node, entry, &paint);
+            if let Some(style) = &node.style {
+                canvas.set_clip(Some(to_rect(entry.clip)));
+                paint_style_border(canvas, entry.rect, style, scale);
             }
+        }
+        canvas.set_clip(None);
+    }
+
+    fn draw_widget(
+        &mut self,
+        canvas: &mut Canvas,
+        ui: &Ui,
+        node: &crate::UiNode,
+        entry: &crate::LayoutEntry,
+        paint: &crate::widget::Paint,
+    ) {
+        let theme = ui.theme();
+        let scale = ui.scale();
+        let font = theme.font_size * scale;
+        let small = theme.small_size * scale;
+        let heading = theme.heading_size * scale;
+        let padding = theme.padding * scale;
+        let rect = to_rect(entry.rect);
+        #[cfg(feature = "text-render2d")]
+        if !matches!(node.widget, Widget::RichText { .. })
+            && let Some(text) = &mut self.text
+            && text.draw_widget_with(canvas, ui, node, entry, paint)
+        {
+            return;
+        }
+        {
             match &node.widget {
                 Widget::Panel { .. } if node.style.is_some() => {}
                 Widget::Panel { .. } => {
@@ -126,26 +148,26 @@ impl UiRenderer {
                             top + index as f32 * size,
                             line,
                             size,
-                            theme.color(*style),
+                            paint.color(*style),
                         );
                     }
                 }
                 Widget::Button { text, .. } => {
                     let fill = if node.state.pressed {
-                        theme.button_active
+                        paint.button_active
                     } else if node.state.hovered || node.state.focus_t > 0.5 {
-                        theme.button_hover
+                        paint.button_hover
                     } else {
-                        theme.button
+                        paint.button
                     };
-                    canvas.rect(rect, to_color(fill));
+                    fill_rounded(canvas, entry.rect, fill, paint.radius * scale);
                     draw_centered_text(
                         canvas,
                         to_rect(entry.rect),
                         ui.resolve_text(text),
                         font,
                         if node.enabled {
-                            theme.text
+                            paint.text
                         } else {
                             theme.disabled
                         },
@@ -176,7 +198,7 @@ impl UiRenderer {
                         inner.width,
                         4.0 * scale,
                     );
-                    canvas.rect(track, to_color(theme.track));
+                    canvas.rect(track, to_color(paint.track));
                     let fraction = if *max > *min {
                         ((*value - *min) / (*max - *min)).clamp(0.0, 1.0)
                     } else {
@@ -184,7 +206,7 @@ impl UiRenderer {
                     };
                     canvas.rect(
                         Rect::new(track.x, track.y, track.width * fraction, track.height),
-                        to_color(theme.fill),
+                        to_color(paint.fill),
                     );
                     let knob = 6.0 * scale;
                     canvas.rect(
@@ -197,7 +219,7 @@ impl UiRenderer {
                         to_color(if node.state.focus_t > 0.5 {
                             theme.focus
                         } else {
-                            theme.accent
+                            paint.accent
                         }),
                     );
                     draw_text(
@@ -206,7 +228,7 @@ impl UiRenderer {
                         inner.y,
                         ui.resolve_text(label),
                         small,
-                        theme.dim_text,
+                        paint.dim_text,
                     );
                     let value_text = format_slider_value(*value, *step);
                     draw_text(
@@ -215,7 +237,7 @@ impl UiRenderer {
                         inner.y,
                         &value_text,
                         small,
-                        theme.text,
+                        paint.text,
                     );
                     if node.state.focus_t > 0.01 {
                         focus_border(canvas, rect, theme.focus, theme.focus_width * scale);
@@ -225,7 +247,7 @@ impl UiRenderer {
                     let box_size = (entry.rect.height - 4.0 * scale).max(8.0);
                     let box_rect =
                         Rect::new(entry.rect.x, entry.rect.y + 2.0 * scale, box_size, box_size);
-                    canvas.rect(box_rect, to_color(theme.track));
+                    canvas.rect(box_rect, to_color(paint.track));
                     if *checked {
                         canvas.rect(
                             Rect::new(
@@ -234,7 +256,7 @@ impl UiRenderer {
                                 box_size - 6.0 * scale,
                                 box_size - 6.0 * scale,
                             ),
-                            to_color(theme.fill),
+                            to_color(paint.fill),
                         );
                     }
                     draw_text(
@@ -243,7 +265,7 @@ impl UiRenderer {
                         entry.rect.y + (entry.rect.height - font).max(0.0) * 0.5,
                         ui.resolve_text(label),
                         font,
-                        theme.text,
+                        paint.text,
                     );
                     if node.state.focus_t > 0.01 {
                         focus_border(canvas, rect, theme.focus, theme.focus_width * scale);
@@ -255,14 +277,14 @@ impl UiRenderer {
                     selected,
                     ..
                 } => {
-                    canvas.rect(rect, to_color(theme.button));
+                    fill_rounded(canvas, entry.rect, paint.button, paint.radius * scale);
                     draw_text(
                         canvas,
                         rect.x + padding,
                         rect.y + padding,
                         ui.resolve_text(label),
                         font,
-                        theme.text,
+                        paint.text,
                     );
                     if let Some(option) = options.get(*selected) {
                         let text = ui.resolve_text(option);
@@ -274,7 +296,7 @@ impl UiRenderer {
                             rect.y + padding,
                             text,
                             font,
-                            theme.accent,
+                            paint.accent,
                         );
                     }
                     if node.state.focus_t > 0.01 {
@@ -295,9 +317,9 @@ impl UiRenderer {
                             ui.resolve_text(tab),
                             font,
                             if index == *selected {
-                                theme.accent
+                                paint.accent
                             } else {
-                                theme.dim_text
+                                paint.dim_text
                             },
                         );
                     }
@@ -312,7 +334,7 @@ impl UiRenderer {
                     password,
                     ..
                 } => {
-                    canvas.rect(rect, to_color(theme.track));
+                    canvas.rect(rect, to_color(paint.track));
                     let value = if text.is_empty() {
                         ui.resolve_text(placeholder).to_owned()
                     } else if *password {
@@ -321,9 +343,9 @@ impl UiRenderer {
                         text.clone()
                     };
                     let color = if text.is_empty() {
-                        theme.dim_text
+                        paint.dim_text
                     } else {
-                        theme.text
+                        paint.text
                     };
                     draw_text(
                         canvas,
@@ -347,7 +369,7 @@ impl UiRenderer {
                     }
                 }
                 Widget::Progress { label, value, max } => {
-                    canvas.rect(rect, to_color(theme.track));
+                    canvas.rect(rect, to_color(paint.track));
                     let fraction = if *max > 0.0 {
                         (*value / *max).clamp(0.0, 1.0)
                     } else {
@@ -355,7 +377,7 @@ impl UiRenderer {
                     };
                     canvas.rect(
                         Rect::new(rect.x, rect.y, rect.width * fraction, rect.height),
-                        to_color(theme.fill),
+                        to_color(paint.fill),
                     );
                     draw_text(
                         canvas,
@@ -363,7 +385,7 @@ impl UiRenderer {
                         rect.y + padding,
                         ui.resolve_text(label),
                         small,
-                        theme.text,
+                        paint.text,
                     );
                 }
                 Widget::Image { image, source, .. } => {
@@ -398,9 +420,9 @@ impl UiRenderer {
                             ui.resolve_text(item),
                             font,
                             if index == *selected {
-                                theme.accent
+                                paint.accent
                             } else {
-                                theme.text
+                                paint.text
                             },
                         );
                     }
@@ -409,14 +431,14 @@ impl UiRenderer {
                     }
                 }
                 Widget::Binding { label, value, .. } => {
-                    canvas.rect(rect, to_color(theme.button));
+                    fill_rounded(canvas, entry.rect, paint.button, paint.radius * scale);
                     draw_text(
                         canvas,
                         rect.x + padding,
                         rect.y + padding,
                         ui.resolve_text(label),
                         font,
-                        theme.text,
+                        paint.text,
                     );
                     draw_text(
                         canvas,
@@ -426,16 +448,92 @@ impl UiRenderer {
                         rect.y + padding,
                         value,
                         font,
-                        theme.accent,
+                        paint.accent,
                     );
                     if node.state.focus_t > 0.01 {
                         focus_border(canvas, rect, theme.focus, theme.focus_width * scale);
                     }
                 }
+                Widget::RichText { style, wrap, .. } => {
+                    let size = theme.size(*style) * scale;
+                    let limit = match wrap {
+                        crate::LabelWrap::None => f32::INFINITY,
+                        crate::LabelWrap::Word => entry.rect.width,
+                    };
+                    // Lay out with the same measure the shaped renderer
+                    // draws with, so runs and caps line up.
+                    #[cfg(feature = "text-render2d")]
+                    let mut shaped = self.text.as_mut().filter(|t| t.ready());
+                    #[cfg(feature = "text-render2d")]
+                    let layout = match &shaped {
+                        Some(text) => ui.rich_layout(node, text.measure_ref(), limit, scale),
+                        None => ui.rich_layout(node, &BitmapTextMeasure, limit, scale),
+                    };
+                    #[cfg(not(feature = "text-render2d"))]
+                    let layout = ui.rich_layout(node, &BitmapTextMeasure, limit, scale);
+                    let top = entry.rect.y + (entry.rect.height - layout.size.y).max(0.0) * 0.5;
+                    let color = paint.color(*style);
+                    for item in &layout.items {
+                        let (x, y) = (entry.rect.x + item.x, top + item.y);
+                        match &item.kind {
+                            crate::widget::RichKind::Text(run) => {
+                                #[cfg(feature = "text-render2d")]
+                                if let Some(text) = shaped.as_deref_mut() {
+                                    text.draw_run(canvas, run, *style, size, x, y, None, color);
+                                    continue;
+                                }
+                                draw_text(canvas, x, y, run, size, color);
+                            }
+                            crate::widget::RichKind::Key(label) => {
+                                let cap = UiRect::new(x, y, item.width, item.height);
+                                draw_key_cap(canvas, cap, paint, scale);
+                                #[cfg(feature = "text-render2d")]
+                                if let Some(text) = shaped.as_deref_mut() {
+                                    text.draw_run(
+                                        canvas,
+                                        label,
+                                        *style,
+                                        size,
+                                        x,
+                                        y,
+                                        Some((item.width, item.height)),
+                                        color,
+                                    );
+                                    continue;
+                                }
+                                draw_centered_text(canvas, to_rect(cap), label, size, color);
+                            }
+                            crate::widget::RichKind::Image { image, source } => {
+                                if let Some(texture) = self.textures.get(image) {
+                                    let mut sprite = Sprite::new(
+                                        *texture,
+                                        Rect::new(x, y, item.width, item.height),
+                                    );
+                                    sprite.source = source.map(to_rect);
+                                    canvas.sprite(sprite);
+                                }
+                            }
+                        }
+                    }
+                }
                 Widget::Spacer => {}
             }
         }
-        canvas.set_clip(None);
+    }
+}
+
+/// A key-cap box: track fill with a thin outline in the text colour.
+pub(crate) fn draw_key_cap(
+    canvas: &mut Canvas,
+    cap: UiRect,
+    paint: &crate::widget::Paint,
+    scale: f32,
+) {
+    let radius = (3.0 * scale).min(cap.height * 0.5);
+    fill_rounded(canvas, cap, paint.track, radius);
+    let outline = paint.dim_text.with_alpha(paint.dim_text.a.min(200));
+    for span in crate::rounded_border_spans(cap, radius, scale.max(1.0)) {
+        canvas.rect(to_rect(span), to_color(outline));
     }
 }
 
@@ -495,15 +593,36 @@ fn draw_centered_text(canvas: &mut Canvas, rect: Rect, text: &str, size: f32, co
 }
 
 /// Paints a [`crate::NodeStyle`] background and border with rounded corners.
+/// Paints a [`crate::NodeStyle`]'s background (beneath the widget).
 pub(crate) fn paint_style(canvas: &mut Canvas, rect: UiRect, style: &crate::NodeStyle, scale: f32) {
-    let radius = style.radius * scale;
-    if let Some(color) = style.background
-        && color.a > 0
-    {
-        for span in crate::rounded_rect_spans(rect, radius) {
-            canvas.rect(to_rect(span), to_color(color));
-        }
+    if let Some(color) = style.background {
+        fill_rounded(canvas, rect, color, style.radius * scale);
     }
+}
+
+/// Fills `rect` with rounded corners of `radius` pixels (square at 0).
+pub(crate) fn fill_rounded(canvas: &mut Canvas, rect: UiRect, color: Color, radius: f32) {
+    if color.a == 0 {
+        return;
+    }
+    if radius <= 0.0 {
+        canvas.rect(to_rect(rect), to_color(color));
+        return;
+    }
+    for span in crate::rounded_rect_spans(rect, radius) {
+        canvas.rect(to_rect(span), to_color(color));
+    }
+}
+
+/// Paints a [`crate::NodeStyle`]'s border over the widget, so a coloured
+/// button border is never hidden by the button's own fill.
+pub(crate) fn paint_style_border(
+    canvas: &mut Canvas,
+    rect: UiRect,
+    style: &crate::NodeStyle,
+    scale: f32,
+) {
+    let radius = style.radius * scale;
     if let Some(border) = style.border
         && border.color.a > 0
     {
@@ -567,6 +686,110 @@ mod tests {
         let mut canvas = Canvas::new(400, 300).unwrap();
         UiRenderer::new().draw(&mut canvas, ui);
         canvas
+    }
+
+    fn quad_indices(canvas: &Canvas, color: crate::Color) -> Vec<usize> {
+        let color = super::to_color(color);
+        canvas
+            .quads()
+            .iter()
+            .enumerate()
+            .filter(|(_, q)| q.color == color)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    fn one_widget(widget: Widget) -> (Ui, crate::NodeId) {
+        let mut ui = Ui::new(Theme::modern());
+        let root = ui.add_root(panel(), LayoutItem::fill(), Layer::Normal, false);
+        ui.set_style(root, Some(NodeStyle::transparent())).unwrap();
+        let node = ui
+            .add_child(
+                root,
+                widget,
+                LayoutItem::size(Length::fixed(160.0), Length::fixed(40.0)),
+            )
+            .unwrap();
+        (ui, node)
+    }
+
+    #[test]
+    fn style_borders_paint_over_the_button_and_style_backgrounds_replace_its_fill() {
+        let (mut ui, button) = one_widget(Widget::Button {
+            text: UiText::literal("Buy"),
+            action: Some(crate::ActionId::new(1)),
+        });
+        let gold = crate::Color::rgb(250, 200, 40);
+        let card = crate::Color::rgb(30, 30, 60);
+        ui.set_style(button, Some(NodeStyle::filled(card).with_border(2.0, gold)))
+            .unwrap();
+        settle(&mut ui);
+        let canvas = draw(&ui);
+        let border = quad_indices(&canvas, gold);
+        let background = quad_indices(&canvas, card);
+        assert!(!border.is_empty() && !background.is_empty());
+        assert!(
+            border.iter().min() > background.iter().max(),
+            "the border is drawn after the background"
+        );
+        assert!(
+            quad_indices(&canvas, ui.theme().button).is_empty(),
+            "a styled background replaces the theme fill at rest"
+        );
+        // Explicit colours win, and still sit beneath the border.
+        let fill = crate::Color::rgb(90, 20, 20);
+        ui.set_colors(
+            button,
+            Some(crate::WidgetColors::button(fill, fill, fill).with_text(gold)),
+        )
+        .unwrap();
+        let canvas = draw(&ui);
+        let fills = quad_indices(&canvas, fill);
+        assert!(!fills.is_empty());
+        assert!(quad_indices(&canvas, gold).iter().min() > fills.iter().max());
+    }
+
+    #[test]
+    fn labels_and_checkboxes_take_per_node_colours() {
+        let (mut ui, label) = one_widget(Widget::label(
+            UiText::literal("Legendary blade"),
+            crate::TextStyle::Body,
+        ));
+        let orange = crate::Color::rgb(255, 128, 0);
+        ui.set_text_color(label, Some(orange)).unwrap();
+        settle(&mut ui);
+        let canvas = draw(&ui);
+        assert!(
+            !quad_indices(&canvas, orange).is_empty(),
+            "label glyphs use the colour"
+        );
+        assert!(quad_indices(&canvas, ui.theme().text).is_empty());
+        ui.set_text_color(label, None).unwrap();
+        assert_eq!(ui.colors(label), None);
+        assert!(quad_indices(&draw(&ui), orange).is_empty());
+
+        let (mut ui, check) = one_widget(Widget::Checkbox {
+            label: UiText::literal("Vsync"),
+            checked: true,
+            action: None,
+        });
+        let (track, mark) = (
+            crate::Color::rgb(200, 200, 210),
+            crate::Color::rgb(10, 140, 60),
+        );
+        ui.set_colors(
+            check,
+            Some(
+                crate::WidgetColors::default()
+                    .with_track(track)
+                    .with_fill(mark),
+            ),
+        )
+        .unwrap();
+        settle(&mut ui);
+        let canvas = draw(&ui);
+        assert_eq!(quad_indices(&canvas, track).len(), 1);
+        assert_eq!(quad_indices(&canvas, mark).len(), 1);
     }
 
     #[test]

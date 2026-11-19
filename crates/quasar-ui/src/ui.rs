@@ -1,5 +1,5 @@
 use crate::math::{Edges, Rect, Vec2};
-use crate::theme::Theme;
+use crate::theme::{Color, Theme};
 use crate::widget::*;
 use std::collections::BTreeMap;
 
@@ -42,6 +42,8 @@ pub struct UiNode {
     /// Optional per-node background/border/radius override. `None` keeps the
     /// theme's painting.
     pub style: Option<NodeStyle>,
+    /// Optional per-node colour overrides for the widget itself.
+    pub colors: Option<WidgetColors>,
 }
 
 impl UiNode {
@@ -70,6 +72,7 @@ impl UiNode {
             preedit: String::new(),
             preedit_cursor: 0,
             style: None,
+            colors: None,
         }
     }
 }
@@ -199,6 +202,13 @@ impl Ui {
                 Widget::Tabs { tabs, .. } => tabs.iter().for_each(&mut check),
                 Widget::TextInput { placeholder, .. } => check(placeholder),
                 Widget::List { items, .. } => items.iter().for_each(&mut check),
+                Widget::RichText { spans, .. } => {
+                    for span in spans {
+                        if let RichSpan::Text(text) | RichSpan::Key(text) = span {
+                            check(text);
+                        }
+                    }
+                }
                 Widget::Panel { .. } | Widget::Image { .. } | Widget::Spacer => {}
             }
         }
@@ -206,6 +216,28 @@ impl Ui {
         missing.dedup();
         missing
     }
+    /// Lays out a [`Widget::RichText`] node at `limit` physical width.
+    pub(crate) fn rich_layout(
+        &self,
+        node: &UiNode,
+        measure: &dyn TextMeasure,
+        limit: f32,
+        scale: f32,
+    ) -> RichLayout {
+        let Widget::RichText { spans, style, .. } = &node.widget else {
+            return RichLayout::default();
+        };
+        let size = self.theme.size(*style) * scale;
+        layout_rich(
+            spans,
+            |text| self.resolve_text(text).to_owned(),
+            |run| measure.measure_style(run, *style, size).x,
+            size,
+            scale,
+            limit,
+        )
+    }
+
     pub fn resolve_text<'a>(&'a self, text: &'a UiText) -> &'a str {
         text.key
             .as_ref()
@@ -292,6 +324,25 @@ impl Ui {
         }
         Ok(())
     }
+    /// Overrides the colours `id`'s widget paints with (`None` restores the
+    /// theme). See [`WidgetColors`].
+    pub fn set_colors(&mut self, id: NodeId, colors: Option<WidgetColors>) -> UiResult<()> {
+        self.nodes.get_mut(&id).ok_or(UiError::UnknownNode)?.colors = colors;
+        Ok(())
+    }
+    pub fn colors(&self, id: NodeId) -> Option<WidgetColors> {
+        self.nodes.get(&id).and_then(|node| node.colors)
+    }
+    /// Sets only the text colour of `id` (labels of any style, button and
+    /// control text), keeping its other colour overrides.
+    pub fn set_text_color(&mut self, id: NodeId, color: Option<Color>) -> UiResult<()> {
+        let node = self.nodes.get_mut(&id).ok_or(UiError::UnknownNode)?;
+        let mut colors = node.colors.unwrap_or_default();
+        colors.text = color;
+        node.colors = (colors != WidgetColors::default()).then_some(colors);
+        Ok(())
+    }
+
     pub fn set_text(&mut self, id: NodeId, text: UiText) -> UiResult<()> {
         match &mut self.nodes.get_mut(&id).ok_or(UiError::UnknownNode)?.widget {
             Widget::Label { text: value, .. }
@@ -1368,92 +1419,18 @@ impl Ui {
         };
         let Widget::TextInput {
             text,
-            cursor: cursor_field,
-            anchor: anchor_field,
+            cursor,
+            anchor,
             max_len,
             ..
         } = &mut node.widget
         else {
             return;
         };
-        let char_len = text.chars().count();
-        let mut cursor = (*cursor_field).min(char_len);
-        let mut anchor = (*anchor_field).min(char_len);
-        if input.select_all {
-            cursor = char_len;
-            anchor = 0;
-        }
-        if input.home {
-            cursor = 0;
-            if !input.shift {
-                anchor = 0;
-            }
-        }
-        if input.end {
-            cursor = char_len;
-            if !input.shift {
-                anchor = char_len;
-            }
-        }
-        if input.left {
-            cursor = measure.previous_boundary(text, cursor);
-            if !input.shift {
-                anchor = cursor;
-            }
-        }
-        if input.right {
-            cursor = measure.next_boundary(text, cursor);
-            if !input.shift {
-                anchor = cursor;
-            }
-        }
-        if input.backspace || input.delete {
-            let (start, end) = if cursor != anchor {
-                (cursor.min(anchor), cursor.max(anchor))
-            } else if input.backspace && cursor > 0 {
-                (measure.previous_boundary(text, cursor), cursor)
-            } else if input.delete && cursor < char_len {
-                (cursor, measure.next_boundary(text, cursor))
-            } else {
-                (cursor, cursor)
-            };
-            if start != end {
-                let start_byte = byte_index(text, start);
-                let end_byte = byte_index(text, end);
-                text.replace_range(start_byte..end_byte, "");
-                cursor = start;
-                anchor = start;
-            }
-        }
-        if !input.text.is_empty() {
-            let (start, end) = (cursor.min(anchor), cursor.max(anchor));
-            let start_byte = byte_index(text, start);
-            let end_byte = byte_index(text, end);
-            let remaining =
-                max_len.saturating_sub(text.chars().count() + input.text.chars().count());
-            if remaining > 0 || start != end {
-                let filtered: String = input
-                    .text
-                    .chars()
-                    .filter(|ch| !ch.is_control())
-                    .take(max_len.saturating_sub(text.chars().count().saturating_sub(end - start)))
-                    .collect();
-                text.replace_range(start_byte..end_byte, &filtered);
-                cursor = start + filtered.chars().count();
-                anchor = cursor;
-            }
-        }
-        *cursor_field = cursor.min(text.chars().count());
-        *anchor_field = anchor.min(text.chars().count());
+        crate::line::edit_line(text, cursor, anchor, *max_len, input, measure);
         let value = text.clone();
         frame.events.push(UiEvent::TextChanged { id, text: value });
     }
-}
-
-fn byte_index(text: &str, char_index: usize) -> usize {
-    text.char_indices()
-        .nth(char_index)
-        .map_or(text.len(), |(index, _)| index)
 }
 
 struct LayoutPass<'a> {
@@ -1838,7 +1815,31 @@ impl LayoutPass<'_> {
         self.layout_node(id, rect, clip, area);
     }
 
+    /// A node's natural size for its parent's auto layout: its content
+    /// size, with fixed lengths taking precedence, so an empty panel,
+    /// spacer, image holder or button with a fixed `LayoutItem` size
+    /// measures as that size.
     fn intrinsic(&self, id: NodeId, available_width: f32, available_height: f32) -> Vec2 {
+        let Some(node) = self.ui.nodes.get(&id) else {
+            return Vec2::ZERO;
+        };
+        let (width, height) = (node.item.width, node.item.height);
+        match (width, height) {
+            (Length::Fixed(w), Length::Fixed(h)) => Vec2::new(w * self.scale, h * self.scale),
+            _ => {
+                let mut size = self.content_intrinsic(id, available_width, available_height);
+                if let Length::Fixed(w) = width {
+                    size.x = w * self.scale;
+                }
+                if let Length::Fixed(h) = height {
+                    size.y = h * self.scale;
+                }
+                size
+            }
+        }
+    }
+
+    fn content_intrinsic(&self, id: NodeId, available_width: f32, available_height: f32) -> Vec2 {
         let Some(node) = self.ui.nodes.get(&id) else {
             return Vec2::ZERO;
         };
@@ -1947,6 +1948,19 @@ impl LayoutPass<'_> {
                         self.measure.measure_wrapped(text, *style, size, limit)
                     }
                 }
+            }
+            Widget::RichText {
+                wrap, max_width, ..
+            } => {
+                let limit = match wrap {
+                    LabelWrap::None => f32::INFINITY,
+                    LabelWrap::Word => {
+                        label_wrap_limit(node.item.width, *max_width, available_width, self.scale)
+                    }
+                };
+                self.ui
+                    .rich_layout(node, self.measure, limit, self.scale)
+                    .size
             }
             Widget::Button { text, .. } => {
                 let text_size = self.measure.measure_style(

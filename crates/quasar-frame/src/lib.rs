@@ -104,10 +104,24 @@ impl Gpu {
             timestamps: std::sync::atomic::AtomicBool::new(false),
         }
     }
-    /// Enable optional per-frame native timestamp queries. Disabled for ordinary rendering.
+    /// Enable optional per-frame native timestamp queries. Disabled for
+    /// ordinary rendering. When on (and the adapter supports timestamp
+    /// queries inside encoders, see [`Self::gpu_timestamps_supported`]),
+    /// [`FrameReport::gpu_frame_nanos`] is filled for every frame, including
+    /// headless [`OffscreenTarget::render`] benchmarks.
     pub fn set_gpu_timestamps(&self, enabled: bool) {
         self.timestamps
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+    /// Whether the device can time frames (see [`Self::set_gpu_timestamps`]).
+    pub fn gpu_timestamps_supported(&self) -> bool {
+        self.device
+            .features()
+            .contains(Features::TIMESTAMP_QUERY | Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+    }
+    /// Whether frames are currently timed.
+    pub fn gpu_timestamps_enabled(&self) -> bool {
+        self.timestamps.load(std::sync::atomic::Ordering::Relaxed)
     }
     pub fn wait(&self) -> GraphicsResult<()> {
         self.device
@@ -388,7 +402,13 @@ pub struct FrameReport {
     pub wait_nanos: u64,
     pub cpu_frame_nanos: u64,
     pub blocking_waits: u64,
+    /// GPU time of the frame's command buffers. `None` unless timestamp
+    /// queries are on: call [`Gpu::set_gpu_timestamps`]`(true)` (off by
+    /// default, so ordinary rendering pays nothing) on a GPU that supports
+    /// `TIMESTAMP_QUERY` and `TIMESTAMP_QUERY_INSIDE_ENCODERS`. Applies to
+    /// surface frames and [`OffscreenTarget::render`] alike.
     pub gpu_frame_nanos: Option<u64>,
+    /// Raw timestamps behind [`Self::gpu_frame_nanos`].
     pub gpu_timing: Option<GpuTiming>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -420,10 +440,14 @@ pub fn record_and_submit(
 }
 
 /// A CPU-readable owned color target, with a depth attachment for 3D composition.
+///
+/// [`Self::render`] reuses one readback buffer across frames. Its report
+/// carries GPU time when [`Gpu::set_gpu_timestamps`] is on.
 pub struct OffscreenTarget {
     pub texture: Texture,
     pub target: RenderTarget,
     _depth: Texture,
+    readback: Buffer,
 }
 pub struct OffscreenReport {
     pub rgba: Vec<u8>,
@@ -453,10 +477,12 @@ impl OffscreenTarget {
         )?;
         let mut target = RenderTarget::from_texture(&texture);
         target.depth = Some(depth.create_view(&Default::default()));
+        let readback = readback_buffer(gpu, &texture)?;
         Ok(Self {
             texture,
             target,
             _depth: depth,
+            readback,
         })
     }
     pub fn release(self, _gpu: &Gpu) -> GraphicsResult<()> {
@@ -468,6 +494,9 @@ impl OffscreenTarget {
     pub fn size(&self) -> (u32, u32) {
         self.target.size()
     }
+    /// Renders one frame, waits for it and reads the pixels back.
+    /// `profile.gpu_frame_nanos` is set when [`Gpu::set_gpu_timestamps`] is
+    /// on and supported.
     pub fn render(
         &self,
         gpu: &Gpu,
@@ -475,7 +504,7 @@ impl OffscreenTarget {
     ) -> GraphicsResult<OffscreenReport> {
         let start = Instant::now();
         let (_, mut profile) = record_and_submit(gpu, |gpu| prepare(gpu, &self.target))?;
-        let rgba = read_rgba(gpu, &self.texture)?;
+        let rgba = read_rgba_with(gpu, &self.texture, &self.readback)?;
         profile.gpu_frame_nanos = profile.gpu_timing.as_ref().and_then(GpuTiming::nanos);
         profile.cpu_frame_nanos = nanos(start.elapsed());
         Ok(OffscreenReport {
@@ -572,6 +601,11 @@ pub fn render_offscreen(
 
 /// Readback is explicit and padded for WebGPU copy alignment. Live rendering never calls this.
 pub fn read_rgba(gpu: &Gpu, texture: &Texture) -> GraphicsResult<Vec<u8>> {
+    let buffer = readback_buffer(gpu, texture)?;
+    read_rgba_with(gpu, texture, &buffer)
+}
+
+fn readback_layout(texture: &Texture) -> GraphicsResult<(u32, u32, u64)> {
     if !matches!(
         texture.format(),
         TextureFormat::Rgba8Unorm
@@ -591,17 +625,33 @@ pub fn read_rgba(gpu: &Gpu, texture: &Texture) -> GraphicsResult<Vec<u8>> {
     if size > 256 * 1024 * 1024 {
         return Err(error("readback exceeds 256 MiB budget"));
     }
-    let buffer = gpu.device.create_buffer(&BufferDescriptor {
+    Ok((row, stride, size))
+}
+
+fn readback_buffer(gpu: &Gpu, texture: &Texture) -> GraphicsResult<Buffer> {
+    let (_, _, size) = readback_layout(texture)?;
+    Ok(gpu.device.create_buffer(&BufferDescriptor {
         label: Some("RGBA readback"),
         size,
         usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
         mapped_at_creation: false,
-    });
+    }))
+}
+
+/// [`read_rgba`] into a caller-owned readback buffer (at least the padded
+/// texture size, `COPY_DST | MAP_READ`), so repeated reads allocate nothing
+/// on the GPU. Rows are copied whole and BGRA is swizzled four bytes at a
+/// time.
+fn read_rgba_with(gpu: &Gpu, texture: &Texture, buffer: &Buffer) -> GraphicsResult<Vec<u8>> {
+    let (row, stride, size) = readback_layout(texture)?;
+    if buffer.size() < size {
+        return Err(error("readback buffer is too small"));
+    }
     let mut encoder = gpu.encoder("RGBA readback");
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
         TexelCopyBufferInfo {
-            buffer: &buffer,
+            buffer,
             layout: TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(stride),
@@ -612,7 +662,8 @@ pub fn read_rgba(gpu: &Gpu, texture: &Texture) -> GraphicsResult<Vec<u8>> {
     );
     let index = gpu.queue.submit([encoder.finish()]);
     let (send, recv) = std::sync::mpsc::sync_channel(1);
-    buffer.map_async(MapMode::Read, .., move |result| {
+    let slice = buffer.slice(..size);
+    slice.map_async(MapMode::Read, move |result| {
         let _ = send.send(result);
     });
     gpu.device
@@ -624,22 +675,34 @@ pub fn read_rgba(gpu: &Gpu, texture: &Texture) -> GraphicsResult<Vec<u8>> {
     recv.recv_timeout(std::time::Duration::from_secs(30))
         .map_err(error)?
         .map_err(error)?;
-    let mapped = buffer.get_mapped_range(..).map_err(error)?;
-    let mut rgba: Vec<u8> = mapped
-        .chunks_exact(stride as usize)
-        .flat_map(|r| r[..row as usize].iter().copied())
-        .collect();
+    let mapped = slice.get_mapped_range().map_err(error)?;
+    let (row, stride) = (row as usize, stride as usize);
+    let mut rgba: Vec<u8> = Vec::with_capacity(row * texture.height() as usize);
+    if row == stride {
+        rgba.extend_from_slice(&mapped[..row * texture.height() as usize]);
+    } else {
+        for line in mapped.chunks_exact(stride) {
+            rgba.extend_from_slice(&line[..row]);
+        }
+    }
     drop(mapped);
     buffer.unmap();
     if matches!(
         texture.format(),
         TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb
     ) {
-        for pixel in rgba.chunks_exact_mut(4) {
-            pixel.swap(0, 2);
-        }
+        swap_red_blue(&mut rgba);
     }
     Ok(rgba)
+}
+
+/// BGRA8 <-> RGBA8 in place, one `u32` per pixel (vectorises).
+fn swap_red_blue(pixels: &mut [u8]) {
+    for pixel in pixels.chunks_exact_mut(4) {
+        let value = u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]);
+        let swapped = (value & 0xff00_ff00) | ((value >> 16) & 0xff) | ((value & 0xff) << 16);
+        pixel.copy_from_slice(&swapped.to_le_bytes());
+    }
 }
 
 pub struct SurfaceFrame {

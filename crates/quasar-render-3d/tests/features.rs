@@ -203,11 +203,7 @@ fn mesh_fog_fades_opaque_and_transparent_draws_with_distance() {
     // A full-screen quad 7 m from the eye: halfway through 4..10 m fog.
     let wall = quad(&gpu, 20., -4.);
     let mut surfaces = SurfaceRenderState3D::new(&gpu, 1, 0).unwrap();
-    let fog = Fog {
-        color: [0., 0., 1.],
-        start: 4.,
-        end: 10.,
-    };
+    let fog = Fog::distance([0., 0., 1.], 4., 10.);
     surfaces.set_fog(Some(fog)).unwrap();
     assert!(
         surfaces
@@ -683,6 +679,33 @@ fn particles_integrate_on_the_gpu_and_draw_while_alive() {
     let lit = render(&mut particles, 0.01);
     let bright = lit.as_chunks::<4>().0.iter().filter(|p| p[0] > 100).count();
     assert!(bright > 20, "live particles draw ({bright} px)");
+    // `clear` removes live and queued particles at the next prepare.
+    twin.emit(&burst).unwrap();
+    twin.clear();
+    assert_eq!(twin.live_count(), 0);
+    let cleared = render(&mut twin, 0.0);
+    assert!(
+        cleared.as_chunks::<4>().0.iter().all(|p| p[0] == 0),
+        "cleared particles vanish at once"
+    );
+    assert!(
+        twin.read_particles(&gpu)
+            .unwrap()
+            .iter()
+            .all(|p| !p.alive())
+    );
+    twin.emit(&burst).unwrap();
+    let again = render(&mut twin, 0.01);
+    assert!(
+        again
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[0] > 100)
+            .count()
+            > 20,
+        "bursts after a clear still draw"
+    );
     // After their lifetime the slots stop drawing.
     let gone = render(&mut particles, 0.5);
     assert!(

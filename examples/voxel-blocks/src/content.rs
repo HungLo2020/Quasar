@@ -17,7 +17,10 @@ pub mod tex {
     pub const SAND: u32 = 8;
     pub const LOG_SIDE: u32 = 9;
     pub const LOG_TOP: u32 = 10;
-    pub const COUNT: u32 = 11;
+    /// Stone with crystal flecks, and the mask of the flecks that glow.
+    pub const ORE: u32 = 11;
+    pub const ORE_GLOW: u32 = 12;
+    pub const COUNT: u32 = 13;
 }
 
 /// Block IDs (indices into [`Content::catalog`]).
@@ -33,6 +36,8 @@ pub struct Blocks {
     pub lamp: u16,
     pub planks: u16,
     pub slab: u16,
+    /// Glowing crystal ore (emissive mask), seamed through deep stone.
+    pub ore: u16,
 }
 
 /// Everything meshing, lighting and collision need about blocks. Shared
@@ -50,6 +55,12 @@ pub struct Content {
     /// Per block ID: collision box height (0 = passable).
     pub collision: Vec<f32>,
     pub hotbar: Vec<u16>,
+    /// Per block ID for the sculpted style: `Some(scale)` meshes the block
+    /// with bevelled edges ([`quasar_voxel_mesh::BevelExtractor`]), `None`
+    /// with the classic per-block models.
+    pub bevel: Vec<Option<f32>>,
+    /// Mesh with bevelled stone instead of sharp cubes.
+    pub sculpted: bool,
 }
 
 impl Content {
@@ -80,6 +91,9 @@ impl Content {
         // open top and half-height sides (which only cull against other half
         // blocks) are derived from its bounds.
         let slab = catalog.add(BlockDef::cube("slab", tex::PLANKS).with_height(0.5));
+        // Glows through its emissive mask only; worldgen places no light
+        // emitters, so it adds no voxel light.
+        let ore = catalog.add(BlockDef::cube("crystal ore", tex::ORE));
         let blocks = Blocks {
             stone,
             dirt,
@@ -91,6 +105,7 @@ impl Content {
             lamp,
             planks,
             slab,
+            ore,
         };
         let opaque = opaque_table(&catalog);
         let emission = catalog.defs().iter().map(|d| d.emission).collect();
@@ -104,8 +119,10 @@ impl Content {
             .iter()
             .map(|d| if d.collision { d.bounds[1][1] } else { 0.0 })
             .collect();
+        let bevel = (0..catalog_len(&blocks))
+            .map(|id| (id == stone || id == ore).then_some(1.0))
+            .collect();
         Self {
-            catalog,
             library,
             blocks,
             opaque,
@@ -113,6 +130,16 @@ impl Content {
             filter,
             collision,
             hotbar: vec![stone, dirt, grass, planks, slab, glass, leaves, lamp, log],
+            bevel,
+            catalog,
+            sculpted: false,
+        }
+    }
+    /// The same content meshed in the sculpted style.
+    pub fn sculpted() -> Self {
+        Self {
+            sculpted: true,
+            ..Self::new()
         }
     }
     pub fn name(&self, id: u16) -> &str {
@@ -126,6 +153,11 @@ impl Default for Content {
     }
 }
 
+/// One past the highest block ID.
+fn catalog_len(blocks: &Blocks) -> u16 {
+    blocks.ore + 1
+}
+
 fn hash(x: u32, y: u32, salt: u32) -> u32 {
     let mut h =
         x.wrapping_mul(0x9e37_79b1) ^ y.wrapping_mul(0x85eb_ca77) ^ salt.wrapping_mul(0xc2b2_ae3d);
@@ -133,6 +165,14 @@ fn hash(x: u32, y: u32, salt: u32) -> u32 {
     h = h.wrapping_mul(0x2c1b_3c6d);
     h ^= h >> 12;
     h
+}
+
+/// Crystal flecks of the ore texture (and its glow mask).
+fn crystal_fleck(x: u32, y: u32) -> bool {
+    let (cx, cy) = (x / 4, y / 4);
+    let seed = hash(cx, cy, 41);
+    let (fx, fy) = (cx * 4 + seed % 3, cy * 4 + (seed >> 8) % 3);
+    !seed.is_multiple_of(3) && (x == fx || x == fx + 1) && (y == fy || y == fy + 1)
 }
 
 /// Procedural sRGB RGBA8 texture layers, one per [`tex`] constant.
@@ -190,6 +230,15 @@ pub fn texture_layers() -> Vec<Vec<u8>> {
                             }
                         }
                         tex::SAND => (jitter([0.86, 0.80, 0.58], 0.08), 1.0),
+                        tex::ORE | tex::ORE_GLOW => {
+                            let fleck = crystal_fleck(x, y);
+                            match (layer, fleck) {
+                                (tex::ORE, true) => ([0.55, 0.95, 0.88], 1.0),
+                                (tex::ORE, false) => (jitter([0.46, 0.46, 0.50], 0.18), 1.0),
+                                (_, true) => ([1.0, 1.0, 1.0], 1.0),
+                                (_, false) => ([0.0, 0.0, 0.0], 1.0),
+                            }
+                        }
                         tex::LOG_SIDE => {
                             let stripe = (x + hash(0, y, 5) % 2).is_multiple_of(4);
                             if stripe {

@@ -237,6 +237,8 @@ pub struct ParticleSystem {
     /// CPU mirror of each slot's death time on this system's clock.
     deaths: Vec<f64>,
     clock: f64,
+    /// Zero every slot before the next upload ([`ParticleSystem::clear`]).
+    clear_pending: bool,
     simulate: ComputePipeline,
     simulate_group: BindGroup,
     draw_layout: BindGroupLayout,
@@ -247,7 +249,15 @@ pub struct ParticleSystem {
     white: TextureView,
     sampler: Sampler,
     draw_group: Option<BindGroup>,
+    no_depth: TextureView,
+    /// Fade distance against scene depth (0 = hard intersections).
+    soft_distance: f32,
+    /// The depth view `draw_group` was built with.
+    group_depth: Option<TextureView>,
 }
+
+/// View uniform: view-projection, its inverse, right, up, soft settings.
+const VIEW_BYTES: u64 = 176;
 
 impl ParticleSystem {
     /// A system with `capacity` slots (1..=1,048,576) and a seed for burst
@@ -287,7 +297,7 @@ impl ParticleSystem {
             })
         };
         let step = uniform("particle step", 32);
-        let view = uniform("particle view", 96);
+        let view = uniform("particle view", VIEW_BYTES);
         let simulate_layout = gpu
             .device
             .create_bind_group_layout(&BindGroupLayoutDescriptor {
@@ -369,6 +379,7 @@ impl ParticleSystem {
                     },
                     image_entry(3, TextureViewDimension::D2, false),
                     sampler_entry(4, false),
+                    image_entry(5, TextureViewDimension::D2, true),
                 ],
             });
         let draw_pipeline_layout = gpu
@@ -407,6 +418,15 @@ impl ParticleSystem {
             min_filter: FilterMode::Linear,
             ..Default::default()
         });
+        // Bound when there is no scene depth to fade against.
+        let no_depth = texture_2d(
+            &gpu.device,
+            "particle no depth",
+            1,
+            1,
+            TextureFormat::Depth32Float,
+            TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
+        )?;
         Ok(Self {
             capacity,
             settings,
@@ -417,6 +437,7 @@ impl ParticleSystem {
             cursor: 0,
             pending: Vec::new(),
             deaths: vec![f64::NEG_INFINITY; capacity as usize],
+            clear_pending: false,
             clock: 0.,
             simulate,
             simulate_group,
@@ -428,6 +449,9 @@ impl ParticleSystem {
             white: white.create_view(&Default::default()),
             sampler,
             draw_group: None,
+            no_depth: no_depth.create_view(&Default::default()),
+            soft_distance: 0.,
+            group_depth: None,
         })
     }
 
@@ -459,6 +483,31 @@ impl ParticleSystem {
     pub fn set_sprite(&mut self, sprite: Option<&TextureView>) {
         self.sprite = sprite.cloned();
         self.draw_group = None;
+    }
+    /// Removes every particle, live and queued (for example on a scene
+    /// change or when a save loads). Takes effect at the next
+    /// [`Self::prepare`] or [`Self::step`]; bursts emitted after the call
+    /// still appear.
+    pub fn clear(&mut self) {
+        self.pending.clear();
+        self.deaths.fill(f64::NEG_INFINITY);
+        self.cursor = 0;
+        self.clear_pending = true;
+    }
+    /// Soft particles: fade each particle out over `distance` metres where
+    /// it meets scene geometry (read from the target's depth), so dust and
+    /// mist sit in the air without hard intersection lines. 0 (the default)
+    /// keeps hard edges. Needs a target with a sampleable depth, such as a
+    /// [`SceneTarget`]'s.
+    pub fn set_soft_distance(&mut self, distance: f32) -> GraphicsResult<()> {
+        if !distance.is_finite() || distance < 0. {
+            return Err(error("soft particle distance must be finite and >= 0"));
+        }
+        self.soft_distance = distance;
+        Ok(())
+    }
+    pub fn soft_distance(&self) -> f32 {
+        self.soft_distance
     }
     /// Particles still alive on this system's clock.
     pub fn live_count(&self) -> usize {
@@ -548,6 +597,10 @@ impl ParticleSystem {
     }
 
     fn record_uploads(&mut self, gpu: &Gpu, encoder: &mut CommandEncoder) {
+        if std::mem::take(&mut self.clear_pending) {
+            // An all-zero slot has lifetime 0, which the shaders treat as empty.
+            encoder.clear_buffer(&self.particles, 0, None);
+        }
         if self.pending.is_empty() {
             return;
         }
@@ -652,6 +705,16 @@ impl ParticleSystem {
                 });
             self.pipelines.insert(key, pipeline);
         }
+        let soft = self.soft_distance > 0. && target.depth.is_some();
+        let inverse = if soft {
+            camera
+                .view_projection
+                .inverse()
+                .filter(|m| m.finite())
+                .ok_or_else(|| error("soft particles need an invertible camera"))?
+        } else {
+            Mat4::IDENTITY
+        };
         let mut values: Vec<f32> = camera.view_projection.0.iter().flatten().copied().collect();
         values.extend([camera.right[0], camera.right[1], camera.right[2], 0.]);
         values.extend([
@@ -660,10 +723,24 @@ impl ParticleSystem {
             camera.up[2],
             f32::from(self.sprite.is_some()),
         ]);
+        values.extend(inverse.0.iter().flatten().copied());
+        let (width, height) = target.size();
+        values.extend([
+            if soft { self.soft_distance } else { 0. },
+            width as f32,
+            height as f32,
+            0.,
+        ]);
         let data = bytes(values);
         let upload = quasar_frame::staging_buffer(gpu, "particle view upload", &data);
-        encoder.copy_buffer_to_buffer(&upload, 0, &self.view, 0, 96);
+        encoder.copy_buffer_to_buffer(&upload, 0, &self.view, 0, VIEW_BYTES);
+        let depth = if soft { target.depth.as_ref() } else { None };
+        if self.group_depth.as_ref() != depth {
+            self.draw_group = None;
+            self.group_depth = depth.cloned();
+        }
         if self.draw_group.is_none() {
+            let depth = self.group_depth.as_ref().unwrap_or(&self.no_depth);
             let sprite = self.sprite.as_ref().unwrap_or(&self.white);
             self.draw_group = Some(gpu.device.create_bind_group(&BindGroupDescriptor {
                 label: Some("particle draw"),
@@ -684,6 +761,10 @@ impl ParticleSystem {
                     BindGroupEntry {
                         binding: 4,
                         resource: BindingResource::Sampler(&self.sampler),
+                    },
+                    BindGroupEntry {
+                        binding: 5,
+                        resource: BindingResource::TextureView(depth),
                     },
                 ],
             }));
